@@ -16,6 +16,108 @@
 
     console.log(
         '🫧 Social Realtime запускается...'
+       const likesChannel =
+    sb
+        .channel('bubbles-likes-realtime')
+
+        .on(
+            'postgres_changes',
+            {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'posts'
+            },
+
+            function (payload) {
+
+                console.log(
+                    '❤️ Обновление лайков:',
+                    payload.new
+                );
+
+                const post =
+                    payload.new;
+
+                /*
+                 * Ищем пост по его ID.
+                 */
+
+                const postElement =
+                    document.querySelector(
+                        `[data-post-id="${post.id}"]`
+                    );
+
+                if (!postElement) {
+
+                    console.log(
+                        '↩️ Пост не найден на странице:',
+                        post.id
+                    );
+
+                    return;
+                }
+
+                /*
+                 * Ищем счётчик лайков.
+                 */
+
+                const likeCounter =
+                    postElement.querySelector(
+                        '[data-like-count]'
+                    );
+
+                if (likeCounter) {
+
+                    likeCounter.textContent =
+                        post.likes ?? 0;
+
+                    console.log(
+                        '❤️ Счётчик лайков обновлён:',
+                        post.likes
+                    );
+
+                    return;
+                }
+
+
+                /*
+                 * Запасной вариант:
+                 * ищем элементы с классом/ID,
+                 * связанным с лайками.
+                 */
+
+                const possibleCounter =
+                    postElement.querySelector(
+                        '.like-count, .likes-count, [class*="like-count"]'
+                    );
+
+                if (possibleCounter) {
+
+                    possibleCounter.textContent =
+                        post.likes ?? 0;
+
+                    console.log(
+                        '❤️ Счётчик лайков обновлён'
+                    );
+                }
+
+            }
+        )
+
+        .subscribe(
+            function (status) {
+
+                console.log(
+                    '❤️ Likes Realtime:',
+                    status
+                );
+
+            }
+        );
+
+
+window.bubblesLikesChannel =
+    likesChannel;
     );
 
 
