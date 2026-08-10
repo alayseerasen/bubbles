@@ -26,40 +26,28 @@
  function findCommentsContainer(postId) {
 
     console.log(
-        '🔎 Ищем пост:',
+        '🔎 Ищем контейнер комментариев для поста:',
         postId
     );
 
     /*
-     * Ищем сам пост по data-post-id
+     * Находим поле ввода комментария.
+     *
+     * Например:
+     * input#comment-post_msneb6qf_vzmav6
      */
 
-    const post =
-        document.querySelector(
-            `[data-post-id="${postId}"]`
+    const input =
+        document.getElementById(
+            `comment-${postId}`
         );
 
 
-    if (!post) {
+    if (!input) {
 
         console.warn(
-            '❌ Пост с таким data-post-id не найден:',
-            postId
-        );
-
-        /*
-         * Показываем все элементы,
-         * у которых вообще есть data-post-id.
-         */
-
-        const allPosts =
-            document.querySelectorAll(
-                '[data-post-id]'
-            );
-
-        console.log(
-            '📋 Найденные посты:',
-            allPosts
+            '❌ Поле комментария не найдено:',
+            `comment-${postId}`
         );
 
         return null;
@@ -67,76 +55,55 @@
 
 
     console.log(
-        '✅ НУЖНЫЙ ПОСТ НАЙДЕН:',
-        post
+        '📝 Поле комментария найдено:',
+        input
     );
 
 
     /*
-     * Ищем элементы комментариев
-     * внутри найденного поста.
+     * Если input находится внутри form,
+     * то контейнером комментариев обычно
+     * является родитель этого form.
      */
 
-    const containers =
-        post.querySelectorAll(
-            '*'
+    const form =
+        input.closest('form');
+
+
+    if (form && form.parentElement) {
+
+        const container =
+            form.parentElement;
+
+
+        console.log(
+            '💬 Контейнер комментариев найден:',
+            container
         );
 
 
-    console.log(
-        '🔎 Элементы внутри поста:',
-        containers
-    );
-
-
-    /*
-     * Проверяем наиболее вероятные
-     * варианты контейнера.
-     */
-
-    const selectors = [
-        '.comments',
-        '.comments-list',
-        '.comment-list',
-        '.post-comments',
-        '.comments-container',
-        '[class*="comment"]',
-        '[id*="comment"]'
-    ];
-
-
-    for (
-        const selector of selectors
-    ) {
-
-        const element =
-            post.querySelector(
-                selector
-            );
-
-
-        if (element) {
-
-            console.log(
-                '💬 КОНТЕЙНЕР НАЙДЕН:',
-                selector,
-                element
-            );
-
-            return element;
-        }
+        return container;
     }
 
 
-    console.warn(
-        '❌ Внутри поста контейнер комментариев '
-        + 'не найден'
-    );
+    /*
+     * Если формы нет, поднимаемся на один уровень.
+     */
+
+    if (input.parentElement) {
+
+        console.log(
+            '💬 Используем родительский контейнер:',
+            input.parentElement
+        );
+
+
+        return input.parentElement;
+    }
 
 
     return null;
 }
-
     /* ==========================================
        ПРОВЕРКА ДУБЛИКАТОВ
        ========================================== */
