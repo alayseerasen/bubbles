@@ -281,10 +281,13 @@
 
                 }
             );
+   
 
 
     window.bubblesCommentsChannel =
         commentsChannel;
 
-
+      console.log(
+    '🟢 НОВАЯ ВЕРСИЯ SOCIAL-REALTIME ЗАГРУЖЕНА — 001'
+);
 })();
