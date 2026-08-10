@@ -1,6 +1,6 @@
 /* ============================================
    BUBBLES — SOCIAL REALTIME
-   COMMENTS + POST UPDATES
+   COMMENTS + LIKES
    ============================================ */
 
 (function () {
@@ -16,108 +16,6 @@
 
     console.log(
         '🫧 Social Realtime запускается...'
-       const likesChannel =
-    sb
-        .channel('bubbles-likes-realtime')
-
-        .on(
-            'postgres_changes',
-            {
-                event: 'UPDATE',
-                schema: 'public',
-                table: 'posts'
-            },
-
-            function (payload) {
-
-                console.log(
-                    '❤️ Обновление лайков:',
-                    payload.new
-                );
-
-                const post =
-                    payload.new;
-
-                /*
-                 * Ищем пост по его ID.
-                 */
-
-                const postElement =
-                    document.querySelector(
-                        `[data-post-id="${post.id}"]`
-                    );
-
-                if (!postElement) {
-
-                    console.log(
-                        '↩️ Пост не найден на странице:',
-                        post.id
-                    );
-
-                    return;
-                }
-
-                /*
-                 * Ищем счётчик лайков.
-                 */
-
-                const likeCounter =
-                    postElement.querySelector(
-                        '[data-like-count]'
-                    );
-
-                if (likeCounter) {
-
-                    likeCounter.textContent =
-                        post.likes ?? 0;
-
-                    console.log(
-                        '❤️ Счётчик лайков обновлён:',
-                        post.likes
-                    );
-
-                    return;
-                }
-
-
-                /*
-                 * Запасной вариант:
-                 * ищем элементы с классом/ID,
-                 * связанным с лайками.
-                 */
-
-                const possibleCounter =
-                    postElement.querySelector(
-                        '.like-count, .likes-count, [class*="like-count"]'
-                    );
-
-                if (possibleCounter) {
-
-                    possibleCounter.textContent =
-                        post.likes ?? 0;
-
-                    console.log(
-                        '❤️ Счётчик лайков обновлён'
-                    );
-                }
-
-            }
-        )
-
-        .subscribe(
-            function (status) {
-
-                console.log(
-                    '❤️ Likes Realtime:',
-                    status
-                );
-
-            }
-        );
-
-
-window.bubblesLikesChannel =
-    likesChannel;
     );
 
 
@@ -125,89 +23,75 @@ window.bubblesLikesChannel =
        COMMENTS
        ========================================== */
 
- function findCommentsContainer(postId) {
+    function findCommentsContainer(postId) {
 
-    console.log(
-        '🔎 Ищем контейнер комментариев для поста:',
-        postId
-    );
-
-    /*
-     * Находим поле ввода комментария.
-     *
-     * Например:
-     * input#comment-post_msneb6qf_vzmav6
-     */
-
-    const input =
-        document.getElementById(
-            `comment-${postId}`
+        console.log(
+            '🔎 Ищем контейнер комментариев для поста:',
+            postId
         );
 
 
-    if (!input) {
+        const input =
+            document.getElementById(
+                `comment-${postId}`
+            );
 
-        console.warn(
-            '❌ Поле комментария не найдено:',
-            `comment-${postId}`
+
+        if (!input) {
+
+            console.warn(
+                '❌ Поле комментария не найдено:',
+                `comment-${postId}`
+            );
+
+            return null;
+        }
+
+
+        console.log(
+            '📝 Поле комментария найдено:',
+            input
         );
+
+
+        const form =
+            input.closest('form');
+
+
+        if (form && form.parentElement) {
+
+            const container =
+                form.parentElement;
+
+
+            console.log(
+                '💬 Контейнер комментариев найден:',
+                container
+            );
+
+
+            return container;
+        }
+
+
+        if (input.parentElement) {
+
+            console.log(
+                '💬 Используем родительский контейнер:',
+                input.parentElement
+            );
+
+
+            return input.parentElement;
+        }
+
 
         return null;
     }
 
 
-    console.log(
-        '📝 Поле комментария найдено:',
-        input
-    );
-
-
-    /*
-     * Если input находится внутри form,
-     * то контейнером комментариев обычно
-     * является родитель этого form.
-     */
-
-    const form =
-        input.closest('form');
-
-
-    if (form && form.parentElement) {
-
-        const container =
-            form.parentElement;
-
-
-        console.log(
-            '💬 Контейнер комментариев найден:',
-            container
-        );
-
-
-        return container;
-    }
-
-
-    /*
-     * Если формы нет, поднимаемся на один уровень.
-     */
-
-    if (input.parentElement) {
-
-        console.log(
-            '💬 Используем родительский контейнер:',
-            input.parentElement
-        );
-
-
-        return input.parentElement;
-    }
-
-
-    return null;
-}
     /* ==========================================
-       ПРОВЕРКА ДУБЛИКАТОВ
+       ПРОВЕРКА ДУБЛИКАТОВ КОММЕНТАРИЕВ
        ========================================== */
 
     function commentAlreadyDisplayed(
@@ -233,11 +117,11 @@ window.bubblesLikesChannel =
                 comment.post_id
             );
 
+
         if (!container) {
 
             console.warn(
-                '⚠️ Контейнер комментариев '
-                + 'не найден'
+                '⚠️ Контейнер комментариев не найден'
             );
 
             console.log(
@@ -248,10 +132,6 @@ window.bubblesLikesChannel =
             return;
         }
 
-
-        /*
-         * Защита от дублей
-         */
 
         if (
             commentAlreadyDisplayed(
@@ -283,9 +163,28 @@ window.bubblesLikesChannel =
             comment.text || '';
 
 
-        container.appendChild(
-            element
-        );
+        /*
+         * Если внутри контейнера есть форма,
+         * ставим комментарий перед ней.
+         */
+
+        const form =
+            container.querySelector('form');
+
+
+        if (form) {
+
+            container.insertBefore(
+                element,
+                form
+            );
+
+        } else {
+
+            container.appendChild(
+                element
+            );
+        }
 
 
         console.log(
@@ -325,10 +224,6 @@ window.bubblesLikesChannel =
                         payload.new;
 
 
-                    /*
-                     * Проверяем пользователя
-                     */
-
                     const {
                         data: {
                             user
@@ -338,14 +233,17 @@ window.bubblesLikesChannel =
 
 
                     if (!user) {
+
+                        console.log(
+                            '❌ Пользователь не авторизован'
+                        );
+
                         return;
                     }
 
 
                     /*
-                     * Если комментарий уже добавлен
-                     * существующим кодом —
-                     * Realtime не добавляет его повторно.
+                     * Защита от дублей.
                      */
 
                     if (
@@ -361,10 +259,6 @@ window.bubblesLikesChannel =
                         return;
                     }
 
-
-                    /*
-                     * Добавляем комментарий.
-                     */
 
                     displayRealtimeComment(
                         comment
@@ -383,13 +277,144 @@ window.bubblesLikesChannel =
 
                 }
             );
-   
 
 
     window.bubblesCommentsChannel =
         commentsChannel;
 
-      console.log(
-    '🟢 НОВАЯ ВЕРСИЯ SOCIAL-REALTIME ЗАГРУЖЕНА — 001'
-);
+
+    /* ==========================================
+       REALTIME LIKES
+       ========================================== */
+
+    const likesChannel =
+        sb
+            .channel(
+                'bubbles-likes-realtime'
+            )
+
+            .on(
+                'postgres_changes',
+                {
+                    event: 'UPDATE',
+                    schema: 'public',
+                    table: 'posts'
+                },
+
+                function (payload) {
+
+                    console.log(
+                        '❤️ Обновление лайков:',
+                        payload.new
+                    );
+
+
+                    const post =
+                        payload.new;
+
+
+                    /*
+                     * Ищем сам пост.
+                     */
+
+                    const postElement =
+                        document.querySelector(
+                            `[data-post-id="${post.id}"]`
+                        );
+
+
+                    if (!postElement) {
+
+                        console.log(
+                            '↩️ Пост не найден на странице:',
+                            post.id
+                        );
+
+                        return;
+                    }
+
+
+                    /*
+                     * Основной вариант:
+                     * data-like-count
+                     */
+
+                    const likeCounter =
+                        postElement.querySelector(
+                            '[data-like-count]'
+                        );
+
+
+                    if (likeCounter) {
+
+                        likeCounter.textContent =
+                            post.likes ?? 0;
+
+
+                        console.log(
+                            '❤️ Счётчик лайков обновлён:',
+                            post.likes
+                        );
+
+                        return;
+                    }
+
+
+                    /*
+                     * Запасные варианты.
+                     */
+
+                    const possibleCounter =
+                        postElement.querySelector(
+                            '.like-count, .likes-count, [class*="like-count"]'
+                        );
+
+
+                    if (possibleCounter) {
+
+                        possibleCounter.textContent =
+                            post.likes ?? 0;
+
+
+                        console.log(
+                            '❤️ Счётчик лайков обновлён:',
+                            post.likes
+                        );
+
+                        return;
+                    }
+
+
+                    console.warn(
+                        '⚠️ Счётчик лайков не найден в посте:',
+                        post.id
+                    );
+
+                }
+            )
+
+            .subscribe(
+                (status) => {
+
+                    console.log(
+                        '❤️ Likes Realtime:',
+                        status
+                    );
+
+                }
+            );
+
+
+    window.bubblesLikesChannel =
+        likesChannel;
+
+
+    /* ==========================================
+       ВЕРСИЯ
+       ========================================== */
+
+    console.log(
+        '🟢 НОВАЯ ВЕРСИЯ SOCIAL-REALTIME ЗАГРУЖЕНА — 002'
+    );
+
 })();
