@@ -1,41 +1,37 @@
-/* BUBBLES — REALTIME TEST */
+console.log("🫧 REALTIME.JS ЗАГРУЗИЛСЯ!");
 
-(function () {
+const sb = window.bubblesSupabase;
 
-    const sb = window.bubblesSupabase;
+if (!sb) {
+    console.error("❌ Supabase не найден");
+} else {
 
-    if (!sb) {
-        console.error('Bubbles Supabase не найден.');
-        return;
-    }
+    console.log("🫧 Supabase найден!");
 
-    const channel = sb
-        .channel('bubbles-messages-realtime')
-
+    sb
+        .channel("bubbles-messages")
         .on(
-            'postgres_changes',
+            "postgres_changes",
             {
-                event: 'INSERT',
-                schema: 'public',
-                table: 'messages'
+                event: "INSERT",
+                schema: "public",
+                table: "messages"
             },
-            function (payload) {
+            (payload) => {
 
                 console.log(
-                    '🫧 НОВОЕ СООБЩЕНИЕ:',
+                    "💬 НОВОЕ СООБЩЕНИЕ ПОЛУЧЕНО:",
                     payload.new
                 );
 
             }
         )
-
-        .subscribe(function (status) {
+        .subscribe((status) => {
 
             console.log(
-                '🫧 Bubbles Realtime:',
+                "🫧 Realtime статус:",
                 status
             );
 
         });
-
-})();
+}
