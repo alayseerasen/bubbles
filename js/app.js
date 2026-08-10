@@ -3049,6 +3049,12 @@ async function playMusic(musicId){
         author
         ? "@" + author.username
         : "Unknown";
+    setListening(
+    music.title,
+    author
+    ? "@" + author.username
+    : "Unknown"
+);
 
 
     document
@@ -3116,7 +3122,55 @@ function closeMusicPlayer(){
     }
 
 }
+async function setListening(track, artist){
 
+    const {
+        data:{
+            user
+        }
+    } = await window.bubblesSupabase.auth.getUser();
+
+
+    if(!user){
+        return;
+    }
+
+
+    const { error } =
+        await window.bubblesSupabase
+        .from("profiles")
+        .update({
+
+            current_track: track,
+
+            current_artist: artist
+
+        })
+        .eq(
+            "id",
+            user.id
+        );
+
+
+    if(error){
+
+        console.error(
+            "Ошибка обновления музыки:",
+            error
+        );
+
+        return;
+
+    }
+
+
+    console.log(
+        "🎧 Сейчас слушает:",
+        track,
+        artist
+    );
+
+}
 
 async function deleteMusic(id){
 
