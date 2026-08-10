@@ -27,6 +27,27 @@ let musicDB = null;
 let globalAudioURL = null;
 let currentlyPlayingMusicId = null;
 
+function isUserOnline(lastSeen){
+
+if(!lastSeen)
+return false;
+
+const time =
+new Date(lastSeen)
+.getTime();
+
+const now =
+Date.now();
+
+const difference =
+now - time;
+// меньше минуты назад
+
+return difference < 60000;
+
+
+}
+
 
 /* ============================================================
    INDEXED DB
@@ -1575,6 +1596,26 @@ function renderProfile(userId){
                         <div class="username">
                             @${escapeHtml(user.username)}
                         </div>
+                        ${
+    isUserOnline(user.last_seen)
+
+    ?
+
+    `
+    <div class="online-status">
+        🟢 Онлайн
+    </div>
+    `
+
+    :
+
+    `
+    <div class="offline-status">
+        ⚪ Оффлайн
+    </div>
+    `
+
+}
 
                     </div>
 
