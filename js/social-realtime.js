@@ -26,75 +26,112 @@
  function findCommentsContainer(postId) {
 
     console.log(
-        '🔎 Ищем контейнер комментариев для поста:',
+        '🔎 Ищем пост:',
         postId
     );
+
+    /*
+     * Ищем сам пост по data-post-id
+     */
 
     const post =
         document.querySelector(
             `[data-post-id="${postId}"]`
         );
 
-    if (post) {
 
-        console.log(
-            '🫧 Пост найден:',
-            post
+    if (!post) {
+
+        console.warn(
+            '❌ Пост с таким data-post-id не найден:',
+            postId
         );
 
-        const container =
-            post.querySelector(
-                '.comments'
+        /*
+         * Показываем все элементы,
+         * у которых вообще есть data-post-id.
+         */
+
+        const allPosts =
+            document.querySelectorAll(
+                '[data-post-id]'
             );
 
-        if (container) {
+        console.log(
+            '📋 Найденные посты:',
+            allPosts
+        );
 
-            console.log(
-                '💬 Контейнер найден:',
-                container
-            );
-
-            return container;
-        }
+        return null;
     }
 
 
-    const possibleSelectors = [
-        '[id*="comment"]',
+    console.log(
+        '✅ НУЖНЫЙ ПОСТ НАЙДЕН:',
+        post
+    );
+
+
+    /*
+     * Ищем элементы комментариев
+     * внутри найденного поста.
+     */
+
+    const containers =
+        post.querySelectorAll(
+            '*'
+        );
+
+
+    console.log(
+        '🔎 Элементы внутри поста:',
+        containers
+    );
+
+
+    /*
+     * Проверяем наиболее вероятные
+     * варианты контейнера.
+     */
+
+    const selectors = [
+        '.comments',
+        '.comments-list',
+        '.comment-list',
+        '.post-comments',
+        '.comments-container',
         '[class*="comment"]',
-        '[id*="Comment"]',
-        '[class*="Comment"]'
+        '[id*="comment"]'
     ];
 
 
     for (
-        const selector of possibleSelectors
+        const selector of selectors
     ) {
 
-        const elements =
-            document.querySelectorAll(
+        const element =
+            post.querySelector(
                 selector
             );
 
-        if (elements.length > 0) {
+
+        if (element) {
 
             console.log(
-                '🔎 Найдены элементы:',
+                '💬 КОНТЕЙНЕР НАЙДЕН:',
                 selector,
-                elements
+                element
             );
 
-            /*
-             * Берём последний найденный элемент.
-             * Это временный способ определить
-             * реальный контейнер.
-             */
-
-            return elements[
-                elements.length - 1
-            ];
+            return element;
         }
     }
+
+
+    console.warn(
+        '❌ Внутри поста контейнер комментариев '
+        + 'не найден'
+    );
 
 
     return null;
