@@ -308,6 +308,11 @@
                         payload.new
                     );
 
+                   console.log(
+                         '🔎 Все элементы с data-post-id:',
+                         document.querySelectorAll('[data-post-id]')
+                    );
+
 
                     const post =
                         payload.new;
