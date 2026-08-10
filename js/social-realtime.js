@@ -8,15 +8,11 @@
     const sb = window.bubblesSupabase;
 
     if (!sb) {
-        console.error(
-            '❌ Bubbles Supabase не найден'
-        );
+        console.error('❌ Bubbles Supabase не найден');
         return;
     }
 
-    console.log(
-        '🫧 Social Realtime запускается...'
-    );
+    console.log('🫧 Social Realtime запускается...');
 
 
     /* ==========================================
@@ -30,49 +26,34 @@
             postId
         );
 
-
-        const input =
-            document.getElementById(
-                `comment-${postId}`
-            );
-
+        const input = document.getElementById(
+            `comment-${postId}`
+        );
 
         if (!input) {
-
             console.warn(
                 '❌ Поле комментария не найдено:',
                 `comment-${postId}`
             );
-
             return null;
         }
-
 
         console.log(
             '📝 Поле комментария найдено:',
             input
         );
 
-
-        const form =
-            input.closest('form');
-
+        const form = input.closest('form');
 
         if (form && form.parentElement) {
 
-            const container =
-                form.parentElement;
-
-
             console.log(
                 '💬 Контейнер комментариев найден:',
-                container
+                form.parentElement
             );
 
-
-            return container;
+            return form.parentElement;
         }
-
 
         if (input.parentElement) {
 
@@ -81,22 +62,14 @@
                 input.parentElement
             );
 
-
             return input.parentElement;
         }
-
 
         return null;
     }
 
 
-    /* ==========================================
-       ПРОВЕРКА ДУБЛИКАТОВ КОММЕНТАРИЕВ
-       ========================================== */
-
-    function commentAlreadyDisplayed(
-        commentId
-    ) {
+    function commentAlreadyDisplayed(commentId) {
 
         return document.querySelector(
             `[data-bubbles-comment-id="${commentId}"]`
@@ -104,19 +77,12 @@
     }
 
 
-    /* ==========================================
-       ДОБАВЛЕНИЕ КОММЕНТАРИЯ
-       ========================================== */
-
-    function displayRealtimeComment(
-        comment
-    ) {
+    function displayRealtimeComment(comment) {
 
         const container =
             findCommentsContainer(
                 comment.post_id
             );
-
 
         if (!container) {
 
@@ -132,7 +98,6 @@
             return;
         }
 
-
         if (
             commentAlreadyDisplayed(
                 comment.id
@@ -146,31 +111,20 @@
             return;
         }
 
-
         const element =
             document.createElement('div');
-
 
         element.dataset.bubblesCommentId =
             comment.id;
 
-
         element.className =
             'comment realtime-comment';
-
 
         element.textContent =
             comment.text || '';
 
-
-        /*
-         * Если внутри контейнера есть форма,
-         * ставим комментарий перед ней.
-         */
-
         const form =
             container.querySelector('form');
-
 
         if (form) {
 
@@ -186,7 +140,6 @@
             );
         }
 
-
         console.log(
             '💬 Новый комментарий добавлен:',
             comment
@@ -195,7 +148,7 @@
 
 
     /* ==========================================
-       REALTIME COMMENTS
+       COMMENTS REALTIME
        ========================================== */
 
     const commentsChannel =
@@ -219,10 +172,8 @@
                         payload.new
                     );
 
-
                     const comment =
                         payload.new;
-
 
                     const {
                         data: {
@@ -231,20 +182,9 @@
                     } =
                         await sb.auth.getUser();
 
-
                     if (!user) {
-
-                        console.log(
-                            '❌ Пользователь не авторизован'
-                        );
-
                         return;
                     }
-
-
-                    /*
-                     * Защита от дублей.
-                     */
 
                     if (
                         commentAlreadyDisplayed(
@@ -259,11 +199,9 @@
                         return;
                     }
 
-
                     displayRealtimeComment(
                         comment
                     );
-
                 }
             )
 
@@ -274,7 +212,6 @@
                         '💬 Comments Realtime:',
                         status
                     );
-
                 }
             );
 
@@ -284,7 +221,7 @@
 
 
     /* ==========================================
-       REALTIME LIKES
+       LIKES REALTIME
        ========================================== */
 
     const likesChannel =
@@ -308,21 +245,15 @@
                         payload.new
                     );
 
-                   console.log(
-                         '🔎 Все элементы с data-post-id:',
-                         document.querySelectorAll('[data-post-id]')
-                    );
-
-
                     const post =
                         payload.new;
 
 
-                    /*
-                     * Ищем сам пост.
-                     */
+                    /* --------------------------------
+                       ИЩЕМ ПОСТ
+                       -------------------------------- */
 
-                    const postElement =
+                    let postElement =
                         document.querySelector(
                             `[data-post-id="${post.id}"]`
                         );
@@ -330,71 +261,141 @@
 
                     if (!postElement) {
 
+                        postElement =
+                            document.getElementById(
+                                post.id
+                            );
+                    }
+
+
+                    if (!postElement) {
+
+                        const allPosts =
+                            document.querySelectorAll(
+                                '[data-post-id]'
+                            );
+
                         console.log(
-                            '↩️ Пост не найден на странице:',
-                            post.id
+                            '🔎 Пост не найден по data-post-id.',
+                            'Доступные элементы:',
+                            allPosts
+                        );
+
+                        console.log(
+                            '🔎 Ищем элементы с ID:',
+                            document.querySelectorAll(
+                                `[id*="${post.id}"]`
+                            )
                         );
 
                         return;
                     }
 
 
-                    /*
-                     * Основной вариант:
-                     * data-like-count
-                     */
+                    console.log(
+                        '✅ Пост найден:',
+                        postElement
+                    );
 
-                    const likeCounter =
+
+                    /* --------------------------------
+                       ПОЛУЧАЕМ КОЛИЧЕСТВО ЛАЙКОВ
+                       -------------------------------- */
+
+                    let likesCount = 0;
+
+                    if (
+                        Array.isArray(
+                            post.likes
+                        )
+                    ) {
+
+                        likesCount =
+                            post.likes.length;
+
+                    } else {
+
+                        likesCount =
+                            Number(
+                                post.likes
+                            ) || 0;
+                    }
+
+
+                    console.log(
+                        '❤️ Новое количество лайков:',
+                        likesCount
+                    );
+
+
+                    /* --------------------------------
+                       ИЩЕМ СЧЁТЧИК
+                       -------------------------------- */
+
+                    let likeCounter =
                         postElement.querySelector(
                             '[data-like-count]'
                         );
 
 
-                    if (likeCounter) {
+                    if (!likeCounter) {
 
-                        likeCounter.textContent =
-                            post.likes ?? 0;
+                        likeCounter =
+                            postElement.querySelector(
+                                '.like-count'
+                            );
+                    }
 
 
-                        console.log(
-                            '❤️ Счётчик лайков обновлён:',
-                            post.likes
+                    if (!likeCounter) {
+
+                        likeCounter =
+                            postElement.querySelector(
+                                '.likes-count'
+                            );
+                    }
+
+
+                    if (!likeCounter) {
+
+                        likeCounter =
+                            postElement.querySelector(
+                                '[class*="like-count"]'
+                            );
+                    }
+
+
+                    if (!likeCounter) {
+
+                        likeCounter =
+                            postElement.querySelector(
+                                '[class*="likes-count"]'
+                            );
+                    }
+
+
+                    if (!likeCounter) {
+
+                        console.warn(
+                            '⚠️ Счётчик лайков внутри поста не найден'
                         );
 
                         return;
                     }
 
 
-                    /*
-                     * Запасные варианты.
-                     */
+                    /* --------------------------------
+                       ОБНОВЛЯЕМ СЧЁТЧИК
+                       -------------------------------- */
 
-                    const possibleCounter =
-                        postElement.querySelector(
-                            '.like-count, .likes-count, [class*="like-count"]'
-                        );
+                    likeCounter.textContent =
+                        likesCount;
 
 
-                    if (possibleCounter) {
-
-                        possibleCounter.textContent =
-                            post.likes ?? 0;
-
-
-                        console.log(
-                            '❤️ Счётчик лайков обновлён:',
-                            post.likes
-                        );
-
-                        return;
-                    }
-
-
-                    console.warn(
-                        '⚠️ Счётчик лайков не найден в посте:',
-                        post.id
+                    console.log(
+                        '❤️ Счётчик лайков обновлён:',
+                        likesCount
                     );
-
                 }
             )
 
@@ -405,7 +406,6 @@
                         '❤️ Likes Realtime:',
                         status
                     );
-
                 }
             );
 
@@ -415,11 +415,11 @@
 
 
     /* ==========================================
-       ВЕРСИЯ
+       ГОТОВО
        ========================================== */
 
     console.log(
-        '🟢 НОВАЯ ВЕРСИЯ SOCIAL-REALTIME ЗАГРУЖЕНА — 002'
+        '🟢 SOCIAL REALTIME ЗАГРУЖЕН — COMMENTS + LIKES'
     );
 
 })();
