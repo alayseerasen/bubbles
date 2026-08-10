@@ -986,3 +986,15 @@ select:focus{
     }
 
 }
+.online-status{
+    color:#42ff7b;
+    font-size:13px;
+    margin-top:5px;
+}
+
+
+.offline-status{
+    color:#999;
+    font-size:13px;
+    margin-top:5px;
+}
