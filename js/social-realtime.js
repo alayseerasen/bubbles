@@ -23,52 +23,82 @@
        COMMENTS
        ========================================== */
 
-    function findCommentsContainer(postId) {
+ function findCommentsContainer(postId) {
 
-        const possibleIds = [
-            'comments',
-            'commentsList',
-            'commentList',
-            'postComments',
-            'comments-container'
-        ];
+    console.log(
+        '🔎 Ищем контейнер комментариев для поста:',
+        postId
+    );
 
-        for (const id of possibleIds) {
+    const post =
+        document.querySelector(
+            `[data-post-id="${postId}"]`
+        );
 
-            const element =
-                document.getElementById(id);
+    if (post) {
 
-            if (element) {
-                return element;
-            }
-        }
+        console.log(
+            '🫧 Пост найден:',
+            post
+        );
 
-        /*
-         * Если комментарии находятся внутри
-         * поста, попробуем найти контейнер
-         * по data-post-id.
-         */
-
-        const post =
-            document.querySelector(
-                `[data-post-id="${postId}"]`
+        const container =
+            post.querySelector(
+                '.comments'
             );
 
-        if (post) {
+        if (container) {
 
-            const container =
-                post.querySelector(
-                    '.comments'
-                );
+            console.log(
+                '💬 Контейнер найден:',
+                container
+            );
 
-            if (container) {
-                return container;
-            }
+            return container;
         }
-
-        return null;
     }
 
+
+    const possibleSelectors = [
+        '[id*="comment"]',
+        '[class*="comment"]',
+        '[id*="Comment"]',
+        '[class*="Comment"]'
+    ];
+
+
+    for (
+        const selector of possibleSelectors
+    ) {
+
+        const elements =
+            document.querySelectorAll(
+                selector
+            );
+
+        if (elements.length > 0) {
+
+            console.log(
+                '🔎 Найдены элементы:',
+                selector,
+                elements
+            );
+
+            /*
+             * Берём последний найденный элемент.
+             * Это временный способ определить
+             * реальный контейнер.
+             */
+
+            return elements[
+                elements.length - 1
+            ];
+        }
+    }
+
+
+    return null;
+}
 
     /* ==========================================
        ПРОВЕРКА ДУБЛИКАТОВ
