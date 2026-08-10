@@ -175,9 +175,43 @@
                     );
 
 
-                    displayRealtimeMessage(
-                        payload.new
-                    );
+                    const message = payload.new;
+
+const {
+    data: { user }
+} = await sb.auth.getUser();
+
+if (!user) {
+    return;
+}
+
+/*
+ * Если сообщение отправил текущий пользователь,
+ * не добавляем его через Realtime.
+ *
+ * Его уже показывает существующий код отправки.
+ */
+
+if (message.sender_id === user.id) {
+    console.log(
+        '↩️ Это наше сообщение — Realtime пропускаем'
+    );
+
+    return;
+}
+
+/*
+ * Если сообщение предназначено текущему пользователю,
+ * показываем его.
+ */
+
+if (message.receiver_id === user.id) {
+
+    displayRealtimeMessage(
+        message
+    );
+
+}
 
                 }
             )
