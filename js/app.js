@@ -1757,6 +1757,20 @@ function messageBubble(message){
 
 }
 
+let typingTimer = null;
+
+function handleTyping() {
+    if (typingTimer) clearTimeout(typingTimer);
+    typingTimer = setTimeout(stopTyping, 2000);
+}
+
+function stopTyping() {
+    if (typingTimer) {
+        clearTimeout(typingTimer);
+        typingTimer = null;
+    }
+}
+
 async function sendMessage(event, userId) {
     event.preventDefault();
     stopTyping();
@@ -2425,5 +2439,5 @@ Object.assign(window,{
     showAuth,loginForm,registerForm,selectGender,register,login,logout,
     navigate,renderFeed,renderProfile,renderFriends,renderMessages,renderMusic,renderEditProfile,
     searchUsers,createPost,toggleLike,addComment,focusComment,sharePost,deletePost,
-    saveProfile,previewAvatar,toggleFriend,openChat,sendMessage,uploadMusic,playMusic,closeMusicPlayer,deleteMusic
+    saveProfile,previewAvatar,toggleFriend,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic
 });
