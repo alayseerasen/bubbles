@@ -17,7 +17,16 @@
     console.log(
         "🫧 Social Realtime запускается..."
     );
+if (
+    typeof showNewMessagePopup ===
+    "function"
+) {
 
+    showNewMessagePopup(
+        message
+    );
+
+}   
 
     /* ==========================================
        ПОИСК ПОСТА
