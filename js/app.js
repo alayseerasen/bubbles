@@ -1384,12 +1384,151 @@ async function toggleFriend(userId) {
    MESSAGES
    ============================================================ */
 
-function openChat(userId){
-    selectedChatId = userId;
-    currentPage = "messages";
-    renderMessages();
-}
+function openChat(userId) {
 
+    selectedChatId =
+        userId;
+
+    currentPage =
+        "messages";
+
+
+    renderMessages();
+
+
+    /*
+     * Отмечаем входящие сообщения
+     * прочитанными.
+     */
+
+    markChatAsRead(
+        userId
+    );
+
+}
+async function markChatAsRead(
+    userId
+) {
+
+    if (
+        !currentUserId ||
+        !userId
+    ) {
+        return;
+    }
+
+
+    /*
+     * Находим непрочитанные сообщения
+     * от выбранного пользователя.
+     */
+
+    const unreadMessages =
+        db.messages.filter(
+            message =>
+                message.from === userId &&
+                message.to === currentUserId &&
+                !message.readAt
+        );
+
+
+    if (!unreadMessages.length) {
+
+        /*
+         * Даже если ничего не нужно
+         * обновлять, перерисуем список,
+         * чтобы badge был актуальным.
+         */
+
+        renderMessages();
+
+        return;
+
+    }
+
+
+    const messageIds =
+        unreadMessages.map(
+            message =>
+                message.id
+        );
+
+
+    const readAt =
+        new Date()
+            .toISOString();
+
+
+    /*
+     * Обновляем Supabase.
+     */
+
+    const {
+        error
+    } = await sb
+        .from("messages")
+        .update({
+            read_at: readAt
+        })
+        .in(
+            "id",
+            messageIds
+        )
+        .eq(
+            "receiver_id",
+            currentUserId
+        );
+
+
+    if (error) {
+
+        console.error(
+            "❌ Ошибка отметки сообщений:",
+            error
+        );
+
+        return;
+
+    }
+
+
+    /*
+     * Обновляем локальные сообщения.
+     */
+
+    db.messages.forEach(
+        message => {
+
+            if (
+                messageIds.includes(
+                    message.id
+                )
+            ) {
+
+                message.readAt =
+                    Date.parse(
+                        readAt
+                    );
+
+            }
+
+        }
+    );
+
+
+    /*
+     * Обновляем интерфейс.
+     */
+
+    renderMessages();
+
+
+    console.log(
+        "👁️ Сообщения прочитаны:",
+        messageIds
+    );
+
+}
 function renderMessages(){
     const friends = db.friends.filter(f => f.user1 === currentUserId || f.user2 === currentUserId);
     const users = friends.map(f => getUser(f.user1 === currentUserId ? f.user2 : f.user1)).filter(Boolean);
@@ -1930,13 +2069,37 @@ function rowToFriend(row) {
 }
 
 function rowToMessage(row) {
+
     return {
-        id: row.id,
-        from: row.sender_id,
-        to: row.receiver_id,
-        text: row.text || "",
-        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
+
+        id:
+            row.id,
+
+        from:
+            row.sender_id,
+
+        to:
+            row.receiver_id,
+
+        text:
+            row.text || "",
+
+        createdAt:
+            row.created_at
+                ? Date.parse(
+                    row.created_at
+                )
+                : Date.now(),
+
+        readAt:
+            row.read_at
+                ? Date.parse(
+                    row.read_at
+                )
+                : null
+
     };
+
 }
 
 function rowToMusic(row) {
