@@ -1442,37 +1442,111 @@ function renderMessages(){
     `;
 }
 
-function renderConversation(user){
-    const messages = db.messages.filter(m => (m.from === currentUserId && m.to === user.id) || (m.from === user.id && m.to === currentUserId)).sort((a,b) => b.createdAt - a.createdAt);
-    const last = messages[0];
+function renderConversation(user) {
+
+    const messages =
+        db.messages
+            .filter(
+                m =>
+                    (
+                        m.from === currentUserId &&
+                        m.to === user.id
+                    )
+                    ||
+                    (
+                        m.from === user.id &&
+                        m.to === currentUserId
+                    )
+            )
+            .sort(
+                (a, b) =>
+                    b.createdAt -
+                    a.createdAt
+            );
+
+
+    const last =
+        messages[0];
+
+
+    /*
+     * Считаем непрочитанные сообщения
+     * только от этого пользователя.
+     */
+
+    const unreadCount =
+        messages.filter(
+            message =>
+                message.from === user.id &&
+                message.to === currentUserId &&
+                !message.readAt
+        ).length;
+
 
     return `
 
         <div
-            class="conversation ${selectedChatId === user.id ? "active" : ""}"
+            class="conversation ${
+                selectedChatId === user.id
+                    ? "active"
+                    : ""
+            }"
             onclick="openChat('${user.id}')"
         >
 
             <img
                 class="mini-avatar"
-                src="${user.avatar || defaultAvatar()}"
+                src="${
+                    user.avatar ||
+                    defaultAvatar()
+                }"
             >
 
-            <div class="conversation-info">
+
+            <div
+                class="conversation-info"
+                style="
+                    flex:1;
+                    min-width:0;
+                "
+            >
 
                 <strong>
-                    ${escapeHtml(user.displayName)}
+                    ${escapeHtml(
+                        user.displayName
+                    )}
                 </strong>
+
 
                 <small>
                     ${
                         last
-                        ? escapeHtml(last.text)
-                        : "Нет сообщений"
+                            ? escapeHtml(
+                                last.text
+                            )
+                            : "Нет сообщений"
                     }
                 </small>
 
             </div>
+
+
+            ${
+                unreadCount > 0
+                    ? `
+                        <span
+                            class="message-unread-badge"
+                            title="${unreadCount} непрочитанных"
+                        >
+                            ${
+                                unreadCount > 99
+                                    ? "99+"
+                                    : unreadCount
+                            }
+                        </span>
+                    `
+                    : ""
+            }
 
         </div>
 
