@@ -1853,3 +1853,924 @@ function stopTyping(){
 
 
 initTypingRealtime();
+/* ============================================================
+   REALTIME — MESSAGES
+   ============================================================ */
+
+function startMessagesRealtime() {
+
+    if (!window.bubblesSupabase) {
+
+        console.error(
+            "❌ Supabase не найден."
+        );
+
+        return null;
+    }
+
+
+    const sb =
+        window.bubblesSupabase;
+
+
+    console.log(
+        "💬 Запускаем Messages Realtime..."
+    );
+
+
+    /*
+     * Создаём локальное хранилище
+     * непрочитанных сообщений.
+     *
+     * Оно специально находится
+     * в window, чтобы не потерять
+     * его при повторном запуске
+     * функции.
+     */
+
+    if (
+        !Array.isArray(
+            window.bubblesUnreadMessages
+        )
+    ) {
+
+        window.bubblesUnreadMessages =
+            [];
+
+    }
+
+
+    /*
+     * Проверяем, существует ли сообщение
+     * уже в локальной базе.
+     */
+
+    function messageExists(
+        messageId
+    ) {
+
+        if (
+            !Array.isArray(
+                db.messages
+            )
+        ) {
+
+            return false;
+        }
+
+
+        return db.messages.some(
+            message =>
+                message.id ===
+                messageId
+        );
+
+    }
+
+
+    /*
+     * Проверяем, относится ли сообщение
+     * к открытому сейчас чату.
+     */
+
+    function isCurrentChat(
+        message
+    ) {
+
+        if (
+            typeof currentUserId ===
+            "undefined" ||
+            !currentUserId
+        ) {
+
+            return false;
+        }
+
+
+        if (
+            typeof selectedChatId ===
+            "undefined" ||
+            !selectedChatId
+        ) {
+
+            return false;
+        }
+
+
+        return (
+
+            (
+                message.from ===
+                    currentUserId &&
+
+                message.to ===
+                    selectedChatId
+            )
+
+            ||
+
+            (
+                message.from ===
+                    selectedChatId &&
+
+                message.to ===
+                    currentUserId
+            )
+
+        );
+
+    }
+
+
+    /*
+     * Проверяем, является ли сообщение
+     * входящим для текущего пользователя.
+     */
+
+    function isIncomingMessage(
+        message
+    ) {
+
+        if (
+            typeof currentUserId ===
+            "undefined" ||
+            !currentUserId
+        ) {
+
+            return false;
+        }
+
+
+        return (
+            message.to ===
+            currentUserId
+        );
+
+    }
+
+
+    /*
+     * Добавляем сообщение
+     * в список непрочитанных.
+     */
+
+    function addUnreadMessage(
+        message
+    ) {
+
+        /*
+         * Не добавляем повторно.
+         */
+
+        const alreadyUnread =
+            window.bubblesUnreadMessages
+                .some(
+                    item =>
+                        item.id ===
+                        message.id
+                );
+
+
+        if (alreadyUnread) {
+            return;
+        }
+
+
+        window.bubblesUnreadMessages.push(
+            message
+        );
+
+
+        console.log(
+            "🔵 Новое непрочитанное сообщение:",
+            message
+        );
+
+
+        /*
+         * Обновляем индикатор
+         * непрочитанных сообщений.
+         */
+
+        updateUnreadMessagesUI();
+
+    }
+
+
+    /*
+     * Удаляем сообщения
+     * из непрочитанных.
+     */
+
+    function removeUnreadForChat(
+        chatUserId
+    ) {
+
+        if (!chatUserId) {
+            return;
+        }
+
+
+        window.bubblesUnreadMessages =
+            window.bubblesUnreadMessages
+                .filter(
+                    message =>
+                        !(
+                            message.from ===
+                                chatUserId &&
+
+                            message.to ===
+                                currentUserId
+                        )
+                );
+
+
+        updateUnreadMessagesUI();
+
+    }
+
+
+    /*
+     * Обновление индикатора
+     * непрочитанных сообщений.
+     *
+     * Функция специально безопасная:
+     * если в интерфейсе Bubbles пока
+     * нет такого элемента — ничего
+     * страшного не произойдёт.
+     */
+
+    function updateUnreadMessagesUI() {
+
+        const count =
+            window.bubblesUnreadMessages.length;
+
+
+        /*
+         * Несколько возможных ID,
+         * чтобы функция могла работать
+         * с существующим интерфейсом.
+         */
+
+        const selectors = [
+
+            "#unreadMessages",
+
+            "#messagesUnread",
+
+            "#messagesBadge",
+
+            ".messages-unread"
+
+        ];
+
+
+        let badge = null;
+
+
+        for (
+            const selector
+            of selectors
+        ) {
+
+            badge =
+                document.querySelector(
+                    selector
+                );
+
+
+            if (badge) {
+                break;
+            }
+
+        }
+
+
+        /*
+         * Если специального badge
+         * ещё нет — просто выводим
+         * информацию в console.
+         */
+
+        if (!badge) {
+
+            console.log(
+                "💬 Непрочитанных сообщений:",
+                count
+            );
+
+            return;
+        }
+
+
+        if (count > 0) {
+
+            badge.textContent =
+                count > 99
+                    ? "99+"
+                    : String(count);
+
+            badge.classList.remove(
+                "hidden"
+            );
+
+        } else {
+
+            badge.textContent =
+                "";
+
+            badge.classList.add(
+                "hidden"
+            );
+
+        }
+
+    }
+
+
+    /*
+     * Показываем уведомление
+     * о новом сообщении.
+     */
+
+    function showMessageNotification(
+        message
+    ) {
+
+        /*
+         * Если пользователь уже
+         * находится в этом чате —
+         * отдельное уведомление
+         * не нужно.
+         */
+
+        if (
+            isCurrentChat(
+                message
+            )
+        ) {
+
+            return;
+        }
+
+
+        /*
+         * Сначала пытаемся найти
+         * пользователя в локальной DB.
+         */
+
+        let author = null;
+
+
+        if (
+            Array.isArray(
+                db.users
+            )
+        ) {
+
+            author =
+                db.users.find(
+                    user =>
+                        user.id ===
+                        message.from
+                );
+
+        }
+
+
+        const senderName =
+            author?.displayName ||
+            author?.username ||
+            "Новое сообщение";
+
+
+        const text =
+            message.text ||
+            "Новое сообщение";
+
+
+        /*
+         * Если в проекте уже есть
+         * toast() — используем его.
+         */
+
+        if (
+            typeof toast ===
+            "function"
+        ) {
+
+            toast(
+                `${senderName}: ${text}`
+            );
+
+            return;
+        }
+
+
+        /*
+         * Запасной вариант —
+         * обычное браузерное уведомление.
+         */
+
+        if (
+            document.hidden &&
+            "Notification" in window
+        ) {
+
+            if (
+                Notification.permission ===
+                "granted"
+            ) {
+
+                try {
+
+                    new Notification(
+                        senderName,
+                        {
+                            body:
+                                text,
+                            tag:
+                                `bubbles-message-${message.id}`
+                        }
+                    );
+
+                } catch (error) {
+
+                    console.warn(
+                        "Не удалось показать Notification:",
+                        error
+                    );
+
+                }
+
+            }
+
+        }
+
+    }
+
+
+    /*
+     * Прокручиваем чат вниз,
+     * когда новое сообщение
+     * пришло в открытый чат.
+     */
+
+    function scrollChatToBottom() {
+
+        setTimeout(
+            function () {
+
+                const box =
+                    document.getElementById(
+                        "chatMessages"
+                    );
+
+
+                if (!box) {
+                    return;
+                }
+
+
+                box.scrollTop =
+                    box.scrollHeight;
+
+            },
+            30
+        );
+
+    }
+
+
+    /*
+     * Главная обработка
+     * входящего сообщения.
+     */
+
+    function handleRealtimeMessage(
+        row
+    ) {
+
+        if (!row) {
+
+            console.warn(
+                "⚠️ Realtime прислал пустое сообщение"
+            );
+
+            return;
+        }
+
+
+        console.log(
+            "⚡ Получено сообщение:",
+            row
+        );
+
+
+        /*
+         * Преобразуем Supabase row
+         * в формат Bubbles.
+         */
+
+        let message;
+
+
+        try {
+
+            if (
+                typeof rowToMessage ===
+                "function"
+            ) {
+
+                message =
+                    rowToMessage(
+                        row
+                    );
+
+            } else {
+
+                /*
+                 * Запасной вариант.
+                 */
+
+                message = {
+
+                    id:
+                        row.id,
+
+                    from:
+                        row.from ||
+                        row.sender_id ||
+                        row.user_id,
+
+                    to:
+                        row.to ||
+                        row.receiver_id,
+
+                    text:
+                        row.text ||
+                        row.content ||
+                        "",
+
+                    createdAt:
+                        row.created_at
+                            ? new Date(
+                                row.created_at
+                            ).getTime()
+                            : Date.now()
+
+                };
+
+            }
+
+        } catch (error) {
+
+            console.error(
+                "❌ Ошибка rowToMessage():",
+                error
+            );
+
+            return;
+        }
+
+
+        if (!message) {
+
+            console.warn(
+                "⚠️ Не удалось создать message"
+            );
+
+            return;
+        }
+
+
+        if (!message.id) {
+
+            console.warn(
+                "⚠️ У сообщения нет id:",
+                message
+            );
+
+            return;
+        }
+
+
+        /*
+         * ==================================================
+         * САМОЕ ВАЖНОЕ
+         * ==================================================
+         *
+         * Сообщение добавляется в db.messages
+         * ВСЕГДА.
+         *
+         * Неважно, где находится пользователь:
+         *
+         * Feed
+         * Profile
+         * Music
+         * Messages
+         * Другой чат
+         */
+
+        if (
+            !messageExists(
+                message.id
+            )
+        ) {
+
+            if (
+                !Array.isArray(
+                    db.messages
+                )
+            ) {
+
+                db.messages = [];
+
+            }
+
+
+            db.messages.push(
+                message
+            );
+
+
+            /*
+             * Сортируем сообщения
+             * по времени.
+             */
+
+            db.messages.sort(
+                (a, b) =>
+                    a.createdAt -
+                    b.createdAt
+            );
+
+
+            console.log(
+                "💾 Сообщение сохранено в db.messages:",
+                message.id
+            );
+
+        } else {
+
+            console.log(
+                "↩️ Сообщение уже есть:",
+                message.id
+            );
+
+        }
+
+
+        /*
+         * Проверяем,
+         * входящее ли это сообщение.
+         */
+
+        const incoming =
+            isIncomingMessage(
+                message
+            );
+
+
+        /*
+         * Проверяем,
+         * открыт ли сейчас
+         * именно этот чат.
+         */
+
+        const currentChat =
+            isCurrentChat(
+                message
+            );
+
+
+        /*
+         * ==================================================
+         * ЕСЛИ ЭТО ВХОДЯЩЕЕ СООБЩЕНИЕ
+         * И НЕ ОТКРЫТ ТЕКУЩИЙ ЧАТ
+         * ==================================================
+         */
+
+        if (
+            incoming &&
+            !currentChat
+        ) {
+
+            addUnreadMessage(
+                message
+            );
+
+
+            showMessageNotification(
+                message
+            );
+
+        }
+
+
+        /*
+         * ==================================================
+         * ЕСЛИ СЕЙЧАС ОТКРЫТ НУЖНЫЙ ЧАТ
+         * ==================================================
+         */
+
+        if (
+            currentChat &&
+            typeof currentPage !==
+                "undefined" &&
+            currentPage ===
+                "messages"
+        ) {
+
+            if (
+                typeof renderMessages ===
+                "function"
+            ) {
+
+                renderMessages();
+
+            }
+
+
+            scrollChatToBottom();
+
+
+            /*
+             * Если пользователь находится
+             * в чате — эти сообщения уже
+             * не считаем непрочитанными.
+             */
+
+            removeUnreadForChat(
+                message.from
+            );
+
+        }
+
+
+        /*
+         * ==================================================
+         * ЕСЛИ ПОЛЬЗОВАТЕЛЬ НАХОДИТСЯ
+         * В ДРУГОЙ ВКЛАДКЕ BUBBLES
+         * ==================================================
+         *
+         * Ничего дополнительно делать
+         * не нужно.
+         *
+         * Сообщение уже находится
+         * в db.messages.
+         *
+         * Когда пользователь откроет
+         * Messages, renderMessages()
+         * возьмёт его оттуда.
+         */
+
+
+        console.log(
+            "✅ Сообщение полностью обработано:",
+            message
+        );
+
+    }
+
+
+    /*
+     * ==================================================
+     * СОЗДАЁМ REALTIME CHANNEL
+     * ==================================================
+     */
+
+    const channel =
+        sb
+
+            .channel(
+                "bubbles-messages-realtime"
+            )
+
+
+            /*
+             * Слушаем INSERT.
+             */
+
+            .on(
+                "postgres_changes",
+                {
+                    event: "INSERT",
+                    schema: "public",
+                    table: "messages"
+                },
+
+                function (
+                    payload
+                ) {
+
+                    console.log(
+                        "⚡ REALTIME MESSAGE INSERT:",
+                        payload.new
+                    );
+
+
+                    handleRealtimeMessage(
+                        payload.new
+                    );
+
+                }
+            )
+
+
+            /*
+             * Подписываемся.
+             */
+
+            .subscribe(
+                function (
+                    status
+                ) {
+
+                    console.log(
+                        "💬 Messages Realtime:",
+                        status
+                    );
+
+
+                    if (
+                        status ===
+                        "SUBSCRIBED"
+                    ) {
+
+                        console.log(
+                            "🟢 Messages Realtime подключён!"
+                        );
+
+                    }
+
+
+                    if (
+                        status ===
+                        "CHANNEL_ERROR"
+                    ) {
+
+                        console.error(
+                            "🔴 Ошибка Messages Realtime"
+                        );
+
+                    }
+
+
+                    if (
+                        status ===
+                        "TIMED_OUT"
+                    ) {
+
+                        console.error(
+                            "⏱️ Messages Realtime timeout"
+                        );
+
+                    }
+
+                }
+            );
+
+
+    /*
+     * Сохраняем channel глобально.
+     */
+
+    window.bubblesMessagesChannel =
+        channel;
+
+
+    /*
+     * Экспортируем полезные функции,
+     * чтобы app.js мог использовать их.
+     */
+
+    window.bubblesMessagesRealtime = {
+
+        addUnreadMessage,
+
+        removeUnreadForChat,
+
+        updateUnreadMessagesUI,
+
+        handleRealtimeMessage
+
+    };
+
+
+    /*
+     * Первоначально обновляем
+     * badge непрочитанных.
+     */
+
+    updateUnreadMessagesUI();
+
+
+    console.log(
+        "🟢 Messages Realtime полностью запущен."
+    );
+
+
+    return channel;
+
+}
