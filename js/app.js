@@ -581,7 +581,10 @@ function renderPost(post){
 
     return `
 
-        <article class="card post">
+        <article
+    class="card post"
+    data-bubbles-post-id="${post.id}"
+>
 
             <div class="post-head">
 
