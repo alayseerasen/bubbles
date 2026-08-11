@@ -1,6 +1,6 @@
 /* ============================================
    BUBBLES — SOCIAL REALTIME
-   COMMENTS + LIKES
+   POSTS + COMMENTS + LIKES
    ============================================ */
 
 (function () {
@@ -9,13 +9,13 @@
 
     if (!sb) {
         console.error(
-            '❌ Bubbles Supabase не найден'
+            "❌ Bubbles Supabase не найден"
         );
         return;
     }
 
     console.log(
-        '🫧 Social Realtime запускается...'
+        "🫧 Social Realtime запускается..."
     );
 
 
@@ -26,13 +26,27 @@
     function findPostElement(postId) {
 
         /*
-         * У Bubbles нет data-post-id.
+         * Сначала пробуем новый способ:
          *
-         * Поэтому ищем input комментария:
+         * data-bubbles-post-id
+         */
+
+        const direct =
+            document.querySelector(
+                `[data-bubbles-post-id="${postId}"]`
+            );
+
+        if (direct) {
+            return direct;
+        }
+
+
+        /*
+         * Совместимость со старым app.js.
          *
-         * comment-post_XXXXXXXX
-         *
-         * Затем поднимаемся до article.
+         * Пока в renderPost()
+         * нет data-bubbles-post-id,
+         * ищем поле комментария.
          */
 
         const input =
@@ -44,7 +58,7 @@
         if (!input) {
 
             console.warn(
-                '⚠️ Input комментария не найден:',
+                "⚠️ Input комментария не найден:",
                 postId
             );
 
@@ -53,13 +67,13 @@
 
 
         const article =
-            input.closest('article');
+            input.closest("article");
 
 
         if (!article) {
 
             console.warn(
-                '⚠️ Article поста не найден:',
+                "⚠️ Article поста не найден:",
                 postId
             );
 
@@ -84,14 +98,14 @@
 
         const actions =
             postElement.querySelector(
-                '.post-actions'
+                ".post-actions"
             );
 
 
         if (!actions) {
 
             console.warn(
-                '⚠️ .post-actions не найден'
+                "⚠️ .post-actions не найден"
             );
 
             return null;
@@ -99,19 +113,20 @@
 
 
         /*
-         * Первая кнопка — лайк.
+         * Первая кнопка —
+         * кнопка лайка.
          */
 
         const buttons =
             actions.querySelectorAll(
-                '.action-btn'
+                ".action-btn"
             );
 
 
         if (!buttons.length) {
 
             console.warn(
-                '⚠️ Кнопки поста не найдены'
+                "⚠️ Кнопки поста не найдены"
             );
 
             return null;
@@ -128,6 +143,11 @@
 
     function updatePostLikes(post) {
 
+        if (!post || !post.id) {
+            return;
+        }
+
+
         const postElement =
             findPostElement(
                 post.id
@@ -137,7 +157,7 @@
         if (!postElement) {
 
             console.log(
-                '↩️ Пост не найден:',
+                "↩️ Пост не найден:",
                 post.id
             );
 
@@ -146,7 +166,7 @@
 
 
         console.log(
-            '✅ Пост найден:',
+            "✅ Пост найден:",
             postElement
         );
 
@@ -196,14 +216,14 @@
 
 
         console.log(
-            '❤️ Новое количество лайков:',
+            "❤️ Новое количество лайков:",
             likesCount
         );
 
 
         /*
          * Определяем,
-         * был ли лайк поставлен текущим пользователем.
+         * поставил ли лайк текущий пользователь.
          */
 
         let currentUserLiked =
@@ -222,7 +242,7 @@
                     ({ data }) => {
 
                         const user =
-                            data.user;
+                            data?.user;
 
 
                         if (user) {
@@ -231,6 +251,7 @@
                                 post.likes.includes(
                                     user.id
                                 );
+
                         }
 
 
@@ -239,6 +260,23 @@
                             likesCount,
                             currentUserLiked
                         );
+
+                    }
+                )
+                .catch(
+                    error => {
+
+                        console.error(
+                            "Ошибка получения пользователя:",
+                            error
+                        );
+
+                        renderLikeButton(
+                            likeButton,
+                            likesCount,
+                            false
+                        );
+
                     }
                 );
 
@@ -249,12 +287,13 @@
                 likesCount,
                 false
             );
+
         }
     }
 
 
     /* ==========================================
-       ОТОБРАЖЕНИЕ КНОПКИ
+       ОТОБРАЖЕНИЕ КНОПКИ ЛАЙКА
        ========================================== */
 
     function renderLikeButton(
@@ -263,114 +302,720 @@
         liked
     ) {
 
+        if (!button) {
+            return;
+        }
+
+
         /*
          * Сохраняем onclick.
-         *
-         * Например:
-         *
-         * toggleLike('post_123')
          */
 
         const onclick =
             button.getAttribute(
-                'onclick'
+                "onclick"
             );
 
 
         /*
-         * Не трогаем саму функцию toggleLike.
-         *
-         * Меняем только содержимое кнопки.
+         * Меняем только содержимое.
          */
 
         button.innerHTML =
-            `${liked ? '♥' : '♡'} ${count}`;
+            `${liked ? "♥" : "♡"} ${count}`;
 
 
         /*
-         * Сохраняем визуальный класс.
+         * Визуальный класс.
          */
 
         if (liked) {
 
             button.classList.add(
-                'liked'
+                "liked"
             );
 
         } else {
 
             button.classList.remove(
-                'liked'
+                "liked"
             );
+
         }
 
 
         /*
-         * На всякий случай
-         * возвращаем onclick.
+         * Возвращаем onclick.
          */
 
         if (onclick) {
 
             button.setAttribute(
-                'onclick',
+                "onclick",
                 onclick
             );
+
         }
 
 
         console.log(
-            '❤️ Кнопка лайка обновлена:',
+            "❤️ Кнопка лайка обновлена:",
             count
         );
     }
 
 
     /* ==========================================
-       REALTIME LIKES
+       ПРЕОБРАЗОВАНИЕ POST SUPABASE → BUBBLES
        ========================================== */
 
-    const likesChannel =
+    function convertRealtimePost(row) {
+
+        if (!row) {
+            return null;
+        }
+
+
+        /*
+         * В app.js уже существует
+         * rowToPost().
+         *
+         * Используем её, если она доступна.
+         */
+
+        if (
+            typeof window.rowToPost ===
+            "function"
+        ) {
+
+            try {
+
+                return window.rowToPost(
+                    row
+                );
+
+            } catch (error) {
+
+                console.warn(
+                    "⚠️ rowToPost() не сработал:",
+                    error
+                );
+
+            }
+        }
+
+
+        /*
+         * Запасной вариант.
+         */
+
+        return {
+
+            id:
+                row.id,
+
+            authorId:
+                row.author_id,
+
+            text:
+                row.text || "",
+
+            image:
+                row.image || "",
+
+            likes:
+                Array.isArray(row.likes)
+                    ? row.likes
+                    : [],
+
+            createdAt:
+                row.created_at
+                    ? new Date(
+                        row.created_at
+                    ).getTime()
+                    : Date.now()
+
+        };
+    }
+
+
+    /* ==========================================
+       ПРОВЕРКА ПОСТА В ЛОКАЛЬНОЙ DB
+       ========================================== */
+
+    function findLocalPost(
+        postId
+    ) {
+
+        if (
+            !window.db ||
+            !Array.isArray(
+                db.posts
+            )
+        ) {
+
+            return null;
+        }
+
+
+        return db.posts.find(
+            post =>
+                post.id === postId
+        );
+    }
+
+
+    /* ==========================================
+       НОВЫЙ ПОСТ
+       ========================================== */
+
+    function displayRealtimePost(
+        row
+    ) {
+
+        if (!row || !row.id) {
+            return;
+        }
+
+
+        /*
+         * Не добавляем пост повторно.
+         */
+
+        const existing =
+            findLocalPost(
+                row.id
+            );
+
+
+        if (existing) {
+
+            console.log(
+                "↩️ Пост уже существует:",
+                row.id
+            );
+
+            return;
+        }
+
+
+        const post =
+            convertRealtimePost(
+                row
+            );
+
+
+        if (!post) {
+            return;
+        }
+
+
+        /*
+         * Добавляем в локальную DB.
+         */
+
+        db.posts.push(
+            post
+        );
+
+
+        /*
+         * Сортировка:
+         * новые сверху.
+         */
+
+        db.posts.sort(
+            (a, b) =>
+                b.createdAt -
+                a.createdAt
+        );
+
+
+        console.log(
+            "📝 Новый пост добавлен:",
+            post
+        );
+
+
+        /*
+         * Если сейчас открыта лента —
+         * перерисовываем её.
+         */
+
+        if (
+            typeof currentPage !==
+                "undefined" &&
+            currentPage === "feed"
+        ) {
+
+            if (
+                typeof renderFeed ===
+                "function"
+            ) {
+
+                renderFeed();
+
+            }
+
+        }
+
+
+        /*
+         * Если открыт профиль автора —
+         * обновляем профиль.
+         */
+
+        if (
+            typeof currentPage !==
+                "undefined" &&
+            currentPage === "profile" &&
+            typeof selectedProfileId !==
+                "undefined" &&
+            selectedProfileId ===
+                post.authorId
+        ) {
+
+            if (
+                typeof renderProfile ===
+                "function"
+            ) {
+
+                renderProfile(
+                    selectedProfileId
+                );
+
+            }
+
+        }
+    }
+
+
+    /* ==========================================
+       ОБНОВЛЕНИЕ ПОСТА
+       ========================================== */
+
+    function updateRealtimePost(
+        row
+    ) {
+
+        if (!row || !row.id) {
+            return;
+        }
+
+
+        /*
+         * Находим существующий пост.
+         */
+
+        const index =
+            db.posts.findIndex(
+                post =>
+                    post.id === row.id
+            );
+
+
+        /*
+         * Если поста ещё нет —
+         * считаем это новым постом.
+         */
+
+        if (index === -1) {
+
+            displayRealtimePost(
+                row
+            );
+
+            return;
+        }
+
+
+        /*
+         * Сохраняем старое состояние.
+         */
+
+        const oldPost =
+            db.posts[index];
+
+
+        const updatedPost =
+            convertRealtimePost(
+                row
+            );
+
+
+        if (!updatedPost) {
+            return;
+        }
+
+
+        /*
+         * Обновляем локальную DB.
+         */
+
+        db.posts[index] =
+            updatedPost;
+
+
+        /*
+         * ВАЖНО:
+         *
+         * Если изменилась только
+         * информация о лайках,
+         * не нужно полностью
+         * перерисовывать ленту.
+         */
+
+        const oldLikes =
+            JSON.stringify(
+                oldPost.likes || []
+            );
+
+        const newLikes =
+            JSON.stringify(
+                updatedPost.likes || []
+            );
+
+
+        if (
+            oldLikes !== newLikes
+        ) {
+
+            updatePostLikes(
+                updatedPost
+            );
+
+        }
+
+
+        /*
+         * Если изменился текст
+         * или изображение —
+         * перерисовываем ленту.
+         */
+
+        const contentChanged =
+            oldPost.text !==
+                updatedPost.text ||
+            oldPost.image !==
+                updatedPost.image ||
+            oldPost.authorId !==
+                updatedPost.authorId;
+
+
+        if (
+            contentChanged &&
+            typeof currentPage !==
+                "undefined" &&
+            currentPage === "feed"
+        ) {
+
+            if (
+                typeof renderFeed ===
+                "function"
+            ) {
+
+                renderFeed();
+
+            }
+
+        }
+
+
+        /*
+         * Профиль автора.
+         */
+
+        if (
+            typeof currentPage !==
+                "undefined" &&
+            currentPage === "profile" &&
+            typeof selectedProfileId !==
+                "undefined" &&
+            selectedProfileId ===
+                updatedPost.authorId
+        ) {
+
+            if (
+                typeof renderProfile ===
+                "function"
+            ) {
+
+                renderProfile(
+                    selectedProfileId
+                );
+
+            }
+
+        }
+
+
+        console.log(
+            "🔄 Пост обновлён:",
+            updatedPost
+        );
+    }
+
+
+    /* ==========================================
+       УДАЛЕНИЕ ПОСТА
+       ========================================== */
+
+    function deleteRealtimePost(
+        row
+    ) {
+
+        if (!row || !row.id) {
+            return;
+        }
+
+
+        /*
+         * Запоминаем удаляемый пост.
+         */
+
+        const deletedPost =
+            findLocalPost(
+                row.id
+            );
+
+
+        /*
+         * Удаляем из db.posts.
+         */
+
+        db.posts =
+            db.posts.filter(
+                post =>
+                    post.id !== row.id
+            );
+
+
+        /*
+         * Также удаляем комментарии
+         * этого поста из локальной DB.
+         */
+
+        if (
+            Array.isArray(
+                db.comments
+            )
+        ) {
+
+            db.comments =
+                db.comments.filter(
+                    comment =>
+                        comment.postId !==
+                        row.id
+                );
+
+        }
+
+
+        /*
+         * Удаляем карточку напрямую,
+         * если она сейчас существует.
+         */
+
+        const postElement =
+            findPostElement(
+                row.id
+            );
+
+
+        if (postElement) {
+
+            postElement.remove();
+
+        }
+
+
+        /*
+         * Если лента теперь пустая —
+         * перерисовываем её.
+         */
+
+        if (
+            typeof currentPage !==
+                "undefined" &&
+            currentPage === "feed"
+        ) {
+
+            if (
+                db.posts.length === 0 &&
+                typeof renderFeed ===
+                    "function"
+            ) {
+
+                renderFeed();
+
+            }
+
+        }
+
+
+        /*
+         * Профиль автора.
+         */
+
+        if (
+            deletedPost &&
+            typeof currentPage !==
+                "undefined" &&
+            currentPage === "profile" &&
+            typeof selectedProfileId !==
+                "undefined" &&
+            selectedProfileId ===
+                deletedPost.authorId
+        ) {
+
+            if (
+                typeof renderProfile ===
+                "function"
+            ) {
+
+                renderProfile(
+                    selectedProfileId
+                );
+
+            }
+
+        }
+
+
+        console.log(
+            "🗑️ Пост удалён:",
+            row.id
+        );
+    }
+
+
+    /* ==========================================
+       REALTIME POSTS
+       ========================================== */
+
+    const postsChannel =
         sb
             .channel(
-                'bubbles-likes-realtime'
+                "bubbles-posts-realtime"
             )
 
+
+            /* ----------------------------------
+               НОВЫЙ ПОСТ
+               ---------------------------------- */
+
             .on(
-                'postgres_changes',
+                "postgres_changes",
                 {
-                    event: 'UPDATE',
-                    schema: 'public',
-                    table: 'posts'
+                    event: "INSERT",
+                    schema: "public",
+                    table: "posts"
                 },
 
-                function (payload) {
+                function (
+                    payload
+                ) {
 
                     console.log(
-                        '❤️ Обновление лайков:',
+                        "⚡ REALTIME INSERT posts:",
                         payload.new
                     );
 
 
-                    updatePostLikes(
+                    displayRealtimePost(
                         payload.new
                     );
+
                 }
             )
 
-            .subscribe(
-                function (status) {
+
+            /* ----------------------------------
+               ОБНОВЛЕНИЕ ПОСТА / ЛАЙКОВ
+               ---------------------------------- */
+
+            .on(
+                "postgres_changes",
+                {
+                    event: "UPDATE",
+                    schema: "public",
+                    table: "posts"
+                },
+
+                function (
+                    payload
+                ) {
 
                     console.log(
-                        '❤️ Likes Realtime:',
+                        "⚡ REALTIME UPDATE posts:",
+                        payload.new
+                    );
+
+
+                    updateRealtimePost(
+                        payload.new
+                    );
+
+                }
+            )
+
+
+            /* ----------------------------------
+               УДАЛЕНИЕ ПОСТА
+               ---------------------------------- */
+
+            .on(
+                "postgres_changes",
+                {
+                    event: "DELETE",
+                    schema: "public",
+                    table: "posts"
+                },
+
+                function (
+                    payload
+                ) {
+
+                    console.log(
+                        "⚡ REALTIME DELETE posts:",
+                        payload.old
+                    );
+
+
+                    deleteRealtimePost(
+                        payload.old
+                    );
+
+                }
+            )
+
+
+            .subscribe(
+                function (
+                    status
+                ) {
+
+                    console.log(
+                        "📝 Posts Realtime:",
                         status
                     );
+
                 }
             );
 
 
+    window.bubblesPostsChannel =
+        postsChannel;
+
+
+    /*
+     * Старое имя оставляем,
+     * чтобы другие части проекта
+     * не сломались.
+     */
+
     window.bubblesLikesChannel =
-        likesChannel;
+        postsChannel;
 
 
     /* ==========================================
@@ -382,7 +1027,7 @@
     ) {
 
         console.log(
-            '🔎 Ищем контейнер комментариев:',
+            "🔎 Ищем контейнер комментариев:",
             postId
         );
 
@@ -396,7 +1041,7 @@
         if (!input) {
 
             console.warn(
-                '❌ Поле комментария не найдено:',
+                "❌ Поле комментария не найдено:",
                 postId
             );
 
@@ -405,13 +1050,15 @@
 
 
         const article =
-            input.closest('article');
+            input.closest(
+                "article"
+            );
 
 
         if (!article) {
 
             console.warn(
-                '❌ Article комментариев не найден'
+                "❌ Article комментариев не найден"
             );
 
             return null;
@@ -420,14 +1067,14 @@
 
         const container =
             article.querySelector(
-                '.comment-list'
+                ".comment-list"
             );
 
 
         if (!container) {
 
             console.warn(
-                '❌ .comment-list не найден'
+                "❌ .comment-list не найден"
             );
 
             return null;
@@ -449,6 +1096,7 @@
         return document.querySelector(
             `[data-bubbles-comment-id="${commentId}"]`
         );
+
     }
 
 
@@ -460,6 +1108,11 @@
         comment
     ) {
 
+        if (!comment) {
+            return;
+        }
+
+
         const container =
             findCommentsContainer(
                 comment.post_id
@@ -469,11 +1122,11 @@
         if (!container) {
 
             console.warn(
-                '⚠️ Контейнер комментариев не найден'
+                "⚠️ Контейнер комментариев не найден"
             );
 
             console.log(
-                'Полученный комментарий:',
+                "Полученный комментарий:",
                 comment
             );
 
@@ -488,7 +1141,7 @@
         ) {
 
             console.log(
-                '↩️ Комментарий уже отображается'
+                "↩️ Комментарий уже отображается"
             );
 
             return;
@@ -497,7 +1150,7 @@
 
         const element =
             document.createElement(
-                'div'
+                "div"
             );
 
 
@@ -507,11 +1160,59 @@
 
 
         element.className =
-            'comment realtime-comment';
+            "comment realtime-comment";
 
 
-        element.textContent =
-            comment.text || '';
+        /*
+         * Добавляем имя автора,
+         * если пользователь есть
+         * в локальной базе.
+         */
+
+        const author =
+            Array.isArray(
+                db.users
+            )
+                ? db.users.find(
+                    user =>
+                        user.id ===
+                        comment.author_id
+                )
+                : null;
+
+
+        if (author) {
+
+            const strong =
+                document.createElement(
+                    "strong"
+                );
+
+            strong.textContent =
+                author.displayName ||
+                author.username ||
+                "Пользователь";
+
+
+            element.appendChild(
+                strong
+            );
+
+
+            element.appendChild(
+                document.createTextNode(
+                    " "
+                )
+            );
+
+        }
+
+
+        element.appendChild(
+            document.createTextNode(
+                comment.text || ""
+            )
+        );
 
 
         /*
@@ -550,11 +1251,12 @@
             container.appendChild(
                 element
             );
+
         }
 
 
         console.log(
-            '💬 Новый комментарий добавлен:',
+            "💬 Новый комментарий добавлен:",
             comment
         );
     }
@@ -567,21 +1269,23 @@
     const commentsChannel =
         sb
             .channel(
-                'bubbles-comments-realtime'
+                "bubbles-comments-realtime"
             )
 
             .on(
-                'postgres_changes',
+                "postgres_changes",
                 {
-                    event: 'INSERT',
-                    schema: 'public',
-                    table: 'comments'
+                    event: "INSERT",
+                    schema: "public",
+                    table: "comments"
                 },
 
-                async function (payload) {
+                async function (
+                    payload
+                ) {
 
                     console.log(
-                        '⚡ Новый комментарий:',
+                        "⚡ Новый комментарий:",
                         payload.new
                     );
 
@@ -590,18 +1294,10 @@
                         payload.new;
 
 
-                    const {
-                        data: {
-                            user
-                        }
-                    } =
-                        await sb.auth.getUser();
-
-
-                    if (!user) {
-                        return;
-                    }
-
+                    /*
+                     * Защита от повторного
+                     * отображения.
+                     */
 
                     if (
                         commentAlreadyDisplayed(
@@ -610,26 +1306,79 @@
                     ) {
 
                         console.log(
-                            '↩️ Комментарий уже существует'
+                            "↩️ Комментарий уже существует"
                         );
 
                         return;
                     }
 
 
+                    /*
+                     * Добавляем в локальную DB,
+                     * если его там ещё нет.
+                     */
+
+                    const alreadyInDb =
+                        Array.isArray(
+                            db.comments
+                        ) &&
+                        db.comments.some(
+                            item =>
+                                item.id ===
+                                comment.id
+                        );
+
+
+                    if (
+                        !alreadyInDb &&
+                        Array.isArray(
+                            db.comments
+                        )
+                    ) {
+
+                        db.comments.push({
+
+                            id:
+                                comment.id,
+
+                            postId:
+                                comment.post_id,
+
+                            authorId:
+                                comment.author_id,
+
+                            text:
+                                comment.text || "",
+
+                            createdAt:
+                                comment.created_at
+                                    ? new Date(
+                                        comment.created_at
+                                    ).getTime()
+                                    : Date.now()
+
+                        });
+
+                    }
+
+
                     displayRealtimeComment(
                         comment
                     );
+
                 }
             )
 
             .subscribe(
-                function (status) {
+                function (
+                    status
+                ) {
 
                     console.log(
-                        '💬 Comments Realtime:',
+                        "💬 Comments Realtime:",
                         status
                     );
+
                 }
             );
 
@@ -643,10 +1392,12 @@
        ========================================== */
 
     console.log(
-        '🟢 SOCIAL REALTIME ЗАГРУЖЕН — 003'
+        "🟢 SOCIAL REALTIME ЗАГРУЖЕН — POSTS + LIKES + COMMENTS"
     );
 
 })();
+
+
 /* ============================================================
    REALTIME — ONLINE + NOW LISTENING
    ============================================================ */
@@ -654,13 +1405,21 @@
 function startProfileRealtime() {
 
     if (!window.bubblesSupabase) {
-        console.error("Supabase не найден.");
+
+        console.error(
+            "Supabase не найден."
+        );
+
         return;
     }
 
+
     const channel =
         window.bubblesSupabase
-            .channel("bubbles-profiles-realtime")
+
+            .channel(
+                "bubbles-profiles-realtime"
+            )
 
             .on(
                 "postgres_changes",
@@ -669,36 +1428,53 @@ function startProfileRealtime() {
                     schema: "public",
                     table: "profiles"
                 },
+
                 payload => {
 
-                    const updated = payload.new;
+                    const updated =
+                        payload.new;
 
-                    if (!updated || !updated.id) {
+
+                    if (
+                        !updated ||
+                        !updated.id
+                    ) {
+
                         return;
                     }
 
+
                     /*
                      * Обновляем пользователя
-                     * в локальном db.users
+                     * в локальном db.users.
                      */
 
                     const user =
                         db.users.find(
-                            u => u.id === updated.id
+                            u =>
+                                u.id ===
+                                updated.id
                         );
+
 
                     if (!user) {
                         return;
                     }
 
+
                     user.lastSeen =
-                        updated.last_seen || null;
+                        updated.last_seen ||
+                        null;
+
 
                     user.currentTrack =
-                        updated.current_track || "";
+                        updated.current_track ||
+                        "";
+
 
                     user.currentArtist =
-                        updated.current_artist || "";
+                        updated.current_artist ||
+                        "";
 
 
                     /*
@@ -708,8 +1484,10 @@ function startProfileRealtime() {
                      */
 
                     if (
-                        currentPage === "profile" &&
-                        selectedProfileId === updated.id
+                        currentPage ===
+                            "profile" &&
+                        selectedProfileId ===
+                            updated.id
                     ) {
 
                         renderProfile(
@@ -721,27 +1499,43 @@ function startProfileRealtime() {
                 }
             )
 
-            .subscribe(status => {
+            .subscribe(
+                status => {
 
-                console.log(
-                    "Profiles Realtime:",
-                    status
-                );
+                    console.log(
+                        "Profiles Realtime:",
+                        status
+                    );
 
-            });
+                }
+            );
 
 
     return channel;
 }
-function startMessagesRealtime(){
 
-    if(!window.bubblesSupabase){
-        console.error("Supabase не найден.");
+
+/* ============================================================
+   REALTIME — MESSAGES
+   ============================================================ */
+
+function startMessagesRealtime() {
+
+    if (!window.bubblesSupabase) {
+
+        console.error(
+            "Supabase не найден."
+        );
+
         return;
     }
 
+
     window.bubblesSupabase
-        .channel("bubbles-messages-realtime")
+
+        .channel(
+            "bubbles-messages-realtime"
+        )
 
         .on(
             "postgres_changes",
@@ -750,35 +1544,50 @@ function startMessagesRealtime(){
                 schema: "public",
                 table: "messages"
             },
+
             payload => {
 
-                const row = payload.new;
+                const row =
+                    payload.new;
 
-                if(!row){
+
+                if (!row) {
                     return;
                 }
 
+
                 /*
                  * Превращаем строку Supabase
-                 * в формат Bubbles
+                 * в формат Bubbles.
                  */
 
-                const message = rowToMessage(row);
+                const message =
+                    rowToMessage(
+                        row
+                    );
+
 
                 /*
-                 * Не добавляем сообщение повторно
+                 * Не добавляем сообщение
+                 * повторно.
                  */
 
                 const exists =
                     db.messages.some(
-                        m => m.id === message.id
+                        m =>
+                            m.id ===
+                            message.id
                     );
 
-                if(exists){
+
+                if (exists) {
                     return;
                 }
 
-                db.messages.push(message);
+
+                db.messages.push(
+                    message
+                );
 
 
                 /*
@@ -789,49 +1598,63 @@ function startMessagesRealtime(){
 
                 const belongsToCurrentChat =
                     (
-                        message.from === currentUserId &&
-                        message.to === selectedChatId
+                        message.from ===
+                            currentUserId &&
+                        message.to ===
+                            selectedChatId
                     )
                     ||
                     (
-                        message.from === selectedChatId &&
-                        message.to === currentUserId
+                        message.from ===
+                            selectedChatId &&
+                        message.to ===
+                            currentUserId
                     );
 
 
-                if(
-                    currentPage === "messages" &&
+                if (
+                    currentPage ===
+                        "messages" &&
                     belongsToCurrentChat
-                ){
+                ) {
 
                     renderMessages();
 
-                    setTimeout(() => {
 
-                        const box =
-                            document.getElementById(
-                                "chatMessages"
-                            );
+                    setTimeout(
+                        () => {
 
-                        if(box){
-                            box.scrollTop =
-                                box.scrollHeight;
-                        }
+                            const box =
+                                document.getElementById(
+                                    "chatMessages"
+                                );
 
-                    },20);
+
+                            if (box) {
+
+                                box.scrollTop =
+                                    box.scrollHeight;
+
+                            }
+
+                        },
+                        20
+                    );
 
                 }
 
             }
         )
 
-        .subscribe(status => {
+        .subscribe(
+            status => {
 
-            console.log(
-                "Messages Realtime:",
-                status
-            );
+                console.log(
+                    "Messages Realtime:",
+                    status
+                );
 
-        });
+            }
+        );
 
 }
