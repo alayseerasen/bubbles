@@ -928,7 +928,32 @@
 
                 }
             )
+if (
+    message.to ===
+        currentUserId &&
 
+    !currentChat
+) {
+
+    updateMessagesBadge();
+
+
+    /*
+     * Если мы находимся
+     * в разделе сообщений,
+     * обновляем список диалогов.
+     */
+
+    if (
+        currentPage ===
+        "messages"
+    ) {
+
+        renderMessages();
+
+    }
+
+}
 
             /* ----------------------------------
                ОБНОВЛЕНИЕ ПОСТА / ЛАЙКОВ
@@ -1558,7 +1583,10 @@ function startMessagesRealtime() {
                     schema: "public",
                     table: "messages"
                 },
-
+                if (
+    currentPage === "messages" &&
+    currentChat
+) {
                 function (
                     payload
                 ) {
@@ -1577,7 +1605,32 @@ function startMessagesRealtime() {
                         row
                     );
 
+                     if (
+    message.to ===
+        currentUserId &&
 
+    !currentChat
+) {
+
+    updateMessagesBadge();
+
+
+    /*
+     * Если мы находимся
+     * в разделе сообщений,
+     * обновляем список диалогов.
+     */
+
+    if (
+        currentPage ===
+        "messages"
+    ) {
+
+        renderMessages();
+
+    }
+
+}
                     /*
                      * Преобразуем Supabase row
                      * в формат Bubbles.
@@ -2738,6 +2791,11 @@ function startMessagesRealtime() {
             db.messages.push(
                 message
             );
+           /*
+ * Обновляем общий badge.
+ */
+
+updateMessagesBadge();
 
 
             /*
