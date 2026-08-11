@@ -1384,7 +1384,12 @@ async function toggleFriend(userId) {
    MESSAGES
    ============================================================ */
 
-function openChat
+function openChat(userId) {
+    selectedChatId = userId;
+    navigate("messages");
+    markChatAsRead(userId);
+}
+
 async function markChatAsRead(
     userId
 ) {
