@@ -1570,6 +1570,7 @@ function messageBubble(message){
 
 async function sendMessage(event, userId) {
     event.preventDefault();
+    stopTyping();
     const input = document.getElementById("messageInput");
     const text = input.value.trim();
     if (!text)
