@@ -1524,138 +1524,384 @@ function startMessagesRealtime() {
     if (!window.bubblesSupabase) {
 
         console.error(
-            "Supabase не найден."
+            "❌ Supabase не найден."
         );
 
-        return;
+        return null;
     }
 
 
-    window.bubblesSupabase
-
-        .channel(
-            "bubbles-messages-realtime"
-        )
-
-        .on(
-            "postgres_changes",
-            {
-                event: "INSERT",
-                schema: "public",
-                table: "messages"
-            },
-
-            payload => {
-
-                const row =
-                    payload.new;
+    const sb =
+        window.bubblesSupabase;
 
 
-                if (!row) {
-                    return;
-                }
+    console.log(
+        "💬 Messages Realtime запускается..."
+    );
 
 
-                /*
-                 * Превращаем строку Supabase
-                 * в формат Bubbles.
-                 */
+    const channel =
+        sb
+            .channel(
+                "bubbles-messages-realtime"
+            )
 
-                const message =
-                    rowToMessage(
+
+            /* ==================================
+               НОВОЕ СООБЩЕНИЕ
+               ================================== */
+
+            .on(
+                "postgres_changes",
+                {
+                    event: "INSERT",
+                    schema: "public",
+                    table: "messages"
+                },
+
+                function (
+                    payload
+                ) {
+
+                    const row =
+                        payload.new;
+
+
+                    if (!row) {
+                        return;
+                    }
+
+
+                    console.log(
+                        "⚡ Новое сообщение:",
                         row
                     );
 
 
-                /*
-                 * Не добавляем сообщение
-                 * повторно.
-                 */
+                    /*
+                     * Преобразуем Supabase row
+                     * в формат Bubbles.
+                     */
 
-                const exists =
-                    db.messages.some(
-                        m =>
-                            m.id ===
-                            message.id
-                    );
+                    const message =
+                        rowToMessage(
+                            row
+                        );
 
 
-                if (exists) {
-                    return;
-                }
+                    if (!message) {
+                        return;
+                    }
 
 
-                db.messages.push(
-                    message
-                );
+                    /*
+                     * Не добавляем сообщение
+                     * дважды.
+                     */
+
+                    const exists =
+                        db.messages.some(
+                            item =>
+                                item.id ===
+                                message.id
+                        );
 
 
-                /*
-                 * Если сообщение относится
-                 * к текущему открытому чату —
-                 * обновляем его автоматически.
-                 */
+                    if (!exists) {
 
-                const belongsToCurrentChat =
-                    (
-                        message.from ===
-                            currentUserId &&
-                        message.to ===
-                            selectedChatId
-                    )
-                    ||
-                    (
-                        message.from ===
-                            selectedChatId &&
-                        message.to ===
+                        db.messages.push(
+                            message
+                        );
+
+
+                        /*
+                         * Сортируем по времени.
+                         */
+
+                        db.messages.sort(
+                            (
+                                a,
+                                b
+                            ) =>
+                                a.createdAt -
+                                b.createdAt
+                        );
+
+                    }
+
+
+                    /*
+                     * Проверяем,
+                     * относится ли сообщение
+                     * к текущему открытому чату.
+                     */
+
+                    const currentChat =
+                        (
+                            message.from ===
+                                currentUserId &&
+
+                            message.to ===
+                                selectedChatId
+                        )
+                        ||
+                        (
+                            message.from ===
+                                selectedChatId &&
+
+                            message.to ===
+                                currentUserId
+                        );
+
+
+                    /*
+                     * =================================
+                     * ЕСЛИ ОТКРЫТ ЭТОТ ЧАТ
+                     * =================================
+                     */
+
+                    if (
+                        currentPage ===
+                            "messages" &&
+
+                        currentChat
+                    ) {
+
+
+                        renderMessages();
+
+
+                        setTimeout(
+                            function () {
+
+                                const box =
+                                    document.getElementById(
+                                        "chatMessages"
+                                    );
+
+
+                                if (box) {
+
+                                    box.scrollTop =
+                                        box.scrollHeight;
+
+                                }
+
+                            },
+                            20
+                        );
+
+
+                        /*
+                         * Если сообщение входящее,
+                         * сразу отмечаем прочитанным.
+                         */
+
+                        if (
+                            message.to ===
                             currentUserId
-                    );
+                        ) {
+
+                            markChatAsRead(
+                                message.from
+                            );
+
+                        }
 
 
-                if (
-                    currentPage ===
-                        "messages" &&
-                    belongsToCurrentChat
+                        return;
+                    }
+
+
+                    /*
+                     * =================================
+                     * ПОЛЬЗОВАТЕЛЬ В ДРУГОМ РАЗДЕЛЕ
+                     * =================================
+                     *
+                     * Вот это главное изменение.
+                     */
+
+                    if (
+                        message.to ===
+                        currentUserId
+                    ) {
+
+                        console.log(
+                            "🔵 Новое непрочитанное сообщение от:",
+                            message.from
+                        );
+
+                    }
+
+
+                    /*
+                     * Если пользователь находится
+                     * в разделе Messages, но открыт
+                     * другой чат — обновляем список
+                     * диалогов.
+                     */
+
+                    if (
+                        currentPage ===
+                        "messages"
+                    ) {
+
+                        renderMessages();
+
+                    }
+
+
+                    /*
+                     * Если пользователь находится
+                     * вообще в другом разделе,
+                     * ничего дополнительно делать
+                     * не нужно.
+                     *
+                     * Сообщение уже находится
+                     * в db.messages.
+                     */
+
+                }
+            )
+
+
+            /* ==================================
+               ОБНОВЛЕНИЕ СООБЩЕНИЯ
+               ================================== */
+
+            .on(
+                "postgres_changes",
+                {
+                    event: "UPDATE",
+                    schema: "public",
+                    table: "messages"
+                },
+
+                function (
+                    payload
                 ) {
 
-                    renderMessages();
+                    const row =
+                        payload.new;
 
 
-                    setTimeout(
-                        () => {
-
-                            const box =
-                                document.getElementById(
-                                    "chatMessages"
-                                );
+                    if (!row) {
+                        return;
+                    }
 
 
-                            if (box) {
+                    const message =
+                        rowToMessage(
+                            row
+                        );
 
-                                box.scrollTop =
-                                    box.scrollHeight;
 
-                            }
+                    const index =
+                        db.messages.findIndex(
+                            item =>
+                                item.id ===
+                                message.id
+                        );
 
-                        },
-                        20
+
+                    if (index >= 0) {
+
+                        db.messages[index] =
+                            message;
+
+                    } else {
+
+                        db.messages.push(
+                            message
+                        );
+
+                    }
+
+
+                    /*
+                     * Обновляем интерфейс,
+                     * если пользователь сейчас
+                     * находится в Messages.
+                     */
+
+                    if (
+                        currentPage ===
+                        "messages"
+                    ) {
+
+                        renderMessages();
+
+                    }
+
+
+                    console.log(
+                        "🔄 Сообщение обновлено:",
+                        message
                     );
 
                 }
+            )
 
-            }
-        )
 
-        .subscribe(
-            status => {
+            /* ==================================
+               ПОДКЛЮЧЕНИЕ
+               ================================== */
 
-                console.log(
-                    "Messages Realtime:",
+            .subscribe(
+                function (
                     status
-                );
+                ) {
 
-            }
-        );
+                    console.log(
+                        "💬 Messages Realtime:",
+                        status
+                    );
+
+
+                    if (
+                        status ===
+                        "SUBSCRIBED"
+                    ) {
+
+                        console.log(
+                            "🟢 Messages Realtime подключён!"
+                        );
+
+                    }
+
+
+                    if (
+                        status ===
+                        "CHANNEL_ERROR"
+                    ) {
+
+                        console.error(
+                            "🔴 Messages Realtime ошибка"
+                        );
+
+                    }
+
+
+                    if (
+                        status ===
+                        "TIMED_OUT"
+                    ) {
+
+                        console.error(
+                            "⏱️ Messages Realtime timeout"
+                        );
+
+                    }
+
+                }
+            );
+
+
+    window.bubblesMessagesChannel =
+        channel;
+
+
+    return channel;
 
 }
 /* ============================================================
