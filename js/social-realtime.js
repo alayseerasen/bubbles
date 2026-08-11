@@ -1658,3 +1658,198 @@ function startMessagesRealtime() {
         );
 
 }
+/* ============================================================
+   TYPING STATUS
+   ============================================================ */
+
+let typingChannel = null;
+let typingTimer = null;
+let isTyping = false;
+
+function initTypingRealtime(){
+
+    if(!window.bubblesSupabase){
+        console.error("Supabase не найден.");
+        return;
+    }
+
+    typingChannel =
+        window.bubblesSupabase
+            .channel("bubbles-typing")
+
+            .on(
+                "broadcast",
+                {
+                    event: "typing"
+                },
+                payload => {
+
+                    const data = payload.payload;
+
+                    if(!data){
+                        return;
+                    }
+
+                    /*
+                     * Нас интересует только статус
+                     * пользователя, с которым открыт чат.
+                     */
+
+                    if(
+                        currentPage !== "messages" ||
+                        selectedChatId !== data.userId
+                    ){
+                        return;
+                    }
+
+                    showTypingStatus(
+                        data.userId,
+                        data.typing
+                    );
+
+                }
+            )
+
+            .subscribe(status => {
+
+                console.log(
+                    "Typing Realtime:",
+                    status
+                );
+
+            });
+}
+
+
+/*
+ * Показываем / скрываем
+ * "печатает..."
+ */
+
+function showTypingStatus(userId, typing){
+
+    const user = getUser(userId);
+
+    if(!user){
+        return;
+    }
+
+    const header =
+        document.querySelector(".chat-header");
+
+    if(!header){
+        return;
+    }
+
+    let typingElement =
+        document.getElementById(
+            "typingStatus"
+        );
+
+    if(typing){
+
+        if(!typingElement){
+
+            typingElement =
+                document.createElement("span");
+
+            typingElement.id =
+                "typingStatus";
+
+            typingElement.style.cssText = `
+                margin-left:8px;
+                font-size:12px;
+                color:#62b8d4;
+                font-weight:500;
+            `;
+
+            typingElement.textContent =
+                "печатает...";
+
+            header.appendChild(
+                typingElement
+            );
+        }
+
+    }else{
+
+        if(typingElement){
+            typingElement.remove();
+        }
+
+    }
+}
+
+
+/*
+ * Отправляем статус печати
+ */
+
+function sendTypingStatus(typing){
+
+    if(
+        !typingChannel ||
+        !currentUserId ||
+        !selectedChatId
+    ){
+        return;
+    }
+
+    typingChannel.send({
+        type:"broadcast",
+        event:"typing",
+        payload:{
+            userId:currentUserId,
+            typing:typing
+        }
+    });
+}
+
+
+/*
+ * Вызывается при каждом вводе текста
+ */
+
+function handleTyping(){
+
+    if(!isTyping){
+
+        isTyping = true;
+
+        sendTypingStatus(true);
+
+    }
+
+    clearTimeout(typingTimer);
+
+    typingTimer =
+        setTimeout(() => {
+
+            isTyping = false;
+
+            sendTypingStatus(false);
+
+        },1500);
+}
+
+
+/*
+ * Останавливаем статус,
+ * когда сообщение отправлено
+ */
+
+function stopTyping(){
+
+    clearTimeout(typingTimer);
+
+    if(isTyping){
+
+        isTyping = false;
+
+        sendTypingStatus(false);
+
+    }
+}
+
+
+initTypingRealtime();
