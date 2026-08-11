@@ -1026,3 +1026,122 @@ select:focus{
 
     flex-shrink: 0;
 }
+/* ==========================================
+   MESSAGE UNREAD BADGES
+   ========================================== */
+
+.messages-unread-badge {
+
+    min-width: 20px;
+    height: 20px;
+
+    padding: 0 6px;
+
+    margin-left: 6px;
+
+    border-radius: 999px;
+
+    display: inline-flex;
+
+    align-items: center;
+    justify-content: center;
+
+    background:
+        linear-gradient(
+            135deg,
+            #71d9f2,
+            #43b8dc
+        );
+
+    color: #ffffff;
+
+    font-size: 10px;
+    font-weight: 800;
+
+    line-height: 1;
+
+    box-shadow:
+        0 3px 10px
+        rgba(
+            50,
+            180,
+            220,
+            0.35
+        );
+
+    opacity: 0;
+
+    transform:
+        scale(0.7);
+
+    pointer-events: none;
+
+    transition:
+        opacity
+            0.18s
+            ease,
+
+        transform
+            0.18s
+            ease;
+
+}
+
+
+.messages-unread-badge.visible {
+
+    opacity: 1;
+
+    transform:
+        scale(1);
+
+}
+
+
+/* Badge внутри списка диалогов */
+
+.conversation-badge {
+
+    margin-left: auto;
+
+    flex-shrink: 0;
+
+}
+
+
+/* Анимация нового сообщения */
+
+@keyframes bubblesUnreadPop {
+
+    0% {
+
+        transform:
+            scale(0.5);
+
+    }
+
+    60% {
+
+        transform:
+            scale(1.15);
+
+    }
+
+    100% {
+
+        transform:
+            scale(1);
+
+    }
+
+}
+
+
+.messages-unread-badge.visible {
+
+    animation:
+        bubblesUnreadPop
+        0.25s
+        ease;
+
+}
