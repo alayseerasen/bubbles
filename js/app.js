@@ -1384,28 +1384,7 @@ async function toggleFriend(userId) {
    MESSAGES
    ============================================================ */
 
-function openChat(userId) {
-
-    selectedChatId =
-        userId;
-
-    currentPage =
-        "messages";
-
-
-    renderMessages();
-
-
-    /*
-     * Отмечаем входящие сообщения
-     * прочитанными.
-     */
-
-    markChatAsRead(
-        userId
-    );
-
-}
+function openChat
 async function markChatAsRead(
     userId
 ) {
@@ -1418,29 +1397,24 @@ async function markChatAsRead(
     }
 
 
-    /*
-     * Находим непрочитанные сообщения
-     * от выбранного пользователя.
-     */
-
     const unreadMessages =
         db.messages.filter(
             message =>
-                message.from === userId &&
-                message.to === currentUserId &&
+                message.from ===
+                    userId &&
+
+                message.to ===
+                    currentUserId &&
+
                 !message.readAt
         );
 
 
-    if (!unreadMessages.length) {
+    if (
+        !unreadMessages.length
+    ) {
 
-        /*
-         * Даже если ничего не нужно
-         * обновлять, перерисуем список,
-         * чтобы badge был актуальным.
-         */
-
-        renderMessages();
+        updateMessagesBadge();
 
         return;
 
@@ -1459,16 +1433,13 @@ async function markChatAsRead(
             .toISOString();
 
 
-    /*
-     * Обновляем Supabase.
-     */
-
     const {
         error
     } = await sb
         .from("messages")
         .update({
-            read_at: readAt
+            read_at:
+                readAt
         })
         .in(
             "id",
@@ -1483,7 +1454,7 @@ async function markChatAsRead(
     if (error) {
 
         console.error(
-            "❌ Ошибка отметки сообщений:",
+            "❌ Ошибка read_at:",
             error
         );
 
@@ -1493,7 +1464,7 @@ async function markChatAsRead(
 
 
     /*
-     * Обновляем локальные сообщения.
+     * Обновляем локальную копию.
      */
 
     db.messages.forEach(
@@ -1517,15 +1488,18 @@ async function markChatAsRead(
 
 
     /*
-     * Обновляем интерфейс.
+     * Обновляем оба счётчика.
      */
+
+    updateMessagesBadge();
+
 
     renderMessages();
 
 
     console.log(
-        "👁️ Сообщения прочитаны:",
-        messageIds
+        "👁️ Прочитано:",
+        messageIds.length
     );
 
 }
@@ -1586,15 +1560,21 @@ function renderConversation(user) {
     const messages =
         db.messages
             .filter(
-                m =>
+                message =>
                     (
-                        m.from === currentUserId &&
-                        m.to === user.id
+                        message.from ===
+                            currentUserId &&
+
+                        message.to ===
+                            user.id
                     )
                     ||
                     (
-                        m.from === user.id &&
-                        m.to === currentUserId
+                        message.from ===
+                            user.id &&
+
+                        message.to ===
+                            currentUserId
                     )
             )
             .sort(
@@ -1604,22 +1584,14 @@ function renderConversation(user) {
             );
 
 
-    const last =
+    const lastMessage =
         messages[0];
 
 
-    /*
-     * Считаем непрочитанные сообщения
-     * только от этого пользователя.
-     */
-
     const unreadCount =
-        messages.filter(
-            message =>
-                message.from === user.id &&
-                message.to === currentUserId &&
-                !message.readAt
-        ).length;
+        getUnreadMessagesFromUser(
+            user.id
+        );
 
 
     return `
@@ -1644,24 +1616,23 @@ function renderConversation(user) {
 
             <div
                 class="conversation-info"
-                style="
-                    flex:1;
-                    min-width:0;
-                "
             >
 
                 <strong>
                     ${escapeHtml(
-                        user.displayName
+                        user.displayName ||
+                        user.username ||
+                        "User"
                     )}
                 </strong>
 
 
                 <small>
                     ${
-                        last
+                        lastMessage
                             ? escapeHtml(
-                                last.text
+                                lastMessage.text ||
+                                ""
                             )
                             : "Нет сообщений"
                     }
@@ -1674,8 +1645,7 @@ function renderConversation(user) {
                 unreadCount > 0
                     ? `
                         <span
-                            class="message-unread-badge"
-                            title="${unreadCount} непрочитанных"
+                            class="message-unread-badge conversation-badge"
                         >
                             ${
                                 unreadCount > 99
@@ -1690,6 +1660,7 @@ function renderConversation(user) {
         </div>
 
     `;
+
 }
 
 function renderChat(userId){
@@ -2072,33 +2043,185 @@ function rowToMessage(row) {
 
     return {
 
-        id:
-            row.id,
+        id: row.id,
 
-        from:
-            row.sender_id,
+        from: row.sender_id,
 
-        to:
-            row.receiver_id,
+        to: row.receiver_id,
 
-        text:
-            row.text || "",
+        text: row.text || "",
 
         createdAt:
             row.created_at
-                ? Date.parse(
-                    row.created_at
-                )
+                ? Date.parse(row.created_at)
                 : Date.now(),
 
         readAt:
             row.read_at
-                ? Date.parse(
-                    row.read_at
-                )
+                ? Date.parse(row.read_at)
                 : null
 
     };
+
+}
+function getUnreadMessagesCount() {
+
+    if (
+        !Array.isArray(
+            db.messages
+        )
+    ) {
+        return 0;
+    }
+
+
+    if (!currentUserId) {
+        return 0;
+    }
+
+
+    return db.messages.filter(
+        message =>
+            message.to ===
+                currentUserId &&
+
+            !message.readAt
+    ).length;
+
+}
+
+function getUnreadMessagesFromUser(
+    userId
+) {
+
+    if (
+        !Array.isArray(
+            db.messages
+        )
+    ) {
+        return 0;
+    }
+
+
+    if (!currentUserId) {
+        return 0;
+    }
+
+
+    return db.messages.filter(
+        message =>
+            message.from === userId &&
+
+            message.to ===
+                currentUserId &&
+
+            !message.readAt
+    ).length;
+
+}
+function updateMessagesBadge() {
+
+    const count =
+        getUnreadMessagesCount();
+
+
+    /*
+     * Ищем существующий badge,
+     * если его нет — создаём.
+     */
+
+    let badge =
+        document.getElementById(
+            "messagesUnreadBadge"
+        );
+
+
+    /*
+     * Ищем кнопку сообщений.
+     *
+     * Если у тебя ID отличается,
+     * попробуем найти её по тексту.
+     */
+
+    let messagesButton =
+        document.querySelector(
+            '[data-page="messages"]'
+        );
+
+
+    if (!messagesButton) {
+
+        messagesButton =
+            document.querySelector(
+                '#messagesButton'
+            );
+
+    }
+
+
+    if (!messagesButton) {
+
+        /*
+         * Пока кнопка не найдена —
+         * просто ничего не делаем.
+         */
+
+        return;
+
+    }
+
+
+    /*
+     * Если badge ещё не существует,
+     * создаём его.
+     */
+
+    if (!badge) {
+
+        badge =
+            document.createElement(
+                "span"
+            );
+
+
+        badge.id =
+            "messagesUnreadBadge";
+
+
+        badge.className =
+            "messages-unread-badge";
+
+
+        messagesButton.appendChild(
+            badge
+        );
+
+    }
+
+
+    if (count > 0) {
+
+        badge.textContent =
+            count > 99
+                ? "99+"
+                : String(count);
+
+
+        badge.classList.add(
+            "visible"
+        );
+
+    } else {
+
+        badge.textContent =
+            "";
+
+
+        badge.classList.remove(
+            "visible"
+        );
+
+    }
 
 }
 
