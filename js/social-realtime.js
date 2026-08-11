@@ -733,3 +733,105 @@ function startProfileRealtime() {
 
     return channel;
 }
+function startMessagesRealtime(){
+
+    if(!window.bubblesSupabase){
+        console.error("Supabase не найден.");
+        return;
+    }
+
+    window.bubblesSupabase
+        .channel("bubbles-messages-realtime")
+
+        .on(
+            "postgres_changes",
+            {
+                event: "INSERT",
+                schema: "public",
+                table: "messages"
+            },
+            payload => {
+
+                const row = payload.new;
+
+                if(!row){
+                    return;
+                }
+
+                /*
+                 * Превращаем строку Supabase
+                 * в формат Bubbles
+                 */
+
+                const message = rowToMessage(row);
+
+                /*
+                 * Не добавляем сообщение повторно
+                 */
+
+                const exists =
+                    db.messages.some(
+                        m => m.id === message.id
+                    );
+
+                if(exists){
+                    return;
+                }
+
+                db.messages.push(message);
+
+
+                /*
+                 * Если сообщение относится
+                 * к текущему открытому чату —
+                 * обновляем его автоматически.
+                 */
+
+                const belongsToCurrentChat =
+                    (
+                        message.from === currentUserId &&
+                        message.to === selectedChatId
+                    )
+                    ||
+                    (
+                        message.from === selectedChatId &&
+                        message.to === currentUserId
+                    );
+
+
+                if(
+                    currentPage === "messages" &&
+                    belongsToCurrentChat
+                ){
+
+                    renderMessages();
+
+                    setTimeout(() => {
+
+                        const box =
+                            document.getElementById(
+                                "chatMessages"
+                            );
+
+                        if(box){
+                            box.scrollTop =
+                                box.scrollHeight;
+                        }
+
+                    },20);
+
+                }
+
+            }
+        )
+
+        .subscribe(status => {
+
+            console.log(
+                "Messages Realtime:",
+                status
+            );
+
+        });
+
+}
