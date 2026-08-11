@@ -647,3 +647,89 @@
     );
 
 })();
+/* ============================================================
+   REALTIME — ONLINE + NOW LISTENING
+   ============================================================ */
+
+function startProfileRealtime() {
+
+    if (!window.bubblesSupabase) {
+        console.error("Supabase не найден.");
+        return;
+    }
+
+    const channel =
+        window.bubblesSupabase
+            .channel("bubbles-profiles-realtime")
+
+            .on(
+                "postgres_changes",
+                {
+                    event: "UPDATE",
+                    schema: "public",
+                    table: "profiles"
+                },
+                payload => {
+
+                    const updated = payload.new;
+
+                    if (!updated || !updated.id) {
+                        return;
+                    }
+
+                    /*
+                     * Обновляем пользователя
+                     * в локальном db.users
+                     */
+
+                    const user =
+                        db.users.find(
+                            u => u.id === updated.id
+                        );
+
+                    if (!user) {
+                        return;
+                    }
+
+                    user.lastSeen =
+                        updated.last_seen || null;
+
+                    user.currentTrack =
+                        updated.current_track || "";
+
+                    user.currentArtist =
+                        updated.current_artist || "";
+
+
+                    /*
+                     * Если сейчас открыт профиль
+                     * этого пользователя —
+                     * перерисовываем его.
+                     */
+
+                    if (
+                        currentPage === "profile" &&
+                        selectedProfileId === updated.id
+                    ) {
+
+                        renderProfile(
+                            updated.id
+                        );
+
+                    }
+
+                }
+            )
+
+            .subscribe(status => {
+
+                console.log(
+                    "Profiles Realtime:",
+                    status
+                );
+
+            });
+
+
+    return channel;
+}
