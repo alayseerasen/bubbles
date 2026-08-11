@@ -1763,6 +1763,385 @@ function handleTyping() {
     if (typingTimer) clearTimeout(typingTimer);
     typingTimer = setTimeout(stopTyping, 2000);
 }
+/* ============================================================
+   BUBBLES — NEW MESSAGE POPUP
+   ============================================================ */
+
+function showNewMessagePopup(message) {
+
+    /*
+     * Не показываем popup для своих сообщений.
+     */
+
+    if (
+        !message ||
+        message.to !== currentUserId
+    ) {
+        return;
+    }
+
+
+    /*
+     * Если пользователь уже находится
+     * именно в этом чате — popup не нужен.
+     */
+
+    const currentChat =
+        (
+            typeof selectedChatId !==
+            "undefined" &&
+
+            selectedChatId &&
+            message.from ===
+                selectedChatId
+        );
+
+
+    if (
+        currentPage === "messages" &&
+        currentChat
+    ) {
+        return;
+    }
+
+
+    /*
+     * Удаляем предыдущий popup,
+     * если новый пришёл слишком быстро.
+     */
+
+    const oldPopup =
+        document.querySelector(
+            ".bubbles-message-popup"
+        );
+
+
+    if (oldPopup) {
+
+        oldPopup.classList.remove(
+            "show"
+        );
+
+        setTimeout(
+            () => oldPopup.remove(),
+            180
+        );
+
+    }
+
+
+    /*
+     * Пытаемся найти отправителя.
+     */
+
+    let sender = null;
+
+
+    if (
+        Array.isArray(
+            db.users
+        )
+    ) {
+
+        sender =
+            db.users.find(
+                user =>
+                    user.id ===
+                    message.from
+            );
+
+    }
+
+
+    const senderName =
+        sender?.displayName ||
+        sender?.username ||
+        "Новое сообщение";
+
+
+    const avatar =
+        sender?.avatar ||
+        (
+            typeof defaultAvatar ===
+            "function"
+                ? defaultAvatar()
+                : ""
+        );
+
+
+    /*
+     * Ограничиваем текст,
+     * чтобы огромные сообщения
+     * не раздували popup.
+     */
+
+    let messageText =
+        message.text ||
+        "Новое сообщение";
+
+
+    if (
+        messageText.length > 80
+    ) {
+
+        messageText =
+            messageText.substring(
+                0,
+                80
+            ) + "...";
+
+    }
+
+
+    /*
+     * Создаём popup.
+     */
+
+    const popup =
+        document.createElement(
+            "div"
+        );
+
+
+    popup.className =
+        "bubbles-message-popup";
+
+
+    popup.innerHTML = `
+
+        <div
+            class="bubbles-popup-avatar"
+        >
+
+            <img
+                src="${avatar}"
+                alt=""
+            >
+
+        </div>
+
+
+        <div
+            class="bubbles-popup-content"
+        >
+
+            <div
+                class="bubbles-popup-title"
+            >
+
+                <span>
+                    ${escapeHtml(
+                        senderName
+                    )}
+                </span>
+
+                <span
+                    class="bubbles-popup-message-icon"
+                >
+                    💬
+                </span>
+
+            </div>
+
+
+            <div
+                class="bubbles-popup-text"
+            >
+                ${escapeHtml(
+                    messageText
+                )}
+            </div>
+
+        </div>
+
+
+        <button
+            class="bubbles-popup-close"
+            type="button"
+            aria-label="Закрыть"
+        >
+            ×
+        </button>
+
+    `;
+
+
+    document.body.appendChild(
+        popup
+    );
+
+
+    /*
+     * Клик по popup открывает чат.
+     */
+
+    popup.addEventListener(
+        "click",
+        function (event) {
+
+            /*
+             * Кнопка закрытия
+             * не должна открывать чат.
+             */
+
+            if (
+                event.target.closest(
+                    ".bubbles-popup-close"
+                )
+            ) {
+
+                return;
+            }
+
+
+            /*
+             * Закрываем popup.
+
+             */
+
+            closeMessagePopup(
+                popup
+            );
+
+
+            /*
+             * Открываем чат.
+             */
+
+            if (
+                typeof openChat ===
+                "function"
+            ) {
+
+                openChat(
+                    message.from
+                );
+
+            }
+
+        }
+    );
+
+
+    /*
+     * Отдельно обрабатываем крестик.
+     */
+
+    const closeButton =
+        popup.querySelector(
+            ".bubbles-popup-close"
+        );
+
+
+    if (closeButton) {
+
+        closeButton.addEventListener(
+            "click",
+            function () {
+
+                closeMessagePopup(
+                    popup
+                );
+
+            }
+        );
+
+    }
+
+
+    /*
+     * Запускаем появление
+     * на следующем animation frame.
+     */
+
+    requestAnimationFrame(
+        function () {
+
+            popup.classList.add(
+                "show"
+            );
+
+        }
+    );
+
+
+    /*
+     * Автоматически скрываем
+     * через 5 секунд.
+     */
+
+    popup._bubblesTimeout =
+        setTimeout(
+            function () {
+
+                closeMessagePopup(
+                    popup
+                );
+
+            },
+            5000
+        );
+
+}
+
+
+/* ============================================================
+   CLOSE POPUP
+   ============================================================ */
+
+function closeMessagePopup(
+    popup
+) {
+
+    if (!popup) {
+        return;
+    }
+
+
+    if (
+        popup._bubblesTimeout
+    ) {
+
+        clearTimeout(
+            popup._bubblesTimeout
+        );
+
+    }
+
+
+    popup.classList.remove(
+        "show"
+    );
+
+
+    setTimeout(
+        function () {
+
+            if (
+                popup &&
+                popup.parentNode
+            ) {
+
+                popup.remove();
+
+            }
+
+        },
+        220
+    );
+
+}
+
+
+/* ============================================================
+   GLOBAL ACCESS
+   ============================================================ */
+
+window.showNewMessagePopup =
+    showNewMessagePopup;
+
+window.closeMessagePopup =
+    closeMessagePopup;
 
 function stopTyping() {
     if (typingTimer) {
