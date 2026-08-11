@@ -1522,12 +1522,13 @@ function renderChat(userId){
         >
 
             <input
-                id="messageInput"
-                maxlength="1000"
-                autocomplete="off"
-                placeholder="Написать сообщение..."
-                required
-            >
+    id="messageInput"
+    maxlength="1000"
+    autocomplete="off"
+    placeholder="Написать сообщение..."
+    oninput="handleTyping()"
+    required
+>
 
             <button class="primary">
                 Отправить
