@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>bubbles</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div id="app"></div>
+
+<!-- GLOBAL AUDIO PLAYER -->
+<div id="globalPlayer" class="global-player hidden">
+    <div class="global-player-info">
+        <img id="globalPlayerCover" src="" alt="">
+        <div class="global-player-text">
+            <div id="globalPlayerTitle">Ничего не играет</div>
+            <div id="globalPlayerArtist"></div>
+        </div>
+    </div>
+    <div class="global-player-controls">
+        <button onclick="playPrevTrack()" title="Предыдущий трек">⏮️</button>
+        <audio id="globalAudio" controls preload="metadata"></audio>
+        <button onclick="playNextTrack()" title="Следующий трек">⏭️</button>
+    </div>
+    <button onclick="closeMusicPlayer()" title="Закрыть">✕</button>
+</div>
+
+<div id="toastContainer"></div>
+
+<!-- Supabase JS -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/supabase-config.js"></script>
+<script src="js/supabase.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
