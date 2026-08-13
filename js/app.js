@@ -2795,7 +2795,7 @@ function renderMusic() {
                 <div class="card">
                     <h3>Опубликовать музыку</h3>
                     <div class="form-group"><label>Название трека</label><input id="musicTitle" maxlength="80" placeholder="Название"></div>
-                    <div class="form-group"><label>Имя артиста</label><input id="musicArtist" maxlength="80" placeholder="Например, VASILISA HEELS"></div>
+                    <div class="form-group"><label>Имя артиста</label><input id="musicArtist" maxlength="80" placeholder="Артист"></div>
                     <div class="form-group"><label>Обложка</label><input id="musicCover" type="file" accept="image/png,image/jpeg,image/webp"></div>
                     <div class="form-group"><label>MP3-файл — максимум 15 МБ</label><input id="musicFile" type="file" accept=".mp3,audio/mpeg"></div>
                     <button class="primary" onclick="uploadMusic()">🎵 Опубликовать MP3</button>
