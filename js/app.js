@@ -3135,12 +3135,13 @@ function rowToUser(row){
         avatar: row.avatar || defaultAvatar(),
         cover: row.cover || "",
         bio: row.bio || "",
-        lastSeen: row.last_seen || null,
-        currentTrack: row.current_track || "",
-        currentArtist: row.current_artist || "",
-        isAdmin: !!row.is_admin,
-        isBanned: !!row.is_banned,
-        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
+
+        // ADMIN
+        isAdmin: row.is_admin === true,
+
+        createdAt: row.created_at
+            ? Date.parse(row.created_at)
+            : Date.now()
     };
 }
 
