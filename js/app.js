@@ -710,6 +710,19 @@ function renderCommentRow(postId, comment, topComment){
                     ↩ Ответить
                 </button>
 
+                ${
+                    comment.authorId === currentUserId
+                    ? `
+                        <button
+                            class="comment-action-btn"
+                            onclick="deleteComment('${postId}','${comment.id}')"
+                        >
+                            🗑️
+                        </button>
+                    `
+                    : ""
+                }
+
             </div>
 
             ${
@@ -1077,6 +1090,33 @@ function openReplyBox(postId, threadId, anchorId, mentionUsername){
 function closeReplyBox(postId, threadId, { skipRefresh = false } = {}){
     openReplyThreads.delete(threadId);
     if (!skipRefresh) refreshPostInPlace(postId);
+}
+
+async function deleteComment(postId, commentId) {
+    const comment = db.comments.find(c => c.id === commentId);
+    if (!comment || comment.authorId !== currentUserId)
+        return;
+    if (!confirm("Удалить комментарий?"))
+        return;
+
+    // Deleting a top-level comment takes its replies with it too — this
+    // mirrors the "on delete cascade" on parent_comment_id in supabase.sql,
+    // so the DB only needs the one delete call below.
+    const idsToRemove = new Set([commentId]);
+    db.comments.forEach(c => { if (c.parentId === commentId) idsToRemove.add(c.id); });
+
+    const removed = db.comments.filter(c => idsToRemove.has(c.id));
+    db.comments = db.comments.filter(c => !idsToRemove.has(c.id));
+    openReplyThreads.delete(commentId);
+    refreshPostInPlace(postId);
+
+    const { error } = await sb.from("comments").delete().eq("id", commentId);
+    if (error) {
+        console.error(error);
+        db.comments.push(...removed);
+        toast("Не удалось удалить комментарий.");
+        refreshPostInPlace(postId);
+    }
 }
 
 async function sharePost(postId){
@@ -3449,6 +3489,17 @@ function setupSocialRealtime() {
             db.comments.push(rowToComment(payload.new));
             refreshPostInPlace(payload.new.post_id);
         })
+        .on("postgres_changes", { event: "DELETE", schema: "public", table: "comments" }, (payload) => {
+            const removedId = payload.old.id;
+            const comment = db.comments.find(c => c.id === removedId);
+            if (!comment) return; // already removed optimistically by our own deleteComment
+            const postId = comment.postId;
+            // A deleted top-level comment cascades to its replies in the DB —
+            // mirror that locally too.
+            db.comments = db.comments.filter(c => c.id !== removedId && c.parentId !== removedId);
+            openReplyThreads.delete(removedId);
+            refreshPostInPlace(postId);
+        })
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "comment_likes" }, (payload) => {
             const comment = db.comments.find(c => c.id === payload.new.comment_id);
             if (!comment) return;
@@ -3525,7 +3576,7 @@ sb.auth.onAuthStateChange(async (_event,session)=>{
 Object.assign(window,{
     showAuth,loginForm,registerForm,selectGender,register,login,logout,
     navigate,renderFeed,renderProfile,renderFriends,renderMessages,renderMusic,renderEditProfile,
-    searchUsers,createPost,toggleLike,toggleCommentLike,addComment,focusComment,openReplyBox,closeReplyBox,sharePost,deletePost,
+    searchUsers,createPost,toggleLike,toggleCommentLike,addComment,deleteComment,focusComment,openReplyBox,closeReplyBox,sharePost,deletePost,
     saveProfile,previewAvatar,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave
