@@ -33,6 +33,7 @@ let musicSearchQuery = "";
 let musicQueue = [];             // ids, in the order currently shown
 let musicAutoplay = true;
 let mySavedMusicIds = new Set(); // tracks (by others) I've added to my library
+let savesByUser = new Map();     // userId -> Set(musicId), for everyone (profile counts)
 
 /* Messenger state */
 let typingChannel = null;
@@ -554,7 +555,7 @@ function navigate(page, id = null){
         case "messages": renderMessages(); break;
         case "music": renderMusic(); break;
         case "edit": renderEditProfile(); break;
-        case "search": renderSearchResults((id !== undefined ? id : userSearchQuery).trim().toLowerCase()); break;
+        case "search": renderSearchResults((id != null ? id : userSearchQuery).trim().toLowerCase()); break;
         default: renderFeed();
     }
 
@@ -956,7 +957,10 @@ function renderProfile(userId){
     if(!user){ navigate("feed"); return; }
     const posts = db.posts.filter(p => p.authorId === user.id).sort((a,b) => b.createdAt - a.createdAt);
     const friends = db.friends.filter(f => f.user1 === user.id || f.user2 === user.id);
-    const music = db.music.filter(m => m.authorId === user.id);
+    // "Their music" = tracks they uploaded + tracks they saved to their
+    // library from someone else — same rule as the "Моя музыка" tab.
+    const savedIds = savesByUser.get(user.id) || new Set();
+    const music = db.music.filter(m => m.authorId === user.id || savedIds.has(m.id));
     const isMe = user.id === currentUserId;
     const friend = isFriend(user.id);
 
@@ -3011,7 +3015,7 @@ async function loadDB() {
             currentUserId ? sb.from("friend_requests").select("*").eq("status", "pending") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("messages").select("*").order("created_at", { ascending: true }) : Promise.resolve({ data: [], error: null }),
             sb.from("music").select("*").order("created_at", { ascending: false }),
-            currentUserId ? sb.from("music_saves").select("music_id").eq("user_id", currentUserId) : Promise.resolve({ data: [], error: null })
+            sb.from("music_saves").select("music_id,user_id")
         ]);
         const result = [users, posts, comments, postLikes, friends, friendRequests, messages, music, musicSaves];
         const bad = result.find(x => x?.error);
@@ -3026,7 +3030,14 @@ async function loadDB() {
             messages: (messages.data || []).map(rowToMessage),
             music: (music.data || []).map(rowToMusic)
         };
-        mySavedMusicIds = new Set((musicSaves.data || []).map(r => r.music_id));
+
+        savesByUser = new Map();
+        (musicSaves.data || []).forEach(row => {
+            if (!savesByUser.has(row.user_id)) savesByUser.set(row.user_id, new Set());
+            savesByUser.get(row.user_id).add(row.music_id);
+        });
+        if (currentUserId && !savesByUser.has(currentUserId)) savesByUser.set(currentUserId, new Set());
+        mySavedMusicIds = savesByUser.get(currentUserId) || new Set();
 
         // Attach each post's likes from the post_likes table (the source of
         // truth) rather than the old posts.likes jsonb column.
