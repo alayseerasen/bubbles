@@ -49,6 +49,34 @@ create table if not exists public.comments (
     created_at timestamptz not null default now()
 );
 
+-- Lets a comment be a reply to another comment. Replies-to-replies are
+-- flattened onto the original top-level comment by the app (like
+-- Instagram/Facebook), so this never nests more than one level deep.
+alter table public.comments add column if not exists parent_comment_id text references public.comments(id) on delete cascade;
+
+-- ------------------------------------------------------------
+-- POST LIKES
+-- One row per (post, user) so RLS can let ANYONE add/remove their own
+-- like, instead of requiring an update on the whole post row (which
+-- only the post's author is allowed to do).
+-- ------------------------------------------------------------
+create table if not exists public.post_likes (
+    post_id text not null references public.posts(id) on delete cascade,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    created_at timestamptz not null default now(),
+    primary key (post_id, user_id)
+);
+
+-- ------------------------------------------------------------
+-- COMMENT LIKES — same one-row-per-(comment,user) pattern as post_likes.
+-- ------------------------------------------------------------
+create table if not exists public.comment_likes (
+    comment_id text not null references public.comments(id) on delete cascade,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    created_at timestamptz not null default now(),
+    primary key (comment_id, user_id)
+);
+
 -- ------------------------------------------------------------
 -- FRIENDSHIPS
 -- ------------------------------------------------------------
@@ -118,6 +146,9 @@ create table if not exists public.music (
 -- ------------------------------------------------------------
 create index if not exists posts_created_at_idx on public.posts(created_at desc);
 create index if not exists comments_post_id_idx on public.comments(post_id);
+create index if not exists comments_parent_comment_id_idx on public.comments(parent_comment_id);
+create index if not exists post_likes_post_id_idx on public.post_likes(post_id);
+create index if not exists comment_likes_comment_id_idx on public.comment_likes(comment_id);
 create index if not exists messages_sender_receiver_idx on public.messages(sender_id, receiver_id, created_at);
 create index if not exists music_created_at_idx on public.music(created_at desc);
 create index if not exists friend_requests_to_user_idx on public.friend_requests(to_user, status);
@@ -133,6 +164,8 @@ alter table public.friendships enable row level security;
 alter table public.messages enable row level security;
 alter table public.music enable row level security;
 alter table public.friend_requests enable row level security;
+alter table public.post_likes enable row level security;
+alter table public.comment_likes enable row level security;
 
 -- Profiles
  drop policy if exists profiles_select on public.profiles;
@@ -161,6 +194,22 @@ create policy comments_insert on public.comments for insert with check (auth.uid
 create policy comments_update on public.comments for update using (auth.uid() = author_id) with check (auth.uid() = author_id);
  drop policy if exists comments_delete on public.comments;
 create policy comments_delete on public.comments for delete using (auth.uid() = author_id);
+
+-- Post likes
+ drop policy if exists post_likes_select on public.post_likes;
+create policy post_likes_select on public.post_likes for select using (true);
+ drop policy if exists post_likes_insert on public.post_likes;
+create policy post_likes_insert on public.post_likes for insert with check (auth.uid() = user_id);
+ drop policy if exists post_likes_delete on public.post_likes;
+create policy post_likes_delete on public.post_likes for delete using (auth.uid() = user_id);
+
+-- Comment likes
+ drop policy if exists comment_likes_select on public.comment_likes;
+create policy comment_likes_select on public.comment_likes for select using (true);
+ drop policy if exists comment_likes_insert on public.comment_likes;
+create policy comment_likes_insert on public.comment_likes for insert with check (auth.uid() = user_id);
+ drop policy if exists comment_likes_delete on public.comment_likes;
+create policy comment_likes_delete on public.comment_likes for delete using (auth.uid() = user_id);
 
 -- Friendships
  drop policy if exists friendships_select on public.friendships;
@@ -238,6 +287,18 @@ begin
         where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'comments'
     ) then
         alter publication supabase_realtime add table public.comments;
+    end if;
+    if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'post_likes'
+    ) then
+        alter publication supabase_realtime add table public.post_likes;
+    end if;
+    if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'comment_likes'
+    ) then
+        alter publication supabase_realtime add table public.comment_likes;
     end if;
 end $$;
 
