@@ -173,13 +173,37 @@ function toast(text, duration = 3000) {
     }, duration);
 }
 
-function fileToDataURL(file) {
+// Resizes an image (and, importantly, flattens animated GIFs to a single
+// still frame) before it's ever stored. This is what stops one huge or
+// animated picture from making the whole app slow for everyone — every
+// avatar/cover/post image on the site now goes through here first.
+function resizeImageFile(file, maxDimension, quality = 0.85) {
     return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload =
-            e => resolve(e.target.result);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
+        const img = new Image();
+        const objectUrl = URL.createObjectURL(file);
+        img.onload = () => {
+            URL.revokeObjectURL(objectUrl);
+            let { width, height } = img;
+            if (width > maxDimension || height > maxDimension) {
+                if (width >= height) {
+                    height = Math.round(height * (maxDimension / width));
+                    width = maxDimension;
+                } else {
+                    width = Math.round(width * (maxDimension / height));
+                    height = maxDimension;
+                }
+            }
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, width, height);
+            // Drawing to canvas always yields a single static frame, so this
+            // also strips GIF animation automatically.
+            resolve(canvas.toDataURL("image/jpeg", quality));
+        };
+        img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error("Не удалось обработать изображение.")); };
+        img.src = objectUrl;
     });
 }
 
@@ -814,11 +838,12 @@ async function createPost() {
             toast("Можно загружать только изображения.");
             return;
         }
-        if (file.size > 8 * 1024 * 1024) {
-            toast("Изображение слишком большое. Максимум 8 МБ.");
+        if (file.size > 15 * 1024 * 1024) {
+            toast("Изображение слишком большое. Максимум 15 МБ.");
             return;
         }
-        image = await fileToDataURL(file);
+        try { image = await resizeImageFile(file, 1600); }
+        catch (e) { console.error(e); toast("Не удалось обработать изображение."); return; }
     }
     const post = { id: uid("post"), authorId: currentUserId, text, image, likes: [], createdAt: Date.now() };
     db.posts.unshift(post);
@@ -1325,11 +1350,9 @@ function previewAvatar(input){
         input.value = "";
         return;
     }
-    const reader = new FileReader();
-    reader.onload = e => {
-        document.getElementById("editAvatarPreview").src = e.target.result;
-    };
-    reader.readAsDataURL(file);
+    resizeImageFile(file, 500)
+        .then(dataUrl => { document.getElementById("editAvatarPreview").src = dataUrl; })
+        .catch(() => toast("Не удалось обработать изображение."));
 }
 
 async function saveProfile() {
@@ -1351,18 +1374,28 @@ async function saveProfile() {
     const avatarFile = document.getElementById("editAvatar")?.files[0];
     const coverFile = document.getElementById("editCover")?.files[0];
     if (avatarFile) {
-        if (avatarFile.size > 5 * 1024 * 1024) {
-            toast("Аватар слишком большой. Максимум 5 МБ.");
+        if (!avatarFile.type.startsWith("image/")) {
+            toast("Выбери изображение.");
             return;
         }
-        user.avatar = await fileToDataURL(avatarFile);
+        if (avatarFile.size > 12 * 1024 * 1024) {
+            toast("Аватар слишком большой. Максимум 12 МБ.");
+            return;
+        }
+        try { user.avatar = await resizeImageFile(avatarFile, 500); }
+        catch (e) { console.error(e); toast("Не удалось обработать аватар."); return; }
     }
     if (coverFile) {
-        if (coverFile.size > 8 * 1024 * 1024) {
-            toast("Обложка слишком большая. Максимум 8 МБ.");
+        if (!coverFile.type.startsWith("image/")) {
+            toast("Выбери изображение.");
             return;
         }
-        user.cover = await fileToDataURL(coverFile);
+        if (coverFile.size > 12 * 1024 * 1024) {
+            toast("Обложка слишком большая. Максимум 12 МБ.");
+            return;
+        }
+        try { user.cover = await resizeImageFile(coverFile, 1200); }
+        catch (e) { console.error(e); toast("Не удалось обработать обложку."); return; }
     }
     user.username = username;
     user.displayName = displayName;
