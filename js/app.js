@@ -38,6 +38,7 @@ let typingChannel = null;
 let typingIndicatorTimer = null;
 let messagesChannel = null;
 let friendRequestsChannel = null;
+let socialChannel = null;
 let chatPartnerPresenceTimer = null;
 
 /* ============================================================
@@ -3169,7 +3170,8 @@ function setupFriendRequestsRealtime() {
 }
 
 function setupSocialRealtime() {
-    sb.channel("bubbles-social-" + currentUserId)
+    if (socialChannel) sb.removeChannel(socialChannel);
+    socialChannel = sb.channel("bubbles-social-" + currentUserId)
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "post_likes" }, (payload) => {
             const post = db.posts.find(p => p.id === payload.new.post_id);
             if (!post) return;
@@ -3200,10 +3202,11 @@ function setupSocialRealtime() {
 }
 
 function teardownRealtime() {
-    [messagesChannel, friendRequestsChannel, typingChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
+    [messagesChannel, friendRequestsChannel, typingChannel, socialChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
     messagesChannel = null;
     friendRequestsChannel = null;
     typingChannel = null;
+    socialChannel = null;
     stopWatchingChatPartnerPresence();
 }
 
