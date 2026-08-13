@@ -844,21 +844,26 @@ async function toggleLike(postId) {
 
     // Update the screen immediately — don't wait on a network round trip
     // first. If someone else likes the same post at nearly the same
-    // moment, the live posts subscription (setupSocialRealtime) reconciles
-    // it a moment later, so this stays correct without feeling slow.
+    // moment, the live post_likes subscription (setupSocialRealtime)
+    // reconciles it a moment later, so this stays correct without
+    // feeling slow.
     const wasLiked = post.likes.includes(currentUserId);
-    const likesArray = wasLiked
+    post.likes = wasLiked
         ? post.likes.filter(id => id !== currentUserId)
         : [...post.likes, currentUserId];
-
-    post.likes = likesArray;
     refreshPostInPlace(postId);
 
-    const { error } = await sb.from("posts").update({ likes: likesArray }).eq("id", postId);
+    // Each person only ever inserts/deletes their OWN row here, which RLS
+    // can safely allow on any post — unlike updating the whole post row,
+    // which only the post's author is allowed to do.
+    const { error } = wasLiked
+        ? await sb.from("post_likes").delete().eq("post_id", postId).eq("user_id", currentUserId)
+        : await sb.from("post_likes").insert({ post_id: postId, user_id: currentUserId });
+
     if (error) {
         console.error(error);
         // roll back on failure
-        post.likes = wasLiked ? [...likesArray, currentUserId] : likesArray.filter(id => id !== currentUserId);
+        post.likes = wasLiked ? [...post.likes, currentUserId] : post.likes.filter(id => id !== currentUserId);
         refreshPostInPlace(postId);
         toast("Не удалось поставить лайк.");
     }
@@ -2937,16 +2942,17 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, friends, friendRequests, messages, music] = await Promise.all([
+        const [users, posts, comments, postLikes, friends, friendRequests, messages, music] = await Promise.all([
             sb.from("profiles").select("*").order("created_at", { ascending: true }),
             sb.from("posts").select("*").order("created_at", { ascending: false }),
             sb.from("comments").select("*").order("created_at", { ascending: true }),
+            sb.from("post_likes").select("*"),
             currentUserId ? sb.from("friendships").select("*") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("friend_requests").select("*").eq("status", "pending") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("messages").select("*").order("created_at", { ascending: true }) : Promise.resolve({ data: [], error: null }),
             sb.from("music").select("*").order("created_at", { ascending: false })
         ]);
-        const result = [users, posts, comments, friends, friendRequests, messages, music];
+        const result = [users, posts, comments, postLikes, friends, friendRequests, messages, music];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -2959,6 +2965,15 @@ async function loadDB() {
             messages: (messages.data || []).map(rowToMessage),
             music: (music.data || []).map(rowToMusic)
         };
+
+        // Attach each post's likes from the post_likes table (the source of
+        // truth) rather than the old posts.likes jsonb column.
+        const likesByPost = new Map();
+        (postLikes.data || []).forEach(row => {
+            if (!likesByPost.has(row.post_id)) likesByPost.set(row.post_id, []);
+            likesByPost.get(row.post_id).push(row.user_id);
+        });
+        db.posts.forEach(post => { post.likes = likesByPost.get(post.id) || []; });
     }
     catch (error) {
         console.error("Supabase load error:", error);
@@ -3155,10 +3170,16 @@ function setupFriendRequestsRealtime() {
 
 function setupSocialRealtime() {
     sb.channel("bubbles-social-" + currentUserId)
-        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "posts" }, (payload) => {
-            const post = db.posts.find(p => p.id === payload.new.id);
-            if (!post || post.authorId === undefined) return;
-            post.likes = Array.isArray(payload.new.likes) ? payload.new.likes : post.likes;
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "post_likes" }, (payload) => {
+            const post = db.posts.find(p => p.id === payload.new.post_id);
+            if (!post) return;
+            if (!post.likes.includes(payload.new.user_id)) post.likes.push(payload.new.user_id);
+            refreshPostInPlace(post.id);
+        })
+        .on("postgres_changes", { event: "DELETE", schema: "public", table: "post_likes" }, (payload) => {
+            const post = db.posts.find(p => p.id === payload.old.post_id);
+            if (!post) return;
+            post.likes = post.likes.filter(id => id !== payload.old.user_id);
             refreshPostInPlace(post.id);
         })
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "comments" }, (payload) => {
@@ -3170,7 +3191,9 @@ function setupSocialRealtime() {
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "posts" }, (payload) => {
             if (payload.new.author_id === currentUserId) return;
             if (db.posts.some(p => p.id === payload.new.id)) return;
-            db.posts.unshift(rowToPost(payload.new));
+            const post = rowToPost(payload.new);
+            post.likes = [];
+            db.posts.unshift(post);
             if (currentPage === "feed") renderFeed();
         })
         .subscribe();
