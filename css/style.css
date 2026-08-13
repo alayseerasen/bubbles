@@ -492,6 +492,42 @@ select:focus{
     margin-right:5px;
 }
 
+.comment-replies{
+    margin-left:22px;
+}
+
+.comment-reply{
+    background:#f2fbff;
+}
+
+.comment-actions{
+    display:flex;
+    gap:6px;
+    margin-top:5px;
+}
+
+.comment-action-btn{
+    border:0;
+    background:transparent;
+    color:#4a8499;
+    font-weight:800;
+    font-size:.85em;
+    padding:2px 6px;
+    border-radius:9px;
+}
+
+.comment-action-btn:hover{
+    background:#d7f7ff;
+}
+
+.comment-action-btn.liked{
+    color:#ef5877;
+}
+
+.reply-box input{
+    flex:1;
+}
+
 /* PROFILE */
 
 .cover{
@@ -1870,6 +1906,10 @@ select:focus{
 }
 
 [data-theme="dark"] .comment{ background:rgba(255,255,255,.04); }
+[data-theme="dark"] .comment-reply{ background:rgba(255,255,255,.07); }
+[data-theme="dark"] .comment-action-btn{ color:#7fc4e0; }
+[data-theme="dark"] .comment-action-btn:hover{ background:rgba(79,201,245,.18); }
+[data-theme="dark"] .comment-action-btn.liked{ color:#ff8fa3; }
 
 /* PROFILE */
 
