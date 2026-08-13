@@ -35,6 +35,11 @@ let musicAutoplay = true;
 let mySavedMusicIds = new Set(); // tracks (by others) I've added to my library
 let savesByUser = new Map();     // userId -> Set(musicId), for everyone (profile counts)
 
+/* Comment reply state — which comment threads currently have their reply
+   box open, keyed by the *top-level* comment id, mapped to an optional
+   "@username " prefill (used when replying to a reply). */
+let openReplyThreads = new Map();
+
 /* Messenger state */
 let typingChannel = null;
 let typingIndicatorTimer = null;
@@ -663,11 +668,103 @@ function renderFeed(){
     `;
 }
 
+function renderCommentRepliesList(postId, topComment, replies){
+    return replies.map(reply => renderCommentRow(postId, reply, topComment)).join("");
+}
+
+// Renders one comment row (top-level or reply) plus, if its reply box is
+// currently open, the inline reply input right underneath it.
+function renderCommentRow(postId, comment, topComment){
+    const user = getUser(comment.authorId);
+    const liked = comment.likes?.includes(currentUserId);
+    const isReply = comment.parentId != null;
+    const threadId = topComment ? topComment.id : comment.id;
+    const replyBoxOpenHere = openReplyThreads.has(threadId) &&
+        (openReplyThreads.get(threadId).anchorId === comment.id);
+
+    return `
+        <div class="comment${isReply ? " comment-reply" : ""}">
+
+            <strong>
+                ${escapeHtml(user?.displayName || "Пользователь")}
+            </strong>
+
+            ${escapeHtml(comment.text)}
+
+            <div class="comment-actions">
+
+                <button
+                    class="comment-action-btn ${liked ? "liked" : ""}"
+                    onclick="toggleCommentLike('${postId}','${comment.id}')"
+                >
+                    ${liked ? "♥" : "♡"}
+                    ${comment.likes?.length || 0}
+                </button>
+
+                <button
+                    class="comment-action-btn"
+                    onclick="openReplyBox('${postId}','${threadId}','${comment.id}'${
+                        isReply ? `,'${escapeHtml(user?.username || "")}'` : ""
+                    })"
+                >
+                    ↩ Ответить
+                </button>
+
+            </div>
+
+            ${
+                replyBoxOpenHere
+                ? renderReplyBox(postId, threadId)
+                : ""
+            }
+
+        </div>
+    `;
+}
+
+function renderReplyBox(postId, threadId){
+    const state = openReplyThreads.get(threadId);
+    const prefill = state?.mention ? `@${state.mention} ` : "";
+    return `
+        <div class="reply-box" style="display:flex;gap:7px;margin-top:6px;">
+
+            <input
+                id="reply-${threadId}"
+                placeholder="Ответить..."
+                maxlength="300"
+                value="${escapeHtml(prefill)}"
+            >
+
+            <button
+                class="primary"
+                onclick="addComment('${postId}','${threadId}')"
+            >
+                →
+            </button>
+
+            <button
+                class="action-btn"
+                onclick="closeReplyBox('${postId}','${threadId}')"
+            >
+                ✕
+            </button>
+
+        </div>
+    `;
+}
+
 function renderPost(post){
     const author = getUser(post.authorId);
     if(!author) return "";
     const liked = post.likes?.includes(currentUserId);
-    const comments = db.comments.filter(c => c.postId === post.id).sort((a,b) => a.createdAt - b.createdAt);
+    const allComments = db.comments.filter(c => c.postId === post.id).sort((a,b) => a.createdAt - b.createdAt);
+    const topComments = allComments.filter(c => !c.parentId);
+    const repliesByParent = new Map();
+    allComments.filter(c => c.parentId).forEach(c => {
+        if (!repliesByParent.has(c.parentId)) repliesByParent.set(c.parentId, []);
+        repliesByParent.get(c.parentId).push(c);
+    });
+    const comments = allComments; // total count (incl. replies) for the 💬 button
 
     return `
 
@@ -776,28 +873,13 @@ function renderPost(post){
             <div class="comment-list">
 
                 ${
-                    comments
-                    .map(comment => {
-
-                        const user =
-                            getUser(comment.authorId);
-
-                        return `
-                            <div class="comment">
-
-                                <strong>
-                                    ${escapeHtml(
-                                        user?.displayName ||
-                                        "Пользователь"
-                                    )}
-                                </strong>
-
-                                ${escapeHtml(comment.text)}
-
-                            </div>
-                        `;
-
-                    })
+                    topComments
+                    .map(comment => `
+                        ${renderCommentRow(post.id, comment, null)}
+                        <div class="comment-replies">
+                            ${renderCommentRepliesList(post.id, comment, repliesByParent.get(comment.id) || [])}
+                        </div>
+                    `)
                     .join("")
                 }
 
@@ -912,20 +994,51 @@ async function toggleLike(postId) {
     }
 }
 
-async function addComment(postId) {
-    const input = document.getElementById("comment-" + postId);
+async function toggleCommentLike(postId, commentId) {
+    const comment = db.comments.find(c => c.id === commentId);
+    if (!comment)
+        return;
+    if (!comment.likes) comment.likes = [];
+
+    // Same optimistic-update-then-reconcile pattern as toggleLike above.
+    const wasLiked = comment.likes.includes(currentUserId);
+    comment.likes = wasLiked
+        ? comment.likes.filter(id => id !== currentUserId)
+        : [...comment.likes, currentUserId];
+    refreshPostInPlace(postId);
+
+    const { error } = wasLiked
+        ? await sb.from("comment_likes").delete().eq("comment_id", commentId).eq("user_id", currentUserId)
+        : await sb.from("comment_likes").insert({ comment_id: commentId, user_id: currentUserId });
+
+    if (error) {
+        console.error(error);
+        comment.likes = wasLiked ? [...comment.likes, currentUserId] : comment.likes.filter(id => id !== currentUserId);
+        refreshPostInPlace(postId);
+        toast("Не удалось поставить лайк.");
+    }
+}
+
+// parentId (when given) is always the *top-level* comment id — replies to
+// a reply get flattened onto that same top-level comment, with an
+// "@username " mention prefilled in the input (see openReplyBox).
+async function addComment(postId, parentId = null) {
+    const input = parentId
+        ? document.getElementById("reply-" + parentId)
+        : document.getElementById("comment-" + postId);
     if (!input)
         return;
     const text = input.value.trim();
     if (!text)
         return;
     input.value = "";
-    const comment = { id: uid("comment"), postId, authorId: currentUserId, text, createdAt: Date.now() };
+    const comment = { id: uid("comment"), postId, authorId: currentUserId, parentId, text, likes: [], createdAt: Date.now() };
     db.comments.push(comment);
+    if (parentId) closeReplyBox(postId, parentId, { skipRefresh: true });
     refreshPostInPlace(postId);
 
     const { error } = await sb.from("comments").insert({
-        id: comment.id, post_id: comment.postId, author_id: comment.authorId, text: comment.text, created_at: new Date(comment.createdAt).toISOString()
+        id: comment.id, post_id: comment.postId, author_id: comment.authorId, parent_comment_id: comment.parentId, text: comment.text, created_at: new Date(comment.createdAt).toISOString()
     });
     if (error) {
         db.comments = db.comments.filter(c => c.id !== comment.id);
@@ -942,6 +1055,28 @@ function focusComment(postId){
         input.focus();
         input.scrollIntoView({behavior:"smooth",block:"center"});
     }
+}
+
+// Opens the reply input for a comment thread. threadId is always the
+// top-level comment id (so replies from anywhere in the thread land in
+// the same place); anchorId is the specific comment the box should
+// render directly under, and mentionUsername (only set when replying to
+// a reply) prefills "@username " in the input.
+function openReplyBox(postId, threadId, anchorId, mentionUsername){
+    openReplyThreads.set(threadId, { anchorId, mention: mentionUsername || null });
+    refreshPostInPlace(postId);
+    const input = document.getElementById("reply-" + threadId);
+    if (input) {
+        input.focus();
+        // put the cursor at the end rather than selecting the prefilled text
+        const end = input.value.length;
+        input.setSelectionRange(end, end);
+    }
+}
+
+function closeReplyBox(postId, threadId, { skipRefresh = false } = {}){
+    openReplyThreads.delete(threadId);
+    if (!skipRefresh) refreshPostInPlace(postId);
 }
 
 async function sharePost(postId){
@@ -2889,7 +3024,9 @@ function rowToComment(row) {
         id: row.id,
         postId: row.post_id,
         authorId: row.author_id,
+        parentId: row.parent_comment_id || null,
         text: row.text || "",
+        likes: [],
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
@@ -3046,18 +3183,19 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, friends, friendRequests, messages, music, musicSaves] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, messages, music, musicSaves] = await Promise.all([
             sb.from("profiles").select("*").order("created_at", { ascending: true }),
             sb.from("posts").select("*").order("created_at", { ascending: false }),
             sb.from("comments").select("*").order("created_at", { ascending: true }),
             sb.from("post_likes").select("*"),
+            sb.from("comment_likes").select("*"),
             currentUserId ? sb.from("friendships").select("*") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("friend_requests").select("*").eq("status", "pending") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("messages").select("*").order("created_at", { ascending: true }) : Promise.resolve({ data: [], error: null }),
             sb.from("music").select("*").order("created_at", { ascending: false }),
             sb.from("music_saves").select("music_id,user_id")
         ]);
-        const result = [users, posts, comments, postLikes, friends, friendRequests, messages, music, musicSaves];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, messages, music, musicSaves];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -3087,6 +3225,14 @@ async function loadDB() {
             likesByPost.get(row.post_id).push(row.user_id);
         });
         db.posts.forEach(post => { post.likes = likesByPost.get(post.id) || []; });
+
+        // Same pattern for comment likes, from the comment_likes table.
+        const likesByComment = new Map();
+        (commentLikes.data || []).forEach(row => {
+            if (!likesByComment.has(row.comment_id)) likesByComment.set(row.comment_id, []);
+            likesByComment.get(row.comment_id).push(row.user_id);
+        });
+        db.comments.forEach(comment => { comment.likes = likesByComment.get(comment.id) || []; });
     }
     catch (error) {
         console.error("Supabase load error:", error);
@@ -3109,6 +3255,7 @@ async function saveDB() {
             id: c.id,
             post_id: c.postId,
             author_id: c.authorId,
+            parent_comment_id: c.parentId || null,
             text: c.text || "",
             created_at: new Date(c.createdAt || Date.now()).toISOString()
         }));
@@ -3302,6 +3449,18 @@ function setupSocialRealtime() {
             db.comments.push(rowToComment(payload.new));
             refreshPostInPlace(payload.new.post_id);
         })
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "comment_likes" }, (payload) => {
+            const comment = db.comments.find(c => c.id === payload.new.comment_id);
+            if (!comment) return;
+            if (!comment.likes.includes(payload.new.user_id)) comment.likes.push(payload.new.user_id);
+            refreshPostInPlace(comment.postId);
+        })
+        .on("postgres_changes", { event: "DELETE", schema: "public", table: "comment_likes" }, (payload) => {
+            const comment = db.comments.find(c => c.id === payload.old.comment_id);
+            if (!comment) return;
+            comment.likes = comment.likes.filter(id => id !== payload.old.user_id);
+            refreshPostInPlace(comment.postId);
+        })
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "posts" }, (payload) => {
             if (payload.new.author_id === currentUserId) return;
             if (db.posts.some(p => p.id === payload.new.id)) return;
@@ -3366,7 +3525,7 @@ sb.auth.onAuthStateChange(async (_event,session)=>{
 Object.assign(window,{
     showAuth,loginForm,registerForm,selectGender,register,login,logout,
     navigate,renderFeed,renderProfile,renderFriends,renderMessages,renderMusic,renderEditProfile,
-    searchUsers,createPost,toggleLike,addComment,focusComment,sharePost,deletePost,
+    searchUsers,createPost,toggleLike,toggleCommentLike,addComment,focusComment,openReplyBox,closeReplyBox,sharePost,deletePost,
     saveProfile,previewAvatar,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave
