@@ -159,7 +159,7 @@ function timeAgo(timestamp) {
         .toLocaleDateString("ru-RU");
 }
 
-function toast(text) {
+function toast(text, duration = 3000) {
     const container = document.getElementById("toastContainer");
     const el = document.createElement("div");
     el.className = "toast";
@@ -167,7 +167,7 @@ function toast(text) {
     container.appendChild(el);
     setTimeout(() => {
         el.remove();
-    }, 3000);
+    }, duration);
 }
 
 function fileToDataURL(file) {
@@ -342,7 +342,7 @@ async function register(event) {
     }
     catch (error) {
         console.error(error);
-        toast("Аккаунт создан, но профиль не удалось создать.");
+        toast("Аккаунт создан, но профиль не удалось создать: " + (error?.message || error), 9000);
     }
 }
 
@@ -363,7 +363,7 @@ async function login(event) {
     }
     catch (error) {
         console.error(error);
-        toast("Не удалось загрузить профиль.");
+        toast("Не удалось загрузить профиль: " + (error?.message || error), 9000);
     }
 }
 
@@ -2977,7 +2977,7 @@ async function loadDB() {
     }
     catch (error) {
         console.error("Supabase load error:", error);
-        toast("Не удалось загрузить данные из Supabase.");
+        toast("Не удалось загрузить данные из Supabase: " + (error?.message || error), 9000);
     }
 }
 
