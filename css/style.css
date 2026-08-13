@@ -1220,6 +1220,16 @@ select:focus{
     font-size:13px;
     margin-top:5px;
 }
+
+.admin-badge{
+    font-size:.85em;
+    margin-left:2px;
+}
+
+.banned-badge{
+    font-size:.85em;
+    margin-left:2px;
+}
 .message-unread-badge {
     min-width: 22px;
     height: 22px;
