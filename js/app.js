@@ -32,6 +32,7 @@ let musicTab = "mine";           // "mine" | "all"
 let musicSearchQuery = "";
 let musicQueue = [];             // ids, in the order currently shown
 let musicAutoplay = true;
+let mySavedMusicIds = new Set(); // tracks (by others) I've added to my library
 
 /* Messenger state */
 let typingChannel = null;
@@ -468,6 +469,14 @@ function renderApp(){
 
                 <button
                     class="nav-btn"
+                    data-page="search"
+                    onclick="navigate('search')"
+                >
+                    🔎 Поиск
+                </button>
+
+                <button
+                    class="nav-btn"
                     data-page="messages"
                     onclick="navigate('messages')"
                 >
@@ -545,7 +554,7 @@ function navigate(page, id = null){
         case "messages": renderMessages(); break;
         case "music": renderMusic(); break;
         case "edit": renderEditProfile(); break;
-        case "search": renderSearchResults(id || ""); break;
+        case "search": renderSearchResults((id !== undefined ? id : userSearchQuery).trim().toLowerCase()); break;
         default: renderFeed();
     }
 
@@ -2440,7 +2449,7 @@ async function sendMessage(event, userId) {
 // this is also the "queue" that next/prev/autoplay walks through.
 function getFilteredMusicList() {
     let list = [...db.music];
-    if (musicTab === "mine") list = list.filter(m => m.authorId === currentUserId);
+    if (musicTab === "mine") list = list.filter(m => m.authorId === currentUserId || mySavedMusicIds.has(m.id));
     const query = musicSearchQuery.trim().toLowerCase();
     if (query) {
         list = list.filter(m => {
@@ -2494,7 +2503,7 @@ function renderMusic() {
         ${
             music.length
             ? music.map(renderMusicCard).join("")
-            : emptyState("🎵", musicTab === "mine" ? "Ты ещё не публиковал(а) музыку" : "Ничего не найдено", musicTab === "mine" ? "Загрузи свой первый трек выше." : "Попробуй другой запрос.")
+            : emptyState("🎵", musicTab === "mine" ? "Здесь пока пусто" : "Ничего не найдено", musicTab === "mine" ? "Опубликуй свой трек выше или добавь чужой из «Всей музыки»." : "Попробуй другой запрос.")
         }
     `;
 }
@@ -2519,6 +2528,8 @@ function setMusicAutoplay(value) {
 function renderMusicCard(music) {
     const author = getUser(music.authorId);
     const isPlaying = currentlyPlayingMusicId === music.id;
+    const isMine = music.authorId === currentUserId;
+    const isSaved = mySavedMusicIds.has(music.id);
     return `
         <div class="music-card ${isPlaying ? "playing" : ""}" id="music-${music.id}">
             <div class="music-row">
@@ -2529,10 +2540,40 @@ function renderMusicCard(music) {
                     <div class="music-artist">@${escapeHtml(author?.username || "unknown")}</div>
                 </div>
                 <button onclick="playMusic('${music.id}')" title="Слушать">${isPlaying ? "⏸️" : "▶️"}</button>
-                ${music.authorId === currentUserId ? `<button onclick="deleteMusic('${music.id}')" title="Удалить">🗑️</button>` : ""}
+                ${
+                    isMine
+                    ? `<button onclick="deleteMusic('${music.id}')" title="Удалить">🗑️</button>`
+                    : `<button class="save-track-btn ${isSaved ? "saved" : ""}" onclick="toggleMusicSave('${music.id}')" title="${isSaved ? "Убрать из моей музыки" : "Добавить в мою музыку"}">${isSaved ? "✓" : "➕"}</button>`
+                }
             </div>
         </div>
     `;
+}
+
+async function toggleMusicSave(musicId) {
+    const wasSaved = mySavedMusicIds.has(musicId);
+    if (wasSaved) mySavedMusicIds.delete(musicId); else mySavedMusicIds.add(musicId);
+
+    const card = document.getElementById("music-" + musicId);
+    if (card) {
+        const wrapper = document.createElement("div");
+        wrapper.innerHTML = renderMusicCard(db.music.find(m => m.id === musicId)).trim();
+        card.replaceWith(wrapper.firstElementChild);
+    }
+    // If we're looking at "Моя музыка", a save/unsave changes which tracks
+    // belong in the list, so that tab needs a fuller refresh.
+    if (musicTab === "mine") renderMusic();
+
+    const { error } = wasSaved
+        ? await sb.from("music_saves").delete().eq("music_id", musicId).eq("user_id", currentUserId)
+        : await sb.from("music_saves").insert({ music_id: musicId, user_id: currentUserId });
+
+    if (error) {
+        console.error(error);
+        if (wasSaved) mySavedMusicIds.add(musicId); else mySavedMusicIds.delete(musicId);
+        toast("Не удалось обновить мою музыку.");
+        if (currentPage === "music") renderMusic();
+    }
 }
 
 async function uploadMusic() {
@@ -2711,28 +2752,46 @@ async function deleteMusic(id) {
    SEARCH
    ============================================================ */
 
+let userSearchQuery = "";
+
 function searchUsers(value){
+    userSearchQuery = value;
     const query = value.trim().toLowerCase();
-    if(!query){
-        if(currentPage === "search") navigate("feed");
-        return;
-    }
     currentPage = "search";
     renderSearchResults(query);
+    // Keep the header search box (desktop) and the page's own search box
+    // (mobile) in sync with each other and with the caret position.
+    ["searchInput", "searchPageInput"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el && el.value !== value) el.value = value;
+        if (el === document.activeElement) el.setSelectionRange(value.length, value.length);
+    });
 }
 
 function renderSearchResults(query){
-    const users = db.users.filter(user => user.id !== currentUserId && (user.username.toLowerCase().includes(query) || user.displayName.toLowerCase().includes(query)));
+    const users = query
+        ? db.users.filter(user => user.id !== currentUserId && (user.username.toLowerCase().includes(query) || user.displayName.toLowerCase().includes(query)))
+        : [];
 
     document.getElementById("page").innerHTML = `
 
         <h1 class="section-title">
-            🔎 Результаты поиска
+            🔎 Поиск
         </h1>
 
+        <div class="user-search-box">
+            <input
+                id="searchPageInput"
+                placeholder="Поиск пользователей..."
+                value="${escapeHtml(userSearchQuery)}"
+                oninput="searchUsers(this.value)"
+            >
+        </div>
 
         ${
-            users.length
+            !query
+            ? emptyState("🔎", "Найди друзей", "Начни вводить имя пользователя или @юзернейм выше.")
+            : users.length
             ? `
                 <div class="friend-grid">
 
@@ -2943,7 +3002,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, friends, friendRequests, messages, music] = await Promise.all([
+        const [users, posts, comments, postLikes, friends, friendRequests, messages, music, musicSaves] = await Promise.all([
             sb.from("profiles").select("*").order("created_at", { ascending: true }),
             sb.from("posts").select("*").order("created_at", { ascending: false }),
             sb.from("comments").select("*").order("created_at", { ascending: true }),
@@ -2951,9 +3010,10 @@ async function loadDB() {
             currentUserId ? sb.from("friendships").select("*") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("friend_requests").select("*").eq("status", "pending") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("messages").select("*").order("created_at", { ascending: true }) : Promise.resolve({ data: [], error: null }),
-            sb.from("music").select("*").order("created_at", { ascending: false })
+            sb.from("music").select("*").order("created_at", { ascending: false }),
+            currentUserId ? sb.from("music_saves").select("music_id").eq("user_id", currentUserId) : Promise.resolve({ data: [], error: null })
         ]);
-        const result = [users, posts, comments, postLikes, friends, friendRequests, messages, music];
+        const result = [users, posts, comments, postLikes, friends, friendRequests, messages, music, musicSaves];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -2966,6 +3026,7 @@ async function loadDB() {
             messages: (messages.data || []).map(rowToMessage),
             music: (music.data || []).map(rowToMusic)
         };
+        mySavedMusicIds = new Set((musicSaves.data || []).map(r => r.music_id));
 
         // Attach each post's likes from the post_likes table (the source of
         // truth) rather than the old posts.likes jsonb column.
@@ -3257,5 +3318,5 @@ Object.assign(window,{
     searchUsers,createPost,toggleLike,addComment,focusComment,sharePost,deletePost,
     saveProfile,previewAvatar,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
-    setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack
+    setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave
 });
