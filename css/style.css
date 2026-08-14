@@ -1200,6 +1200,9 @@ select:focus{
         width:auto;
         white-space:nowrap;
         margin:0;
+        padding:8px 11px;
+        font-size:14px;
+        border-radius:12px;
     }
 
     .back-button{
@@ -1285,6 +1288,25 @@ select:focus{
 
     .friend-grid{
         grid-template-columns:repeat(2,minmax(0,1fr));
+    }
+
+    .sidebar{
+        gap:4px;
+        padding:6px;
+    }
+
+    .nav-btn{
+        padding:6px 9px;
+        font-size:12.5px;
+        gap:4px;
+        border-radius:10px;
+    }
+
+    .nav-badge{
+        min-width:16px;
+        height:16px;
+        padding:0 4px;
+        font-size:10px;
     }
 
 }
