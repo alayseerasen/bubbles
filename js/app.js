@@ -3610,7 +3610,7 @@ async function ensureProfile(authUser) {
         username,
         display_name: displayName,
         gender: meta.gender || "female",
-        avatar: defaultAvatar(),
+        avatar: "",
         cover: "",
         bio: "",
         created_at: new Date().toISOString()
