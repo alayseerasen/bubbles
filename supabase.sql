@@ -211,7 +211,13 @@ security definer
 set search_path = public
 as $$
 begin
-    if not public.is_admin() then
+    -- auth.uid() is only set for requests coming through the app (a
+    -- logged-in user). Requests run directly in the SQL Editor, or with
+    -- the service_role key, have no auth.uid() at all — that's already
+    -- the top of the trust chain (full database credentials), so this
+    -- guard only needs to stop a logged-in *app* user from editing their
+    -- own role/banned columns unless they're already an admin.
+    if auth.uid() is not null and not public.is_admin() then
         new.role := old.role;
         new.banned := old.banned;
         new.ban_reason := old.ban_reason;
