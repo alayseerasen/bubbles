@@ -147,6 +147,85 @@ create table if not exists public.music (
 );
 
 -- ------------------------------------------------------------
+-- PRESENCE / NOW-PLAYING columns used by js/app.js but missing
+-- from earlier versions of this file — safe to add if already there.
+-- ------------------------------------------------------------
+alter table public.profiles add column if not exists last_seen timestamptz;
+alter table public.profiles add column if not exists current_track text not null default '';
+alter table public.profiles add column if not exists current_artist text not null default '';
+
+-- ------------------------------------------------------------
+-- MUSIC SAVES — "add someone else's track to my music" (➕ button).
+-- Also used by js/app.js but was missing from this file.
+-- ------------------------------------------------------------
+create table if not exists public.music_saves (
+    music_id text not null references public.music(id) on delete cascade,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    created_at timestamptz not null default now(),
+    primary key (music_id, user_id)
+);
+
+-- ------------------------------------------------------------
+-- ADMIN / MODERATION
+-- role: 'user' | 'admin'. banned: blocks login and new posts/
+-- comments/tracks/messages. ban_reason is shown to the admin
+-- team and can be shown to the banned user.
+-- ------------------------------------------------------------
+alter table public.profiles add column if not exists role text not null default 'user' check (role in ('user','admin'));
+alter table public.profiles add column if not exists banned boolean not null default false;
+alter table public.profiles add column if not exists ban_reason text not null default '';
+
+-- security definer so these can be read inside RLS policies without
+-- recursively re-triggering RLS on profiles.
+create or replace function public.is_admin()
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+    select coalesce((select role = 'admin' from public.profiles where id = auth.uid()), false);
+$$;
+
+create or replace function public.is_banned()
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+    select coalesce((select banned from public.profiles where id = auth.uid()), false);
+$$;
+
+grant execute on function public.is_admin() to authenticated;
+grant execute on function public.is_banned() to authenticated;
+
+-- Stops a non-admin from granting themselves (or anyone) admin, or
+-- un-banning themselves, by editing their own profile row — no matter
+-- which update policy let the row through, role/banned/ban_reason only
+-- ever actually change when the person running the update is an admin.
+create or replace function public.protect_profile_role_columns()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+    if not public.is_admin() then
+        new.role := old.role;
+        new.banned := old.banned;
+        new.ban_reason := old.ban_reason;
+    end if;
+    return new;
+end;
+$$;
+
+drop trigger if exists protect_profile_role_columns_trg on public.profiles;
+create trigger protect_profile_role_columns_trg
+before update on public.profiles
+for each row execute function public.protect_profile_role_columns();
+
+-- ------------------------------------------------------------
 -- INDEXES
 -- ------------------------------------------------------------
 create index if not exists posts_created_at_idx on public.posts(created_at desc);
@@ -158,6 +237,7 @@ create index if not exists messages_sender_receiver_idx on public.messages(sende
 create index if not exists music_created_at_idx on public.music(created_at desc);
 create index if not exists friend_requests_to_user_idx on public.friend_requests(to_user, status);
 create index if not exists friend_requests_from_user_idx on public.friend_requests(from_user, status);
+create index if not exists music_saves_user_id_idx on public.music_saves(user_id);
 
 -- ------------------------------------------------------------
 -- RLS
@@ -171,6 +251,7 @@ alter table public.music enable row level security;
 alter table public.friend_requests enable row level security;
 alter table public.post_likes enable row level security;
 alter table public.comment_likes enable row level security;
+alter table public.music_saves enable row level security;
 
 -- Profiles
  drop policy if exists profiles_select on public.profiles;
@@ -179,26 +260,34 @@ create policy profiles_select on public.profiles for select using (true);
 create policy profiles_insert on public.profiles for insert with check (auth.uid() = id);
  drop policy if exists profiles_update on public.profiles;
 create policy profiles_update on public.profiles for update using (auth.uid() = id) with check (auth.uid() = id);
+-- Lets an admin update ANY profile row (to ban/unban or grant/revoke
+-- admin). The protect_profile_role_columns trigger above still makes
+-- sure only an actual admin's update can move role/banned/ban_reason,
+-- whichever of these two policies is the one that let the row through.
+ drop policy if exists profiles_update_admin on public.profiles;
+create policy profiles_update_admin on public.profiles for update
+using (public.is_admin())
+with check (public.is_admin());
 
 -- Posts
  drop policy if exists posts_select on public.posts;
 create policy posts_select on public.posts for select using (true);
  drop policy if exists posts_insert on public.posts;
-create policy posts_insert on public.posts for insert with check (auth.uid() = author_id);
+create policy posts_insert on public.posts for insert with check (auth.uid() = author_id and not public.is_banned());
  drop policy if exists posts_update on public.posts;
 create policy posts_update on public.posts for update using (auth.uid() = author_id) with check (auth.uid() = author_id);
  drop policy if exists posts_delete on public.posts;
-create policy posts_delete on public.posts for delete using (auth.uid() = author_id);
+create policy posts_delete on public.posts for delete using (auth.uid() = author_id or public.is_admin());
 
 -- Comments
  drop policy if exists comments_select on public.comments;
 create policy comments_select on public.comments for select using (true);
  drop policy if exists comments_insert on public.comments;
-create policy comments_insert on public.comments for insert with check (auth.uid() = author_id);
+create policy comments_insert on public.comments for insert with check (auth.uid() = author_id and not public.is_banned());
  drop policy if exists comments_update on public.comments;
 create policy comments_update on public.comments for update using (auth.uid() = author_id) with check (auth.uid() = author_id);
  drop policy if exists comments_delete on public.comments;
-create policy comments_delete on public.comments for delete using (auth.uid() = author_id);
+create policy comments_delete on public.comments for delete using (auth.uid() = author_id or public.is_admin());
 
 -- Post likes
  drop policy if exists post_likes_select on public.post_likes;
@@ -228,7 +317,7 @@ create policy friendships_delete on public.friendships for delete using (auth.ui
  drop policy if exists messages_select on public.messages;
 create policy messages_select on public.messages for select using (auth.uid() = sender_id or auth.uid() = receiver_id);
  drop policy if exists messages_insert on public.messages;
-create policy messages_insert on public.messages for insert with check (auth.uid() = sender_id);
+create policy messages_insert on public.messages for insert with check (auth.uid() = sender_id and not public.is_banned());
  drop policy if exists messages_update on public.messages;
 create policy messages_update on public.messages for update
 using (auth.uid() = sender_id or auth.uid() = receiver_id)
@@ -255,11 +344,19 @@ using (auth.uid() = from_user or auth.uid() = to_user);
  drop policy if exists music_select on public.music;
 create policy music_select on public.music for select using (true);
  drop policy if exists music_insert on public.music;
-create policy music_insert on public.music for insert with check (auth.uid() = author_id);
+create policy music_insert on public.music for insert with check (auth.uid() = author_id and not public.is_banned());
  drop policy if exists music_update on public.music;
 create policy music_update on public.music for update using (auth.uid() = author_id) with check (auth.uid() = author_id);
  drop policy if exists music_delete on public.music;
-create policy music_delete on public.music for delete using (auth.uid() = author_id);
+create policy music_delete on public.music for delete using (auth.uid() = author_id or public.is_admin());
+
+-- Music saves ("add to my music" ➕ button)
+ drop policy if exists music_saves_select on public.music_saves;
+create policy music_saves_select on public.music_saves for select using (true);
+ drop policy if exists music_saves_insert on public.music_saves;
+create policy music_saves_insert on public.music_saves for insert with check (auth.uid() = user_id and not public.is_banned());
+ drop policy if exists music_saves_delete on public.music_saves;
+create policy music_saves_delete on public.music_saves for delete using (auth.uid() = user_id);
 
 -- ------------------------------------------------------------
 -- REALTIME — make sure Supabase actually broadcasts changes on
@@ -347,5 +444,15 @@ on storage.objects for delete
 to authenticated
 using (
     bucket_id = 'music'
-    and (storage.foldername(name))[1] = auth.uid()::text
+    and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
 );
+
+-- ============================================================
+-- ONE-TIME: make yourself the first admin.
+-- Nobody is an admin by default. After running the rest of this
+-- file, replace 'your_username' below with your bubbles username,
+-- select just this one line, and run it by itself once. After
+-- that, grant/revoke admin for anyone else from the app's own
+-- 🛡️ Админ page — you won't need to touch SQL again.
+-- ============================================================
+-- update public.profiles set role = 'admin' where username = 'your_username';
