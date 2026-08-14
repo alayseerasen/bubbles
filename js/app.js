@@ -23,6 +23,7 @@ let currentUserId = null;
 let currentPage = "feed";
 let selectedProfileId = null;
 let selectedChatId = null;
+let selectedMessageImage = null; // resized data URL staged to send in the current chat, or null
 let genderValue = "female";
 let currentlyPlayingMusicId = null;
 let heartbeatTimer = null;
@@ -77,16 +78,6 @@ function getUser(id) {
 
 function getCurrentUser() {
     return getUser(currentUserId);
-}
-
-function isCurrentUserAdmin() {
-    return !!getCurrentUser()?.isAdmin;
-}
-
-// True if the current user is allowed to delete/moderate content by this
-// author — either it's their own content, or they're an admin.
-function canModerate(authorId) {
-    return authorId === currentUserId || isCurrentUserAdmin();
 }
 
 /* ------------------------------------------------------------
@@ -424,13 +415,7 @@ async function logout(){
    ============================================================ */
 
 function startApp(){
-    const me = getCurrentUser();
-    if(!me){
-        logout();
-        return;
-    }
-    if(me.isBanned){
-        toast("Этот аккаунт заблокирован администратором.", 9000);
+    if(!getCurrentUser()){
         logout();
         return;
     }
@@ -438,7 +423,6 @@ function startApp(){
     setupMessagesRealtime();
     setupFriendRequestsRealtime();
     setupSocialRealtime();
-    setupModerationRealtime();
     renderApp();
 }
 
@@ -728,7 +712,7 @@ function renderCommentRow(postId, comment, topComment){
                 </button>
 
                 ${
-                    canModerate(comment.authorId)
+                    comment.authorId === currentUserId
                     ? `
                         <button
                             class="comment-action-btn"
@@ -821,7 +805,6 @@ function renderPost(post){
 
                     <strong>
                         ${escapeHtml(author.displayName)}
-                        ${author.isAdmin ? `<span class="admin-badge" title="Администратор">👑</span>` : ""}
                     </strong>
 
                     <small>
@@ -886,7 +869,7 @@ function renderPost(post){
 
 
                 ${
-                    canModerate(post.authorId)
+                    post.authorId === currentUserId
                     ? `
                         <button
                             class="action-btn"
@@ -1112,7 +1095,7 @@ function closeReplyBox(postId, threadId, { skipRefresh = false } = {}){
 
 async function deleteComment(postId, commentId) {
     const comment = db.comments.find(c => c.id === commentId);
-    if (!comment || !canModerate(comment.authorId))
+    if (!comment || comment.authorId !== currentUserId)
         return;
     if (!confirm("Удалить комментарий?"))
         return;
@@ -1156,7 +1139,7 @@ async function sharePost(postId){
 
 async function deletePost(postId) {
     const post = db.posts.find(p => p.id === postId);
-    if (!post || !canModerate(post.authorId))
+    if (!post || post.authorId !== currentUserId)
         return;
     if (!confirm("Удалить пост?"))
         return;
@@ -1219,8 +1202,6 @@ function renderProfile(userId){
 
                         <h1>
                             ${escapeHtml(user.displayName)}
-                            ${user.isAdmin ? `<span class="admin-badge" title="Администратор">👑</span>` : ""}
-                            ${user.isBanned ? `<span class="banned-badge" title="Заблокирован">🚫</span>` : ""}
                         </h1>
 
                         <div class="username">
@@ -1256,25 +1237,6 @@ function renderProfile(userId){
                                             onclick="openChat('${user.id}')"
                                         >
                                             💬 Написать
-                                        </button>
-                                    `
-                                    : ""
-                                }
-
-                                ${
-                                    isCurrentUserAdmin()
-                                    ? `
-                                        <button
-                                            class="secondary"
-                                            onclick="setUserAdmin('${user.id}', ${!user.isAdmin})"
-                                        >
-                                            ${user.isAdmin ? "👑 Снять админку" : "👑 Сделать админом"}
-                                        </button>
-                                        <button
-                                            class="danger"
-                                            onclick="setUserBanned('${user.id}', ${!user.isBanned})"
-                                        >
-                                            ${user.isBanned ? "✅ Разбанить" : "🚫 Забанить"}
                                         </button>
                                     `
                                     : ""
@@ -1842,64 +1804,13 @@ async function removeFriend(userId) {
     navigate(currentPage, selectedProfileId || userId);
 }
 
-/* ------------------------------------------------------------
-   MODERATION (admin / ban) — the database also enforces all of
-   this via RLS + a trigger, so these client checks are just for
-   a clean UI; a banned/non-admin user can't actually bypass them.
-   ------------------------------------------------------------ */
-
-async function setUserAdmin(userId, makeAdmin) {
-    if (!isCurrentUserAdmin() || userId === currentUserId) return;
-    const target = getUser(userId);
-    if (!target) return;
-    const { error } = await sb.from("profiles").update({ is_admin: makeAdmin }).eq("id", userId);
-    if (error) {
-        console.error(error);
-        toast("Не удалось изменить права администратора.");
-        return;
-    }
-    target.isAdmin = makeAdmin;
-    toast(makeAdmin ? `${target.displayName} теперь администратор.` : `${target.displayName} больше не администратор.`);
-    navigate(currentPage, selectedProfileId || userId);
-}
-
-async function setUserBanned(userId, banned) {
-    if (!isCurrentUserAdmin() || userId === currentUserId) return;
-    const target = getUser(userId);
-    if (!target) return;
-    if (banned && !confirm(`Заблокировать ${target.displayName}? Пользователь не сможет заходить, публиковать посты, комментарии, музыку и писать сообщения.`)) return;
-    const { error } = await sb.from("profiles").update({ is_banned: banned }).eq("id", userId);
-    if (error) {
-        console.error(error);
-        toast("Не удалось изменить статус блокировки.");
-        return;
-    }
-    target.isBanned = banned;
-    toast(banned ? `${target.displayName} заблокирован(а).` : `${target.displayName} разблокирован(а).`);
-    navigate(currentPage, selectedProfileId || userId);
-}
-
-// Watches my OWN profile row so a ban that happens WHILE I'm already
-// logged in takes effect immediately, not just on next login.
-let moderationChannel = null;
-function setupModerationRealtime() {
-    if (moderationChannel) sb.removeChannel(moderationChannel);
-    moderationChannel = sb.channel("bubbles-moderation-" + currentUserId)
-        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "profiles", filter: `id=eq.${currentUserId}` }, (payload) => {
-            if (payload.new.is_banned) {
-                toast("Ваш аккаунт был заблокирован администратором.", 9000);
-                logout();
-            }
-        })
-        .subscribe();
-}
-
 /* ============================================================
    MESSAGES
    ============================================================ */
 
 function openChat(userId) {
     selectedChatId = userId;
+    selectedMessageImage = null; // a staged photo shouldn't follow you into a different chat
     navigate("messages");
     markChatAsRead(userId);
     joinTypingChannel(userId);
@@ -2152,7 +2063,7 @@ function renderConversation(user) {
                         lastMessage
                             ? escapeHtml(
                                 lastMessage.text ||
-                                ""
+                                (lastMessage.image ? "📷 Фото" : "")
                             )
                             : "Нет сообщений"
                     }
@@ -2225,10 +2136,32 @@ function renderChat(userId){
 
         <div id="typingIndicator" class="typing-indicator hidden">${escapeHtml(user.displayName)} печатает…</div>
 
+        <div id="messageImagePreview" class="message-image-preview ${selectedMessageImage ? "" : "hidden"}">
+            <img id="messageImagePreviewImg" src="${selectedMessageImage || ""}">
+            <button type="button" class="message-image-remove" onclick="removeMessageImage()" title="Убрать фото">✕</button>
+        </div>
+
         <form
             class="chat-input"
             onsubmit="sendMessage(event,'${userId}')"
         >
+
+            <input
+                type="file"
+                id="messageImageInput"
+                accept="image/*"
+                class="hidden"
+                onchange="handleMessageImageSelect(event)"
+            >
+
+            <button
+                type="button"
+                class="chat-attach-btn"
+                onclick="document.getElementById('messageImageInput').click()"
+                title="Прикрепить фото"
+            >
+                📷
+            </button>
 
             <input
     id="messageInput"
@@ -2236,7 +2169,6 @@ function renderChat(userId){
     autocomplete="off"
     placeholder="Написать сообщение..."
     oninput="handleTyping()"
-    required
 >
 
             <button class="primary">
@@ -2252,9 +2184,11 @@ function messageBubble(message){
     const mine = message.from === currentUserId;
     return `
 
-        <div class="message ${mine ? "me" : "them"}" data-bubbles-message-id="${message.id}">
+        <div class="message ${mine ? "me" : "them"}${message.image ? " has-image" : ""}" data-bubbles-message-id="${message.id}">
 
-            ${escapeHtml(message.text)}
+            ${message.image ? `<img class="message-image" src="${message.image}" onclick="viewChatImage(this.src)">` : ""}
+
+            ${message.text ? escapeHtml(message.text) : ""}
 
             <small>
                 ${new Date(message.createdAt)
@@ -2272,6 +2206,47 @@ function messageBubble(message){
 
     `;
 
+}
+
+// Resizes/stages a photo picked from the chat's attach button. Stored as a
+// data URL, same trick used for post images, so no Storage bucket is needed.
+async function handleMessageImageSelect(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+        toast("Можно прикрепить только изображение.");
+        event.target.value = "";
+        return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+        toast("Изображение слишком большое. Максимум 15 МБ.");
+        event.target.value = "";
+        return;
+    }
+    try { selectedMessageImage = await resizeImageFile(file, 1280); }
+    catch (e) { console.error(e); toast("Не удалось обработать изображение."); event.target.value = ""; return; }
+    event.target.value = ""; // so picking the same file again still fires onchange
+    const box = document.getElementById("messageImagePreview");
+    const img = document.getElementById("messageImagePreviewImg");
+    if (box && img) {
+        img.src = selectedMessageImage;
+        box.classList.remove("hidden");
+    }
+}
+
+function removeMessageImage() {
+    selectedMessageImage = null;
+    const box = document.getElementById("messageImagePreview");
+    if (box) box.classList.add("hidden");
+}
+
+// Tiny full-screen viewer for tapping a photo in the chat — closes on click.
+function viewChatImage(src) {
+    const overlay = document.createElement("div");
+    overlay.className = "image-viewer-overlay";
+    overlay.onclick = () => overlay.remove();
+    overlay.innerHTML = `<img src="${src}">`;
+    document.body.appendChild(overlay);
 }
 
 /* ------------------------------------------------------------
@@ -2428,7 +2403,7 @@ function showNewMessagePopup(message) {
 
     let messageText =
         message.text ||
-        "Новое сообщение";
+        (message.image ? "📷 Фото" : "Новое сообщение");
 
 
     if (
@@ -2733,14 +2708,16 @@ async function sendMessage(event, userId) {
     stopTyping();
     const input = document.getElementById("messageInput");
     const text = input.value.trim();
-    if (!text)
+    const image = selectedMessageImage || "";
+    if (!text && !image)
         return;
     input.value = "";
-    const message = { id: uid("message"), from: currentUserId, to: userId, text, createdAt: Date.now(), readAt: null };
+    removeMessageImage();
+    const message = { id: uid("message"), from: currentUserId, to: userId, text, image, createdAt: Date.now(), readAt: null };
     db.messages.push(message);
     appendMessageToChat(message, userId);
 
-    const { error } = await sb.from("messages").insert({ id: message.id, sender_id: message.from, receiver_id: message.to, text: message.text, created_at: new Date(message.createdAt).toISOString() });
+    const { error } = await sb.from("messages").insert({ id: message.id, sender_id: message.from, receiver_id: message.to, text: message.text, image: message.image, created_at: new Date(message.createdAt).toISOString() });
     if (error) {
         console.error(error);
         db.messages = db.messages.filter(m => m.id !== message.id);
@@ -2795,7 +2772,7 @@ function renderMusic() {
                 <div class="card">
                     <h3>Опубликовать музыку</h3>
                     <div class="form-group"><label>Название трека</label><input id="musicTitle" maxlength="80" placeholder="Название"></div>
-                    <div class="form-group"><label>Имя артиста</label><input id="musicArtist" maxlength="80" placeholder="Артист"></div>
+                    <div class="form-group"><label>Имя артиста</label><input id="musicArtist" maxlength="80" placeholder="Например, VASILISA HEELS"></div>
                     <div class="form-group"><label>Обложка</label><input id="musicCover" type="file" accept="image/png,image/jpeg,image/webp"></div>
                     <div class="form-group"><label>MP3-файл — максимум 15 МБ</label><input id="musicFile" type="file" accept=".mp3,audio/mpeg"></div>
                     <button class="primary" onclick="uploadMusic()">🎵 Опубликовать MP3</button>
@@ -2853,10 +2830,7 @@ function renderMusicCard(music) {
                 ${
                     isMine
                     ? `<button onclick="deleteMusic('${music.id}')" title="Удалить">🗑️</button>`
-                    : `
-                        <button class="save-track-btn ${isSaved ? "saved" : ""}" onclick="toggleMusicSave('${music.id}')" title="${isSaved ? "Убрать из моей музыки" : "Добавить в мою музыку"}">${isSaved ? "✓" : "➕"}</button>
-                        ${isCurrentUserAdmin() ? `<button onclick="deleteMusic('${music.id}')" title="Удалить (админ)">🗑️</button>` : ""}
-                    `
+                    : `<button class="save-track-btn ${isSaved ? "saved" : ""}" onclick="toggleMusicSave('${music.id}')" title="${isSaved ? "Убрать из моей музыки" : "Добавить в мою музыку"}">${isSaved ? "✓" : "➕"}</button>`
                 }
             </div>
         </div>
@@ -3041,7 +3015,7 @@ async function setListening(track, artist){
 
 async function deleteMusic(id) {
     const music = db.music.find(m => m.id === id);
-    if (!music || !canModerate(music.authorId))
+    if (!music || music.authorId !== currentUserId)
         return;
     if (!confirm("Удалить этот трек?"))
         return;
@@ -3135,13 +3109,10 @@ function rowToUser(row){
         avatar: row.avatar || defaultAvatar(),
         cover: row.cover || "",
         bio: row.bio || "",
-
-        // ADMIN
-        isAdmin: row.is_admin === true,
-
-        createdAt: row.created_at
-            ? Date.parse(row.created_at)
-            : Date.now()
+        lastSeen: row.last_seen || null,
+        currentTrack: row.current_track || "",
+        currentArtist: row.current_artist || "",
+        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
 
@@ -3198,6 +3169,8 @@ function rowToMessage(row) {
         to: row.receiver_id,
 
         text: row.text || "",
+
+        image: row.image || "",
 
         createdAt:
             row.created_at
@@ -3407,6 +3380,7 @@ async function saveDB() {
             sender_id: m.from,
             receiver_id: m.to,
             text: m.text || "",
+            image: m.image || "",
             created_at: new Date(m.createdAt || Date.now()).toISOString()
         }));
         const music = db.music.map(m => ({
@@ -3621,12 +3595,11 @@ function setupSocialRealtime() {
 }
 
 function teardownRealtime() {
-    [messagesChannel, friendRequestsChannel, typingChannel, socialChannel, moderationChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
+    [messagesChannel, friendRequestsChannel, typingChannel, socialChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
     messagesChannel = null;
     friendRequestsChannel = null;
     typingChannel = null;
     socialChannel = null;
-    moderationChannel = null;
     stopWatchingChatPartnerPresence();
 }
 
@@ -3677,6 +3650,5 @@ Object.assign(window,{
     searchUsers,createPost,toggleLike,toggleCommentLike,addComment,deleteComment,focusComment,openReplyBox,closeReplyBox,sharePost,deletePost,
     saveProfile,previewAvatar,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
-    setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
-    setUserAdmin,setUserBanned
+    setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave
 });
