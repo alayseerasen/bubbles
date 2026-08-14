@@ -107,6 +107,20 @@ function isFriend(userId) {
         (f.user2 === currentUserId && f.user1 === userId));
 }
 
+/* ------------------------------------------------------------
+   ADMIN / MODERATION HELPERS
+   ------------------------------------------------------------ */
+
+function isAdmin(userId = currentUserId) {
+    const user = getUser(userId);
+    return !!user && user.role === "admin";
+}
+
+function isBanned(userId = currentUserId) {
+    const user = getUser(userId);
+    return !!user && !!user.banned;
+}
+
 function defaultAvatar() {
     return "data:image/svg+xml;charset=UTF-8," +
         encodeURIComponent(`
@@ -415,7 +429,13 @@ async function logout(){
    ============================================================ */
 
 function startApp(){
-    if(!getCurrentUser()){
+    const me = getCurrentUser();
+    if(!me){
+        logout();
+        return;
+    }
+    if(me.banned){
+        toast("Аккаунт заблокирован" + (me.banReason ? ": " + me.banReason : ".") + " Обратись к администратору.", 9000);
         logout();
         return;
     }
@@ -538,6 +558,20 @@ function renderApp(){
                     ⚙️ Настройки
                 </button>
 
+                ${
+                    isAdmin()
+                    ? `
+                        <button
+                            class="nav-btn"
+                            data-page="admin"
+                            onclick="navigate('admin')"
+                        >
+                            🛡️ Админ
+                        </button>
+                    `
+                    : ""
+                }
+
 
                 <div class="back-button">
 
@@ -593,6 +627,7 @@ function navigate(page, id = null){
         case "music": renderMusic(); break;
         case "edit": renderEditProfile(); break;
         case "search": renderSearchResults((id != null ? id : userSearchQuery).trim().toLowerCase()); break;
+        case "admin": renderAdmin(); break;
         default: renderFeed();
     }
 
@@ -712,11 +747,12 @@ function renderCommentRow(postId, comment, topComment){
                 </button>
 
                 ${
-                    comment.authorId === currentUserId
+                    comment.authorId === currentUserId || isAdmin()
                     ? `
                         <button
                             class="comment-action-btn"
                             onclick="deleteComment('${postId}','${comment.id}')"
+                            title="${comment.authorId === currentUserId ? "Удалить" : "Удалить (админ)"}"
                         >
                             🗑️
                         </button>
@@ -869,11 +905,12 @@ function renderPost(post){
 
 
                 ${
-                    post.authorId === currentUserId
+                    post.authorId === currentUserId || isAdmin()
                     ? `
                         <button
                             class="action-btn"
                             onclick="deletePost('${post.id}')"
+                            title="${post.authorId === currentUserId ? "Удалить" : "Удалить (админ)"}"
                         >
                             🗑️
                         </button>
@@ -1095,9 +1132,9 @@ function closeReplyBox(postId, threadId, { skipRefresh = false } = {}){
 
 async function deleteComment(postId, commentId) {
     const comment = db.comments.find(c => c.id === commentId);
-    if (!comment || comment.authorId !== currentUserId)
+    if (!comment || (comment.authorId !== currentUserId && !isAdmin()))
         return;
-    if (!confirm("Удалить комментарий?"))
+    if (!confirm(comment.authorId === currentUserId ? "Удалить комментарий?" : "Удалить этот комментарий как администратор?"))
         return;
 
     // Deleting a top-level comment takes its replies with it too — this
@@ -1139,9 +1176,9 @@ async function sharePost(postId){
 
 async function deletePost(postId) {
     const post = db.posts.find(p => p.id === postId);
-    if (!post || post.authorId !== currentUserId)
+    if (!post || (post.authorId !== currentUserId && !isAdmin()))
         return;
-    if (!confirm("Удалить пост?"))
+    if (!confirm(post.authorId === currentUserId ? "Удалить пост?" : "Удалить этот пост как администратор?"))
         return;
     const [postResult, commentResult] = await Promise.all([
         sb.from("posts").delete().eq("id", postId),
@@ -2832,6 +2869,11 @@ function renderMusicCard(music) {
                     ? `<button onclick="deleteMusic('${music.id}')" title="Удалить">🗑️</button>`
                     : `<button class="save-track-btn ${isSaved ? "saved" : ""}" onclick="toggleMusicSave('${music.id}')" title="${isSaved ? "Убрать из моей музыки" : "Добавить в мою музыку"}">${isSaved ? "✓" : "➕"}</button>`
                 }
+                ${
+                    !isMine && isAdmin()
+                    ? `<button onclick="deleteMusic('${music.id}')" title="Удалить (админ)">🗑️</button>`
+                    : ""
+                }
             </div>
         </div>
     `;
@@ -3015,9 +3057,9 @@ async function setListening(track, artist){
 
 async function deleteMusic(id) {
     const music = db.music.find(m => m.id === id);
-    if (!music || music.authorId !== currentUserId)
+    if (!music || (music.authorId !== currentUserId && !isAdmin()))
         return;
-    if (!confirm("Удалить этот трек?"))
+    if (!confirm(music.authorId === currentUserId ? "Удалить этот трек?" : "Удалить этот трек как администратор?"))
         return;
     if (currentlyPlayingMusicId === id)
         closeMusicPlayer();
@@ -3033,6 +3075,130 @@ async function deleteMusic(id) {
     db.music = db.music.filter(m => m.id !== id);
     toast("Трек удалён.");
     renderMusic();
+}
+
+/* ============================================================
+   ADMIN
+   ============================================================ */
+
+function renderAdmin(){
+    if(!isAdmin()){
+        navigate("feed");
+        return;
+    }
+    const users = [...db.users].sort((a,b) => a.createdAt - b.createdAt);
+
+    document.getElementById("page").innerHTML = `
+
+        <h1 class="section-title">
+            🛡️ Админ
+        </h1>
+
+        <div class="card" style="margin-bottom:20px;">
+            Здесь можно забанить/разбанить пользователя и выдать/снять права
+            администратора. Удалить чужой пост, комментарий или трек можно
+            прямо там, где он показан, — рядом появится 🗑️.
+        </div>
+
+        ${
+            users.length
+            ? users.map(user => adminUserRow(user)).join("")
+            : emptyState("🛡️", "Пользователей нет", "Пока никто не зарегистрировался.")
+        }
+
+    `;
+}
+
+function adminUserRow(user){
+    const self = user.id === currentUserId;
+    return `
+        <div class="card" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+
+            <img
+                class="mini-avatar"
+                src="${user.avatar || defaultAvatar()}"
+                onclick="navigate('profile','${user.id}')"
+                style="cursor:pointer"
+            >
+
+            <div style="flex:1;min-width:160px;">
+                <strong style="cursor:pointer" onclick="navigate('profile','${user.id}')">
+                    ${escapeHtml(user.displayName)}
+                </strong>
+                <div style="opacity:.7;font-size:14px;">
+                    @${escapeHtml(user.username)}
+                    ${user.role === "admin" ? " · 🛡️ админ" : ""}
+                    ${user.banned ? ` · 🚫 забанен${user.banReason ? ": " + escapeHtml(user.banReason) : ""}` : ""}
+                    ${self ? " · это ты" : ""}
+                </div>
+            </div>
+
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+
+                ${
+                    self
+                    ? ""
+                    : user.role === "admin"
+                        ? `<button class="secondary" onclick="setUserRole('${user.id}',false)">Снять права админа</button>`
+                        : `<button class="secondary" onclick="setUserRole('${user.id}',true)">Сделать админом</button>`
+                }
+
+                ${
+                    self
+                    ? ""
+                    : user.banned
+                        ? `<button class="secondary" onclick="setUserBanned('${user.id}',false)">Разбанить</button>`
+                        : `<button class="danger" onclick="setUserBanned('${user.id}',true)">Забанить</button>`
+                }
+
+            </div>
+
+        </div>
+    `;
+}
+
+async function setUserRole(userId, makeAdmin) {
+    if (!isAdmin()) return;
+    const user = getUser(userId);
+    if (!user) return;
+    const role = makeAdmin ? "admin" : "user";
+    if (!confirm(makeAdmin ? `Выдать права администратора ${user.displayName}?` : `Снять права администратора у ${user.displayName}?`))
+        return;
+    const { error } = await sb.from("profiles").update({ role }).eq("id", userId);
+    if (error) {
+        console.error(error);
+        toast("Не удалось изменить права.");
+        return;
+    }
+    user.role = role;
+    toast(makeAdmin ? "Права администратора выданы." : "Права администратора сняты.");
+    renderApp();
+    navigate("admin");
+}
+
+async function setUserBanned(userId, banned) {
+    if (!isAdmin()) return;
+    const user = getUser(userId);
+    if (!user) return;
+    let reason = user.banReason || "";
+    if (banned) {
+        const input = prompt(`Причина бана для ${user.displayName} (необязательно):`, reason);
+        if (input === null) return; // cancelled
+        reason = input.trim();
+    } else {
+        if (!confirm(`Разбанить ${user.displayName}?`)) return;
+        reason = "";
+    }
+    const { error } = await sb.from("profiles").update({ banned, ban_reason: reason }).eq("id", userId);
+    if (error) {
+        console.error(error);
+        toast("Не удалось изменить статус бана.");
+        return;
+    }
+    user.banned = banned;
+    user.banReason = reason;
+    toast(banned ? "Пользователь забанен." : "Пользователь разбанен.");
+    navigate("admin");
 }
 
 /* ============================================================
@@ -3112,6 +3278,9 @@ function rowToUser(row){
         lastSeen: row.last_seen || null,
         currentTrack: row.current_track || "",
         currentArtist: row.current_artist || "",
+        role: row.role || "user",
+        banned: !!row.banned,
+        banReason: row.ban_reason || "",
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
@@ -3650,5 +3819,6 @@ Object.assign(window,{
     searchUsers,createPost,toggleLike,toggleCommentLike,addComment,deleteComment,focusComment,openReplyBox,closeReplyBox,sharePost,deletePost,
     saveProfile,previewAvatar,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
-    setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave
+    setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
+    renderAdmin,setUserRole,setUserBanned
 });
