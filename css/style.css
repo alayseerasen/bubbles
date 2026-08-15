@@ -1292,11 +1292,37 @@ select:focus{
         top:72px;
         z-index:500;
         display:flex;
-        gap:5px;
+        gap:7px;
         overflow-x:auto;
         -webkit-overflow-scrolling:touch;
         touch-action:pan-x;
-        padding:7px;
+        padding:8px;
+    }
+
+    /* A fading edge + a small chevron over the last visible tab hints
+       that the row keeps going — it already scrolled fine, people just
+       had no way to tell there was more without trying. Positioned
+       absolutely against .sidebar (already a positioned element via its
+       own sticky), so it stays pinned to the visible edge regardless of
+       how far the row is scrolled — a plain scroll-shadow overlay, not
+       part of the scrolling content itself. */
+    .sidebar::after{
+        content:"›";
+        position:absolute;
+        top:0;
+        right:0;
+        bottom:0;
+        width:34px;
+        display:flex;
+        align-items:center;
+        justify-content:flex-end;
+        padding-right:8px;
+        font-size:22px;
+        font-weight:900;
+        color:#168fd0;
+        background:linear-gradient(90deg,transparent,rgba(255,255,255,.92) 60%);
+        border-radius:0 25px 25px 0;
+        pointer-events:none;
     }
 
     .nav-btn{
@@ -1304,9 +1330,9 @@ select:focus{
         flex:0 0 auto;
         white-space:nowrap;
         margin:0;
-        padding:8px 11px;
-        font-size:14px;
-        border-radius:12px;
+        padding:10px 15px;
+        font-size:15px;
+        border-radius:13px;
     }
 
     .back-button{
@@ -2062,8 +2088,6 @@ html::after{
 .card,
 .auth-box,
 .crypto-box,
-.sidebar,
-.topbar,
 .music-card,
 .friend-card,
 .post,
@@ -2071,6 +2095,26 @@ html::after{
 .message.them,
 .image-viewer-overlay img{
     position:relative;
+    overflow:hidden;
+}
+
+/* .sidebar and .topbar are already position:sticky (set earlier in this
+   file) — that's enough of a positioning context for their ::before sheen
+   below. Redeclaring position:relative here would silently override the
+   sticky and break both "stick while scrolling" and the mobile nav's
+   layout (a stray leftover `top` offset then shifts it out of flow,
+   leaving a blank gap above it).
+
+   .topbar gets overflow:hidden to clip its sheen (harmless — it never
+   scrolls). .sidebar does NOT: on mobile it's a horizontally-scrolling
+   row of tabs (overflow-x:auto, set in the responsive block below), and
+   `overflow:hidden` here is a shorthand for both axes — appearing later
+   in the cascade than that media query, it would silently win and lock
+   overflow-x back to hidden, which is exactly what made the tabs stop
+   scrolling. The sheen's own ::before is already sized to sit fully
+   inside .sidebar's box (inset 0 / height 42% / border-radius:inherit),
+   so it can't bleed outside anyway — .sidebar doesn't need the clip. */
+.topbar{
     overflow:hidden;
 }
 
@@ -2260,6 +2304,11 @@ html::after{
 [data-theme="dark"] .sidebar{
     background:rgba(16,25,33,.78);
     border-color:rgba(255,255,255,.08);
+}
+
+[data-theme="dark"] .sidebar::after{
+    color:#8fe0f7;
+    background:linear-gradient(90deg,transparent,rgba(16,25,33,.94) 60%);
 }
 
 [data-theme="dark"] .nav-btn{ color:#89a5b3; }
