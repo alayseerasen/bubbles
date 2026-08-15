@@ -1299,32 +1299,6 @@ select:focus{
         padding:8px;
     }
 
-    /* A fading edge + a small chevron over the last visible tab hints
-       that the row keeps going — it already scrolled fine, people just
-       had no way to tell there was more without trying. Positioned
-       absolutely against .sidebar (already a positioned element via its
-       own sticky), so it stays pinned to the visible edge regardless of
-       how far the row is scrolled — a plain scroll-shadow overlay, not
-       part of the scrolling content itself. */
-    .sidebar::after{
-        content:"›";
-        position:absolute;
-        top:0;
-        right:0;
-        bottom:0;
-        width:34px;
-        display:flex;
-        align-items:center;
-        justify-content:flex-end;
-        padding-right:8px;
-        font-size:22px;
-        font-weight:900;
-        color:#168fd0;
-        background:linear-gradient(90deg,transparent,rgba(255,255,255,.92) 60%);
-        border-radius:0 25px 25px 0;
-        pointer-events:none;
-    }
-
     .nav-btn{
         width:auto;
         flex:0 0 auto;
@@ -2304,11 +2278,6 @@ html::after{
 [data-theme="dark"] .sidebar{
     background:rgba(16,25,33,.78);
     border-color:rgba(255,255,255,.08);
-}
-
-[data-theme="dark"] .sidebar::after{
-    color:#8fe0f7;
-    background:linear-gradient(90deg,transparent,rgba(16,25,33,.94) 60%);
 }
 
 [data-theme="dark"] .nav-btn{ color:#89a5b3; }
