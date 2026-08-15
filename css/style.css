@@ -2090,7 +2090,6 @@ html::after{
 .secondary,
 .danger{
     position:relative;
-    overflow:hidden;
     border-radius:18px;
     border:1px solid rgba(255,255,255,.5);
     text-shadow:0 1px 2px rgba(0,40,55,.25);
@@ -2114,15 +2113,13 @@ html::after{
     filter:brightness(.97);
 }
 
-/* Chrome page titles */
+/* Glossy page titles — solid, readable color (not background-clip:text:
+   that trick also washes out emoji glyphs in the same heading, which is
+   exactly what these titles start with, e.g. "🎁 Друзья"). */
 
-.section-title,
-.top-logo{
-    background:linear-gradient(180deg,#ffffff 0%,#dff7ff 45%,#8fe0f7 100%);
-    -webkit-background-clip:text;
-    background-clip:text;
-    -webkit-text-fill-color:transparent;
-    text-shadow:0 2px 0 rgba(30,120,155,.25),0 6px 16px rgba(30,150,190,.25);
+.section-title{
+    color:#0d6a96;
+    text-shadow:0 1px 0 rgba(255,255,255,.75),0 4px 14px rgba(30,150,190,.2);
 }
 
 /* Aero scrollbars */
@@ -2267,6 +2264,12 @@ html::after{
 }
 
 [data-theme="dark"] .empty{ color:#6f8894; }
+
+[data-theme="dark"] .section-title{
+    color:#8fe0f7;
+    text-shadow:0 1px 0 rgba(0,0,0,.4),0 4px 14px rgba(79,201,245,.25);
+}
+
 
 /* Softer glass sheen on dark surfaces — full-strength white would blow
    out the dark glass look. */
