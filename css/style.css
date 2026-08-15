@@ -932,6 +932,10 @@ select:focus{
     font-size:18px;
 }
 
+.profile-expand-btn{
+    margin:10px 0 20px;
+}
+
 /* MUSIC */
 
 .music-card{
@@ -1309,6 +1313,7 @@ select:focus{
         margin:0;
         padding:0;
         border:0;
+        display:contents;
     }
 
     .search{
