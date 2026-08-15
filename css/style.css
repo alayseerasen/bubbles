@@ -737,16 +737,6 @@ select:focus{
     border-bottom-left-radius:5px;
 }
 
-/* Text + timestamp wrapper. Needs its own stacking (not just normal
-   inline content) so it reliably paints above the ::before "glass
-   sheen" highlight added lower in this file — that pseudo-element is
-   absolutely positioned, which otherwise paints on top of plain inline
-   text regardless of source order, washing the message text out. */
-.message-body{
-    position:relative;
-    z-index:1;
-}
-
 .message small{
     display:block;
     margin-top:4px;
@@ -2072,19 +2062,6 @@ html::after{
 .image-viewer-overlay img{
     position:relative;
     overflow:hidden;
-}
-
-/* The rule above sets overflow:hidden on .sidebar for the glass-sheen
-   effect, but on mobile .sidebar IS the horizontally-scrolling tab bar
-   (see the max-width:850px rules earlier in this file) — overflow:hidden
-   clips it to hidden in both axes, which cancels that scrolling and
-   leaves any tabs past the first screenful impossible to reach. Restore
-   horizontal scrolling here, after the rule that broke it. */
-@media(max-width:850px){
-    .sidebar{
-        overflow-x:auto;
-        overflow-y:visible;
-    }
 }
 
 .card::before,
