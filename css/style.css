@@ -283,7 +283,7 @@ select:focus{
     border-radius:50%;
     object-fit:cover;
     border:2px solid #fff;
-    box-shadow:0 3px 10px rgba(30,120,150,.2);
+    box-shadow:0 3px 10px rgba(30,120,150,.2),inset 0 2px 4px rgba(255,255,255,.9);
     background:#d5f7ff;
 }
 
@@ -563,7 +563,7 @@ select:focus{
     border-radius:50%;
     object-fit:cover;
     border:6px solid white;
-    box-shadow:0 8px 25px rgba(28,112,140,.22);
+    box-shadow:0 8px 25px rgba(28,112,140,.22),inset 0 3px 8px rgba(255,255,255,.9);
     margin-top:-60px;
     background:#d8f7ff;
 }
@@ -1979,7 +1979,186 @@ select:focus{
 }
 
 /* ============================================================
-   DARK THEME
+   FRUTIGER AERO ENHANCEMENTS
+   ------------------------------------------------------------
+   Glassy sheen highlights, floating bubbles, chrome buttons,
+   dewdrop scrollbars — layered on top of everything above
+   without touching any markup or functionality.
+   ============================================================ */
+
+/* Ambient floating bubbles behind the whole app. Pure CSS, fixed
+   position, decorative only (aria-hidden not needed — no DOM node
+   at all, it's pseudo-elements on <html> so it never competes with
+   real content or z-index of the app). */
+
+html::before,
+html::after{
+    content:"";
+    position:fixed;
+    z-index:0;
+    pointer-events:none;
+    border-radius:50%;
+}
+
+html::before{
+    width:26px;
+    height:26px;
+    left:8%;
+    bottom:-40px;
+    background:
+        radial-gradient(circle at 32% 28%,rgba(255,255,255,.95),rgba(255,255,255,.15) 45%,rgba(255,255,255,0) 70%),
+        radial-gradient(circle at 65% 70%,rgba(191,245,255,.35),rgba(191,245,255,0) 60%);
+    box-shadow:0 0 12px rgba(255,255,255,.5);
+    animation:bubblesFloatA 14s linear infinite;
+}
+
+html::after{
+    width:15px;
+    height:15px;
+    left:78%;
+    bottom:-40px;
+    background:
+        radial-gradient(circle at 32% 28%,rgba(255,255,255,.95),rgba(255,255,255,.15) 45%,rgba(255,255,255,0) 70%),
+        radial-gradient(circle at 65% 70%,rgba(191,245,255,.35),rgba(191,245,255,0) 60%);
+    box-shadow:0 0 8px rgba(255,255,255,.5);
+    animation:bubblesFloatB 10s linear infinite 2.5s;
+}
+
+@keyframes bubblesFloatA{
+    0%{ transform:translateY(0) translateX(0); opacity:0; }
+    8%{ opacity:.9; }
+    92%{ opacity:.7; }
+    100%{ transform:translateY(-115vh) translateX(24px); opacity:0; }
+}
+
+@keyframes bubblesFloatB{
+    0%{ transform:translateY(0) translateX(0); opacity:0; }
+    8%{ opacity:.8; }
+    92%{ opacity:.6; }
+    100%{ transform:translateY(-115vh) translateX(-30px); opacity:0; }
+}
+
+@media (prefers-reduced-motion: reduce){
+    html::before,
+    html::after{
+        animation:none;
+        display:none;
+    }
+}
+
+/* Glass sheen: a soft highlight band across the top of every glassy
+   panel, like light catching a curved glass or plastic surface. */
+
+.card,
+.auth-box,
+.crypto-box,
+.sidebar,
+.topbar,
+.music-card,
+.friend-card,
+.post,
+.message.me,
+.message.them,
+.image-viewer-overlay img{
+    position:relative;
+    overflow:hidden;
+}
+
+.card::before,
+.auth-box::before,
+.crypto-box::before,
+.sidebar::before,
+.topbar::before,
+.music-card::before,
+.friend-card::before,
+.post::before,
+.message.me::before,
+.message.them::before{
+    content:"";
+    position:absolute;
+    inset:0 0 auto 0;
+    height:42%;
+    background:linear-gradient(180deg,rgba(255,255,255,.6),rgba(255,255,255,0));
+    border-radius:inherit;
+    pointer-events:none;
+}
+
+/* Chrome / glossy buttons: highlight arc on top, deeper gradient,
+   thin bright bevel edge — classic Aero "wet plastic" button. */
+
+.primary,
+.secondary,
+.danger{
+    position:relative;
+    overflow:hidden;
+    border-radius:18px;
+    border:1px solid rgba(255,255,255,.5);
+    text-shadow:0 1px 2px rgba(0,40,55,.25);
+}
+
+.primary::before,
+.secondary::before,
+.danger::before{
+    content:"";
+    position:absolute;
+    inset:0 0 55% 0;
+    background:linear-gradient(180deg,rgba(255,255,255,.65),rgba(255,255,255,0));
+    border-radius:18px 18px 50% 50%/18px 18px 12px 12px;
+    pointer-events:none;
+}
+
+.primary:active,
+.secondary:active,
+.danger:active{
+    transform:translateY(1px) scale(.98);
+    filter:brightness(.97);
+}
+
+/* Chrome page titles */
+
+.section-title,
+.top-logo{
+    background:linear-gradient(180deg,#ffffff 0%,#dff7ff 45%,#8fe0f7 100%);
+    -webkit-background-clip:text;
+    background-clip:text;
+    -webkit-text-fill-color:transparent;
+    text-shadow:0 2px 0 rgba(30,120,155,.25),0 6px 16px rgba(30,150,190,.25);
+}
+
+/* Aero scrollbars */
+
+::-webkit-scrollbar{
+    width:12px;
+    height:12px;
+}
+
+::-webkit-scrollbar-track{
+    background:rgba(191,245,255,.25);
+}
+
+::-webkit-scrollbar-thumb{
+    background:linear-gradient(180deg,#8fe6ff,#1b9bd2);
+    border-radius:10px;
+    border:2px solid rgba(255,255,255,.6);
+}
+
+::-webkit-scrollbar-thumb:hover{
+    background:linear-gradient(180deg,#a6efff,#2babe0);
+}
+
+* {
+    scrollbar-color:#4fc9f5 rgba(191,245,255,.25);
+}
+
+/* Active nav pill gets an extra glossy chrome treatment */
+
+.nav-btn.active{
+    box-shadow:
+        0 5px 14px rgba(30,150,190,.35),
+        inset 0 1px 0 rgba(255,255,255,.6);
+}
+
+
    Toggle by setting data-theme="dark" on <html> (see js/theme.js).
    ============================================================ */
 
@@ -2088,6 +2267,27 @@ select:focus{
 }
 
 [data-theme="dark"] .empty{ color:#6f8894; }
+
+/* Softer glass sheen on dark surfaces — full-strength white would blow
+   out the dark glass look. */
+[data-theme="dark"] .card::before,
+[data-theme="dark"] .auth-box::before,
+[data-theme="dark"] .crypto-box::before,
+[data-theme="dark"] .sidebar::before,
+[data-theme="dark"] .topbar::before,
+[data-theme="dark"] .music-card::before,
+[data-theme="dark"] .friend-card::before,
+[data-theme="dark"] .post::before,
+[data-theme="dark"] .message.me::before,
+[data-theme="dark"] .message.them::before{
+    background:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,0));
+}
+
+[data-theme="dark"] html::before,
+[data-theme="dark"] html::after{
+    box-shadow:0 0 12px rgba(79,201,245,.35);
+}
+
 
 [data-theme="dark"] .post-author small{ color:#7d97a4; }
 [data-theme="dark"] .post-actions{ border-top-color:#233542; }
