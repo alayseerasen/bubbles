@@ -487,7 +487,7 @@ function renderApp(){
                 <input
                     id="searchInput"
                     placeholder="Поиск пользователей..."
-                    oninput="searchUsers(this.value)"
+                    oninput="searchUsers(this.value,'searchInput')"
                 >
 
             </div>
@@ -3275,18 +3275,27 @@ async function setUserBanned(userId, banned) {
 
 let userSearchQuery = "";
 
-function searchUsers(value){
+function searchUsers(value, sourceId){
     userSearchQuery = value;
     const query = value.trim().toLowerCase();
     currentPage = "search";
     renderSearchResults(query);
-    // Keep the header search box (desktop) and the page's own search box
-    // (mobile) in sync with each other and with the caret position.
+    // renderSearchResults() rebuilds #page's innerHTML, which destroys and
+    // recreates #searchPageInput as a brand-new (unfocused) DOM node every
+    // keystroke — on mobile that closes the keyboard after a single
+    // character. Re-focus + restore the caret on whichever input the
+    // person is actually typing in.
     ["searchInput", "searchPageInput"].forEach(id => {
         const el = document.getElementById(id);
         if (el && el.value !== value) el.value = value;
-        if (el === document.activeElement) el.setSelectionRange(value.length, value.length);
     });
+    if (sourceId) {
+        const active = document.getElementById(sourceId);
+        if (active) {
+            active.focus();
+            active.setSelectionRange(value.length, value.length);
+        }
+    }
 }
 
 function renderSearchResults(query){
@@ -3305,7 +3314,7 @@ function renderSearchResults(query){
                 id="searchPageInput"
                 placeholder="Поиск пользователей..."
                 value="${escapeHtml(userSearchQuery)}"
-                oninput="searchUsers(this.value)"
+                oninput="searchUsers(this.value,'searchPageInput')"
             >
         </div>
 
