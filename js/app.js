@@ -997,8 +997,8 @@ async function createPost() {
             toast("Можно загружать только изображения.");
             return;
         }
-        if (file.size > 15 * 1024 * 1024) {
-            toast("Изображение слишком большое. Максимум 15 МБ.");
+        if (file.size > 20 * 1024 * 1024) {
+            toast("Изображение слишком большое. Максимум 20 МБ.");
             return;
         }
         try { image = await resizeImageFile(file, 1600); }
