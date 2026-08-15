@@ -322,6 +322,7 @@ select:focus{
     margin:22px auto 130px;
     display:grid;
     grid-template-columns:220px minmax(0,1fr);
+    align-items:start;
     gap:20px;
 }
 
@@ -329,6 +330,7 @@ select:focus{
     position:sticky;
     top:92px;
     height:max-content;
+    margin:0;
     padding:13px;
     border-radius:25px;
     background:rgba(255,255,255,.75);
