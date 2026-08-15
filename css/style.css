@@ -322,6 +322,7 @@ select:focus{
     margin:22px auto 130px;
     display:grid;
     grid-template-columns:220px minmax(0,1fr);
+    align-items:start;
     gap:20px;
 }
 
@@ -329,6 +330,7 @@ select:focus{
     position:sticky;
     top:92px;
     height:max-content;
+    margin:0;
     padding:13px;
     border-radius:25px;
     background:rgba(255,255,255,.75);
@@ -1288,11 +1290,14 @@ select:focus{
         display:flex;
         gap:5px;
         overflow-x:auto;
+        -webkit-overflow-scrolling:touch;
+        touch-action:pan-x;
         padding:7px;
     }
 
     .nav-btn{
         width:auto;
+        flex:0 0 auto;
         white-space:nowrap;
         margin:0;
         padding:8px 11px;
