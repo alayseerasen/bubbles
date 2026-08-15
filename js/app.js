@@ -1996,11 +1996,19 @@ function renderMessages(){
     const users = friends.map(f => getUser(f.user1 === currentUserId ? f.user2 : f.user1)).filter(Boolean);
     if(!selectedChatId && users.length) selectedChatId = users[0].id;
 
+    const encryptionReady = BubblesCrypto.isReady();
+
     document.getElementById("page").innerHTML = `
 
         <h1 class="section-title">
             💬 Сообщения
         </h1>
+
+        <div class="encryption-status ${encryptionReady ? "ok" : "off"}">
+            ${encryptionReady
+                ? "🔒 Шифрование включено на этом устройстве"
+                : "🔓 Шифрование НЕ включено на этом устройстве — сообщения уходят открытым текстом"}
+        </div>
 
 
         <div class="card messages-layout">
@@ -2154,6 +2162,7 @@ function renderConversation(user) {
 function renderChat(userId){
     const user = getUser(userId);
     const messages = db.messages.filter(m => (m.from === currentUserId && m.to === userId) || (m.from === userId && m.to === currentUserId)).sort((a,b) => a.createdAt - b.createdAt);
+    const chatEncrypted = BubblesCrypto.isReady() && !!user.publicKey;
 
     return `
 
@@ -2170,6 +2179,8 @@ function renderChat(userId){
                 <span style="cursor:pointer;" onclick="navigate('profile','${user.id}')">${escapeHtml(user.displayName)}</span>
                 <small id="chatPartnerStatus" class="chat-partner-status">${isUserOnline(user.lastSeen) ? "🟢 Онлайн" : "⚪ Не в сети"}</small>
             </div>
+
+            <span class="chat-encryption-badge" title="${chatEncrypted ? "Сообщения шифруются" : "Сообщения НЕ шифруются"}">${chatEncrypted ? "🔒" : "🔓"}</span>
 
         </div>
 
