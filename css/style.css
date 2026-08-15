@@ -376,55 +376,6 @@ select:focus{
     letter-spacing:-1px;
 }
 
-.section-title-row{
-    display:flex;
-    align-items:center;
-    justify-content:space-between;
-    gap:10px;
-    flex-wrap:wrap;
-}
-
-.section-title-row .section-title{
-    margin-bottom:0;
-}
-
-.section-count{
-    display:inline-flex;
-    align-items:center;
-    justify-content:center;
-    min-width:26px;
-    height:26px;
-    padding:0 8px;
-    margin-left:6px;
-    border-radius:13px;
-    background:rgba(79,201,245,.16);
-    color:#168fd0;
-    font-size:14px;
-    font-weight:900;
-    vertical-align:middle;
-}
-
-.see-all-btn{
-    flex-shrink:0;
-    border:2px solid rgba(255,255,255,.7);
-    border-radius:14px;
-    padding:8px 14px;
-    background:linear-gradient(#8fe4fb,#4fc9f5);
-    color:#fff;
-    font-weight:900;
-    font-size:13px;
-    text-shadow:0 1px 2px rgba(0,40,55,.2);
-}
-
-.see-all-btn:hover{
-    filter:brightness(1.05);
-    transform:translateY(-1px);
-}
-
-.back-link{
-    margin-bottom:16px;
-}
-
 /* CARDS */
 
 .card{
@@ -2101,6 +2052,8 @@ html::after{
 .card,
 .auth-box,
 .crypto-box,
+.sidebar,
+.topbar,
 .music-card,
 .friend-card,
 .post,
@@ -2108,17 +2061,6 @@ html::after{
 .message.them,
 .image-viewer-overlay img{
     position:relative;
-    overflow:hidden;
-}
-
-/* .sidebar and .topbar are already position:sticky (set earlier in this
-   file) — that's enough of a positioning context for their ::before sheen
-   below. Redeclaring position:relative here would silently override the
-   sticky and break both "stick while scrolling" and the mobile nav's
-   layout (a stray leftover `top` offset then shifts it out of flow). They
-   only need the overflow:hidden to clip the sheen. */
-.sidebar,
-.topbar{
     overflow:hidden;
 }
 
@@ -2224,8 +2166,8 @@ html::after{
     --green:#7ee56d;
     --green2:#4ecb6c;
     --white:rgba(34,46,58,.85);
-    --text:#dce9f0;
-    --muted:#8aa1ad;
+    --text:#f1f8fc;
+    --muted:#9db2bd;
     --shadow:0 12px 35px rgba(0,0,0,.45);
 }
 
@@ -2328,11 +2270,6 @@ html::after{
     text-shadow:0 1px 0 rgba(0,0,0,.4),0 4px 14px rgba(79,201,245,.25);
 }
 
-[data-theme="dark"] .section-count{
-    background:rgba(79,201,245,.16);
-    color:#8fe0f7;
-}
-
 
 /* Softer glass sheen on dark surfaces — full-strength white would blow
    out the dark glass look. */
@@ -2368,11 +2305,12 @@ html::after{
     background:rgba(239,88,119,.15);
 }
 
-[data-theme="dark"] .comment{ background:rgba(255,255,255,.04); }
-[data-theme="dark"] .comment-reply{ background:rgba(255,255,255,.07); }
-[data-theme="dark"] .comment-action-btn{ color:#7fc4e0; }
+[data-theme="dark"] .comment{ background:rgba(255,255,255,.05); }
+[data-theme="dark"] .comment strong{ color:#8fe0f7; }
+[data-theme="dark"] .comment-reply{ background:rgba(255,255,255,.08); }
+[data-theme="dark"] .comment-action-btn{ color:#9fe0ff; }
 [data-theme="dark"] .comment-action-btn:hover{ background:rgba(79,201,245,.18); }
-[data-theme="dark"] .comment-action-btn.liked{ color:#ff8fa3; }
+[data-theme="dark"] .comment-action-btn.liked{ color:#ff9fb2; }
 
 /* PROFILE */
 
@@ -2407,8 +2345,8 @@ html::after{
 
 [data-theme="dark"] .chat-header{ border-bottom-color:#233542; }
 
-[data-theme="dark"] .message.me{ background:#1b4a5c; }
-[data-theme="dark"] .message.them{ background:rgba(255,255,255,.05); }
+[data-theme="dark"] .message.me{ background:#1c5872; color:#f8fdff; text-shadow:0 1px 3px rgba(0,0,0,.35); }
+[data-theme="dark"] .message.them{ background:rgba(255,255,255,.07); }
 [data-theme="dark"] .message small{ color:#7f9ba8; }
 [data-theme="dark"] .message-image-preview{ border-top-color:#233542; }
 [data-theme="dark"] .chat-attach-btn{ background:rgba(255,255,255,.06); border-color:#233542; color:var(--text); }
