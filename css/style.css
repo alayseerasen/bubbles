@@ -376,6 +376,55 @@ select:focus{
     letter-spacing:-1px;
 }
 
+.section-title-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    flex-wrap:wrap;
+}
+
+.section-title-row .section-title{
+    margin-bottom:0;
+}
+
+.section-count{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    min-width:26px;
+    height:26px;
+    padding:0 8px;
+    margin-left:6px;
+    border-radius:13px;
+    background:rgba(79,201,245,.16);
+    color:#168fd0;
+    font-size:14px;
+    font-weight:900;
+    vertical-align:middle;
+}
+
+.see-all-btn{
+    flex-shrink:0;
+    border:2px solid rgba(255,255,255,.7);
+    border-radius:14px;
+    padding:8px 14px;
+    background:linear-gradient(#8fe4fb,#4fc9f5);
+    color:#fff;
+    font-weight:900;
+    font-size:13px;
+    text-shadow:0 1px 2px rgba(0,40,55,.2);
+}
+
+.see-all-btn:hover{
+    filter:brightness(1.05);
+    transform:translateY(-1px);
+}
+
+.back-link{
+    margin-bottom:16px;
+}
+
 /* CARDS */
 
 .card{
@@ -2052,8 +2101,6 @@ html::after{
 .card,
 .auth-box,
 .crypto-box,
-.sidebar,
-.topbar,
 .music-card,
 .friend-card,
 .post,
@@ -2061,6 +2108,17 @@ html::after{
 .message.them,
 .image-viewer-overlay img{
     position:relative;
+    overflow:hidden;
+}
+
+/* .sidebar and .topbar are already position:sticky (set earlier in this
+   file) — that's enough of a positioning context for their ::before sheen
+   below. Redeclaring position:relative here would silently override the
+   sticky and break both "stick while scrolling" and the mobile nav's
+   layout (a stray leftover `top` offset then shifts it out of flow). They
+   only need the overflow:hidden to clip the sheen. */
+.sidebar,
+.topbar{
     overflow:hidden;
 }
 
@@ -2268,6 +2326,11 @@ html::after{
 [data-theme="dark"] .section-title{
     color:#8fe0f7;
     text-shadow:0 1px 0 rgba(0,0,0,.4),0 4px 14px rgba(79,201,245,.25);
+}
+
+[data-theme="dark"] .section-count{
+    background:rgba(79,201,245,.16);
+    color:#8fe0f7;
 }
 
 
