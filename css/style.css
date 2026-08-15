@@ -835,6 +835,67 @@ select:focus{
     box-shadow:0 20px 60px rgba(0,0,0,.5);
 }
 
+/* E2E ENCRYPTION PASSPHRASE MODAL */
+
+.crypto-overlay{
+    position:fixed;
+    inset:0;
+    background:rgba(5,20,28,.72);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:20px;
+    z-index:20000;
+    backdrop-filter:blur(4px);
+}
+
+.crypto-box{
+    width:min(420px,100%);
+    padding:26px;
+    border-radius:30px;
+    background:rgba(255,255,255,.94);
+    border:2px solid rgba(255,255,255,.9);
+    box-shadow:0 25px 70px rgba(29,116,145,.35);
+}
+
+.crypto-box h2{
+    margin:0 0 8px;
+    font-size:22px;
+}
+
+.crypto-box p{
+    color:#5d91a8;
+    margin:0 0 18px;
+    line-height:1.4;
+}
+
+.crypto-box .error-text{
+    color:#e45870;
+    font-weight:700;
+    margin:-8px 0 14px;
+    font-size:14px;
+}
+
+.crypto-box .crypto-reset-link{
+    display:block;
+    text-align:center;
+    margin-top:14px;
+    border:0;
+    background:none;
+    color:#7297a8;
+    text-decoration:underline;
+    font-size:14px;
+}
+
+[data-theme="dark"] .crypto-box{
+    background:rgba(24,38,46,.94);
+    border-color:rgba(255,255,255,.12);
+}
+
+[data-theme="dark"] .crypto-box p{
+    color:#82a0ae;
+}
+
 /* MUSIC */
 
 .music-card{
