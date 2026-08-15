@@ -643,6 +643,8 @@ function navigate(page, id = null){
         case "feed": renderFeed(); break;
         case "profile": renderProfile(id || currentUserId); break;
         case "friends": renderFriends(); break;
+        case "profileFriends": renderProfileFriendsPage(id || selectedProfileId); break;
+        case "profileMusic": renderProfileMusicPage(id || selectedProfileId); break;
         case "messages": renderMessages(); break;
         case "music": renderMusic(); break;
         case "edit": renderEditProfile(); break;
@@ -875,11 +877,7 @@ function renderPost(post){
 
             ${
                 post.text
-                ? `
-                    <div class="post-content">
-                        ${escapeHtml(post.text)}
-                    </div>
-                `
+                ? `<div class="post-content">${escapeHtml(post.text)}</div>`
                 : ""
             }
 
@@ -1222,12 +1220,16 @@ function renderProfile(userId){
     if(!user){ navigate("feed"); return; }
     const posts = db.posts.filter(p => p.authorId === user.id).sort((a,b) => b.createdAt - a.createdAt);
     const friends = db.friends.filter(f => f.user1 === user.id || f.user2 === user.id);
+    const friendUsers = friends
+        .map(f => getUser(f.user1 === user.id ? f.user2 : f.user1))
+        .filter(Boolean);
     // "Their music" = tracks they uploaded + tracks they saved to their
     // library from someone else — same rule as the "Моя музыка" tab.
     const savedIds = savesByUser.get(user.id) || new Set();
     const music = db.music.filter(m => m.authorId === user.id || savedIds.has(m.id));
     const isMe = user.id === currentUserId;
     const friend = isFriend(user.id);
+    const PROFILE_PREVIEW_LIMIT = 3;
 
     document.getElementById("page").innerHTML = `
 
@@ -1308,11 +1310,7 @@ function renderProfile(userId){
 
                 ${
                     user.bio
-                    ? `
-                        <div class="bio">
-                            ${escapeHtml(user.bio)}
-                        </div>
-                    `
+                    ? `<div class="bio">${escapeHtml(user.bio)}</div>`
                     : ""
                 }
 
@@ -1341,14 +1339,24 @@ function renderProfile(userId){
         </div>
 
 
-        <h2 class="section-title">
-            🎵 Музыка
-        </h2>
+        <div class="section-title-row">
+
+            <h2 class="section-title">
+                🎵 Музыка ${music.length ? `<span class="section-count">${music.length}</span>` : ""}
+            </h2>
+
+            ${
+                music.length > PROFILE_PREVIEW_LIMIT
+                ? `<button class="see-all-btn" onclick="navigate('profileMusic','${user.id}')">Все ${music.length} →</button>`
+                : ""
+            }
+
+        </div>
 
 
         ${
             music.length
-            ? music.map(musicProfileCard).join("")
+            ? music.slice(0, PROFILE_PREVIEW_LIMIT).map(musicProfileCard).join("")
             : emptyState(
                 "🎵",
                 "Здесь пока нет музыки",
@@ -1359,38 +1367,27 @@ function renderProfile(userId){
         }
 
 
-        <h2 class="section-title">
-            🫂 Друзья
-        </h2>
+        <div class="section-title-row">
+
+            <h2 class="section-title">
+                🫂 Друзья ${friendUsers.length ? `<span class="section-count">${friendUsers.length}</span>` : ""}
+            </h2>
+
+            ${
+                friendUsers.length > PROFILE_PREVIEW_LIMIT
+                ? `<button class="see-all-btn" onclick="navigate('profileFriends','${user.id}')">Все ${friendUsers.length} →</button>`
+                : ""
+            }
+
+        </div>
 
 
         ${
-            friends.length
+            friendUsers.length
             ? `
                 <div class="friend-grid">
 
-                    ${
-                        friends
-                        .map(f => {
-
-                            const id =
-                                f.user1 === user.id
-                                ? f.user2
-                                : f.user1;
-
-                            const friendUser =
-                                getUser(id);
-
-                            if(!friendUser)
-                                return "";
-
-                            return friendCard(
-                                friendUser
-                            );
-
-                        })
-                        .join("")
-                    }
+                    ${friendUsers.slice(0, PROFILE_PREVIEW_LIMIT).map(friendCard).join("")}
 
                 </div>
             `
@@ -1458,6 +1455,60 @@ function musicProfileCard(music){
             </div>
 
         </div>
+
+    `;
+}
+
+/* ============================================================
+   PROFILE — FULL MUSIC / FRIENDS LISTS
+   (opened via the "Все N →" button when a profile has more than
+   the 3-item preview shown inline on the profile page)
+   ============================================================ */
+
+function renderProfileMusicPage(userId){
+    const user = getUser(userId);
+    if(!user){ navigate("feed"); return; }
+    const savedIds = savesByUser.get(user.id) || new Set();
+    const music = db.music.filter(m => m.authorId === user.id || savedIds.has(m.id));
+
+    document.getElementById("page").innerHTML = `
+
+        <button class="secondary back-link" onclick="navigate('profile','${user.id}')">← Назад в профиль</button>
+
+        <h1 class="section-title">
+            🎵 Музыка — ${escapeHtml(user.displayName)} <span class="section-count">${music.length}</span>
+        </h1>
+
+        ${
+            music.length
+            ? music.map(musicProfileCard).join("")
+            : emptyState("🎵", "Здесь пока нет музыки", "Пользователь ещё ничего не публиковал.")
+        }
+
+    `;
+}
+
+function renderProfileFriendsPage(userId){
+    const user = getUser(userId);
+    if(!user){ navigate("feed"); return; }
+    const friends = db.friends.filter(f => f.user1 === user.id || f.user2 === user.id);
+    const friendUsers = friends
+        .map(f => getUser(f.user1 === user.id ? f.user2 : f.user1))
+        .filter(Boolean);
+
+    document.getElementById("page").innerHTML = `
+
+        <button class="secondary back-link" onclick="navigate('profile','${user.id}')">← Назад в профиль</button>
+
+        <h1 class="section-title">
+            🫂 Друзья — ${escapeHtml(user.displayName)} <span class="section-count">${friendUsers.length}</span>
+        </h1>
+
+        ${
+            friendUsers.length
+            ? `<div class="friend-grid">${friendUsers.map(friendCard).join("")}</div>`
+            : emptyState("🫂", "Друзей пока нет", "Здесь появятся друзья пользователя.")
+        }
 
     `;
 }
