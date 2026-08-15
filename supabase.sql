@@ -26,6 +26,33 @@ create table if not exists public.profiles (
     created_at timestamptz not null default now()
 );
 
+-- E2E-шифрование сообщений: публичный ключ аккаунта (ECDH P-256, spki,
+-- base64) — не секрет, читается всеми, как и весь остальной профиль.
+alter table public.profiles add column if not exists public_key text;
+
+-- Приватный ключ ТОЖЕ хранится в базе (иначе не синхронизировать между
+-- устройствами), но только в виде, зашифрованном отдельной фразой-паролем
+-- шифрования (PBKDF2 + AES-256-GCM) — без неё этот блоб бесполезен.
+-- Вынесен в отдельную таблицу с отдельной RLS-политикой (видна только
+-- владельцу), а не в profiles: profiles читают все, а этот блоб не должен
+-- быть доступен никому, кроме хозяина аккаунта — иначе кто угодно смог бы
+-- скачать чужой шифроблоб и подбирать фразу-пароль офлайн без ограничений.
+create table if not exists public.profile_keys (
+    id uuid primary key references public.profiles(id) on delete cascade,
+    encrypted_private_key text not null,
+    key_salt text not null,
+    key_wrap_iv text not null,
+    key_kdf_iterations integer not null,
+    updated_at timestamptz not null default now()
+);
+alter table public.profile_keys enable row level security;
+drop policy if exists profile_keys_select on public.profile_keys;
+create policy profile_keys_select on public.profile_keys for select using (auth.uid() = id);
+drop policy if exists profile_keys_insert on public.profile_keys;
+create policy profile_keys_insert on public.profile_keys for insert with check (auth.uid() = id);
+drop policy if exists profile_keys_update on public.profile_keys;
+create policy profile_keys_update on public.profile_keys for update using (auth.uid() = id) with check (auth.uid() = id);
+
 -- ------------------------------------------------------------
 -- POSTS
 -- ------------------------------------------------------------
@@ -110,6 +137,14 @@ alter table public.messages add column if not exists read_at timestamptz;
 -- Photos are sent the same way post images are: resized client-side and
 -- stored as a data URL, so no Storage bucket/policy is needed for them.
 alter table public.messages add column if not exists image text not null default '';
+
+-- E2E-шифрование: text/image хранят base64 AES-GCM шифротекст, а не
+-- открытый текст, когда encrypted = true. iv/img_iv — base64 nonce для
+-- расшифровки text/image соответственно. Сервер (и любой, кто заглянет
+-- в базу напрямую) видит только шифротекст.
+alter table public.messages add column if not exists encrypted boolean not null default false;
+alter table public.messages add column if not exists iv text not null default '';
+alter table public.messages add column if not exists img_iv text not null default '';
 
 -- ------------------------------------------------------------
 -- FRIEND REQUESTS (new — pending/accepted/declined handshake)
