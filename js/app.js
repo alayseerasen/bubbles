@@ -353,6 +353,32 @@ function selectGender(gender) {
         ?.classList.toggle("active", gender === "male");
 }
 
+// Both login()/register() AND sb.auth.onAuthStateChange fire after a
+// successful sign-in/sign-up — without this guard both would race to call
+// loadDB()+startApp() at once, which (among other things) opened the E2E
+// passphrase modal twice on top of itself and ate keystrokes. This makes
+// sure the actual bootstrap work only ever runs once per session.
+let sessionBootstrapUserId = null;
+let sessionBootstrapPromise = null;
+
+async function bootstrapSession(user) {
+    if (sessionBootstrapUserId === user.id) return sessionBootstrapPromise;
+    sessionBootstrapUserId = user.id;
+    sessionBootstrapPromise = (async () => {
+        await ensureProfile(user);
+        currentUserId = user.id;
+        await loadDB();
+        startApp();
+    })();
+    try {
+        await sessionBootstrapPromise;
+    } catch (error) {
+        sessionBootstrapUserId = null; // allow a retry (e.g. on next auth event)
+        throw error;
+    }
+    return sessionBootstrapPromise;
+}
+
 async function register(event) {
     event.preventDefault();
     const email = document.getElementById("registerEmail").value.trim().toLowerCase();
@@ -382,10 +408,7 @@ async function register(event) {
         return;
     }
     try {
-        await ensureProfile(data.user);
-        currentUserId = data.user.id;
-        await loadDB();
-        startApp();
+        await bootstrapSession(data.user);
     }
     catch (error) {
         console.error(error);
@@ -403,10 +426,7 @@ async function login(event) {
         return;
     }
     try {
-        await ensureProfile(data.user);
-        currentUserId = data.user.id;
-        await loadDB();
-        startApp();
+        await bootstrapSession(data.user);
     }
     catch (error) {
         console.error(error);
@@ -3663,7 +3683,13 @@ async function saveDB() {
    this is a silent no-op — no interruption on normal logins.
    ============================================================ */
 
-function renderCryptoModal({ title, description, mode, error }) {
+function renderCryptoModal({ title, description, mode, error, step }) {
+    // Defensive: never let more than one of these stack on top of each
+    // other (that was the original bug — two overlays fighting over the
+    // same keystrokes). If one is already open, replace it.
+    document.querySelectorAll(".crypto-overlay").forEach(el => el.remove());
+
+    const isConfirmStep = mode === "create" && step === "confirm";
     const overlay = document.createElement("div");
     overlay.className = "crypto-overlay";
     overlay.innerHTML = `
@@ -3672,42 +3698,71 @@ function renderCryptoModal({ title, description, mode, error }) {
             <p>${description}</p>
             <form id="cryptoForm">
                 <div class="form-group">
-                    <label>Фраза-пароль шифрования</label>
-                    <input id="cryptoPassphrase" type="password" required minlength="8" placeholder="минимум 8 символов" autocomplete="off">
+                    <label>${isConfirmStep ? "Повтори фразу-пароль" : "Фраза-пароль шифрования"}</label>
+                    <input
+                        id="cryptoPassphrase"
+                        type="password"
+                        required
+                        minlength="8"
+                        placeholder="${isConfirmStep ? "ещё раз" : "минимум 8 символов"}"
+                        autocomplete="off"
+                        autocapitalize="off"
+                        autocorrect="off"
+                        spellcheck="false"
+                        data-lpignore="true"
+                        data-1p-ignore="true"
+                    >
                 </div>
-                ${mode === "create" ? `
-                <div class="form-group">
-                    <label>Повтори фразу-пароль</label>
-                    <input id="cryptoPassphraseConfirm" type="password" required minlength="8" placeholder="ещё раз" autocomplete="off">
-                </div>` : ""}
                 ${error ? `<div class="error-text">${error}</div>` : ""}
-                <button class="primary full">${mode === "create" ? "Создать" : "Разблокировать"}</button>
+                <button class="primary full" type="submit">${isConfirmStep ? "Создать" : (mode === "create" ? "Далее" : "Разблокировать")}</button>
             </form>
             ${mode === "unlock" ? `<button type="button" class="crypto-reset-link" id="cryptoResetLink">Не помню фразу-пароль</button>` : ""}
             <button type="button" class="crypto-reset-link" id="cryptoSkipLink">Пропустить (сообщения будут ${mode === "create" ? "отправляться без шифрования" : "недоступны на этом устройстве"})</button>
         </div>
     `;
     document.body.appendChild(overlay);
+    const input = overlay.querySelector("#cryptoPassphrase");
+    // Not always able to pop the mobile keyboard automatically this far
+    // from the original tap (Kodex/Safari require a fresh user gesture for
+    // that), but this at least puts the caret in the field immediately.
+    requestAnimationFrame(() => input.focus());
     return overlay;
 }
 
 // Resolves with { action: "submit", passphrase } | { action: "reset" } | { action: "skip" }
+// For mode "create" this walks the person through passphrase, then
+// confirm-passphrase, as two separate single-field steps (rather than one
+// form with two visible password fields — that pattern is exactly what
+// makes Safari/Chrome offer to auto-generate/auto-fill a "strong password"
+// over whatever the person is actually typing).
 function askPassphrase(config) {
     return new Promise(resolve => {
         const overlay = renderCryptoModal(config);
-        overlay.querySelector("#cryptoForm").addEventListener("submit", e => {
+        const form = overlay.querySelector("#cryptoForm");
+        const submitBtn = form.querySelector("button[type=submit]");
+        form.addEventListener("submit", e => {
             e.preventDefault();
-            const passphrase = overlay.querySelector("#cryptoPassphrase").value;
-            if (config.mode === "create") {
-                const confirmValue = overlay.querySelector("#cryptoPassphraseConfirm").value;
-                if (passphrase !== confirmValue) {
+            if (submitBtn.disabled) return; // guard against double-submit
+            submitBtn.disabled = true;
+            const value = overlay.querySelector("#cryptoPassphrase").value;
+
+            if (config.mode === "create" && config.step !== "confirm") {
+                overlay.remove();
+                resolve(askPassphrase({ ...config, step: "confirm", _firstPassphrase: value }));
+                return;
+            }
+            if (config.mode === "create" && config.step === "confirm") {
+                if (value !== config._firstPassphrase) {
                     overlay.remove();
-                    resolve(askPassphrase({ ...config, error: "Фразы-пароли не совпадают. Попробуй ещё раз." }));
+                    resolve(askPassphrase({ ...config, step: undefined, error: "Фразы-пароли не совпадают. Попробуй ещё раз." }));
                     return;
                 }
+                overlay.remove();
+                resolve({ action: "submit", passphrase: value });
+                return;
             }
             overlay.remove();
-            resolve({ action: "submit", passphrase });
+            resolve({ action: "submit", passphrase: value });
         });
         const resetLink = overlay.querySelector("#cryptoResetLink");
         if (resetLink) {
@@ -4010,9 +4065,7 @@ function teardownRealtime() {
     try{
         const {data:{session}}=await sb.auth.getSession();
         currentUserId=session?.user?.id||null;
-        if(currentUserId) await ensureProfile(session.user);
-        await loadDB();
-        if(currentUserId && getCurrentUser()) startApp();
+        if(currentUserId) await bootstrapSession(session.user);
         else showAuth("login");
     }catch(error){
         console.error("Bubbles init error:",error);
@@ -4023,10 +4076,11 @@ function teardownRealtime() {
 
 sb.auth.onAuthStateChange(async (_event,session)=>{
     if(session?.user){
-        currentUserId=session.user.id;
-        try{ await ensureProfile(session.user); await loadDB(); startApp(); }catch(error){console.error(error);}
+        try{ await bootstrapSession(session.user); }catch(error){console.error(error);}
     }else if(_event==="SIGNED_OUT"){
         currentUserId=null;
+        sessionBootstrapUserId=null;
+        sessionBootstrapPromise=null;
     }
 });
 
