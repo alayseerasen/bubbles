@@ -501,4 +501,4 @@ using (
 -- that, grant/revoke admin for anyone else from the app's own
 -- 🛡️ Админ page — you won't need to touch SQL again.
 -- ============================================================
--- update public.profiles set role = 'admin' where username = 'your_username';
+update public.profiles set role = 'admin' where username = 'alayse';
