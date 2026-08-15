@@ -2750,11 +2750,48 @@ async function sendMessage(event, userId) {
         return;
     input.value = "";
     removeMessageImage();
+    // Shown locally right away in plaintext — we already know the plaintext,
+    // no need to round-trip through decryption for our own optimistic bubble.
     const message = { id: uid("message"), from: currentUserId, to: userId, text, image, createdAt: Date.now(), readAt: null };
     db.messages.push(message);
     appendMessageToChat(message, userId);
 
-    const { error } = await sb.from("messages").insert({ id: message.id, sender_id: message.from, receiver_id: message.to, text: message.text, image: message.image, created_at: new Date(message.createdAt).toISOString() });
+    const row = {
+        id: message.id,
+        sender_id: message.from,
+        receiver_id: message.to,
+        created_at: new Date(message.createdAt).toISOString()
+    };
+
+    const recipient = getUser(userId);
+    const sharedKey = recipient?.publicKey ? await BubblesCrypto.getSharedKeyFor(userId, recipient.publicKey) : null;
+
+    if (sharedKey) {
+        row.encrypted = true;
+        if (text) {
+            const enc = await BubblesCrypto.encryptString(sharedKey, text);
+            row.text = enc.ciphertext;
+            row.iv = enc.iv;
+        } else {
+            row.text = "";
+        }
+        if (image) {
+            const encImg = await BubblesCrypto.encryptString(sharedKey, image);
+            row.image = encImg.ciphertext;
+            row.img_iv = encImg.iv;
+        } else {
+            row.image = "";
+        }
+    } else {
+        // Собеседник ещё не открывал приложение с этой версией (у него нет
+        // публичного ключа) — отправляем как раньше, открытым текстом, а не
+        // блокируем переписку.
+        row.encrypted = false;
+        row.text = text;
+        row.image = image;
+    }
+
+    const { error } = await sb.from("messages").insert(row);
     if (error) {
         console.error(error);
         db.messages = db.messages.filter(m => m.id !== message.id);
@@ -3281,6 +3318,7 @@ function rowToUser(row){
         role: row.role || "user",
         banned: !!row.banned,
         banReason: row.ban_reason || "",
+        publicKey: row.public_key || "",
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
@@ -3327,7 +3365,31 @@ function rowToFriendRequest(row) {
     };
 }
 
-function rowToMessage(row) {
+// Async because decrypting (if the row is encrypted) needs an awaited
+// ECDH+HKDF key derivation the first time we see a given partner.
+async function rowToMessage(row) {
+
+    let text = row.text || "";
+    let image = row.image || "";
+
+    if (row.encrypted) {
+        const partnerId = row.sender_id === currentUserId ? row.receiver_id : row.sender_id;
+        const partner = getUser(partnerId);
+        const sharedKey = partner?.publicKey ? await BubblesCrypto.getSharedKeyFor(partnerId, partner.publicKey) : null;
+        if (sharedKey) {
+            if (text) {
+                const decrypted = await BubblesCrypto.decryptString(sharedKey, text, row.iv);
+                text = decrypted === null ? "🔒 Не удалось расшифровать сообщение" : decrypted;
+            }
+            if (image) {
+                const decryptedImage = await BubblesCrypto.decryptString(sharedKey, image, row.img_iv);
+                image = decryptedImage === null ? "" : decryptedImage;
+            }
+        } else {
+            text = text ? "🔒 Не удалось расшифровать сообщение" : "";
+            image = "";
+        }
+    }
 
     return {
 
@@ -3337,9 +3399,9 @@ function rowToMessage(row) {
 
         to: row.receiver_id,
 
-        text: row.text || "",
+        text,
 
-        image: row.image || "",
+        image,
 
         createdAt:
             row.created_at
@@ -3484,9 +3546,21 @@ async function loadDB() {
             comments: (comments.data || []).map(rowToComment),
             friends: (friends.data || []).map(rowToFriend),
             friendRequests: (friendRequests.data || []).map(rowToFriendRequest),
-            messages: (messages.data || []).map(rowToMessage),
+            messages: [],
             music: (music.data || []).map(rowToMusic)
         };
+        // Make sure this account's E2E key is unlocked on this device
+        // before we try to decrypt anything below (shows a one-time
+        // passphrase modal on brand-new accounts / brand-new devices;
+        // silent no-op on a device that already has it cached).
+        if (currentUserId) {
+            const me = db.users.find(u => u.id === currentUserId);
+            await ensureEncryptionReady(currentUserId, me);
+        }
+        // rowToMessage looks up partner public keys via getUser(), which
+        // reads db.users — so db.users must already be assigned (it is,
+        // above) before we decrypt messages here.
+        db.messages = await Promise.all((messages.data || []).map(rowToMessage));
 
         savesByUser = new Map();
         (musicSaves.data || []).forEach(row => {
@@ -3544,14 +3618,11 @@ async function saveDB() {
             user2: f.user2,
             created_at: new Date(f.createdAt || Date.now()).toISOString()
         }));
-        const messages = db.messages.map(m => ({
-            id: m.id,
-            sender_id: m.from,
-            receiver_id: m.to,
-            text: m.text || "",
-            image: m.image || "",
-            created_at: new Date(m.createdAt || Date.now()).toISOString()
-        }));
+        // NOTE: messages are intentionally NOT bulk-upserted here. db.messages
+        // holds the *decrypted* plaintext (for display), so writing it back
+        // would overwrite the ciphertext in the messages table with
+        // plaintext and defeat E2E encryption. Sending a message always
+        // goes through sendMessage(), which encrypts before insert.
         const music = db.music.map(m => ({
             id: m.id,
             author_id: m.authorId,
@@ -3568,7 +3639,6 @@ async function saveDB() {
             posts.length ? sb.from("posts").upsert(posts) : null,
             comments.length ? sb.from("comments").upsert(comments) : null,
             friends.length ? sb.from("friendships").upsert(friends) : null,
-            messages.length ? sb.from("messages").upsert(messages) : null,
             music.length ? sb.from("music").upsert(music) : null
         ].filter(Boolean);
         const results = await Promise.all(writes);
@@ -3579,6 +3649,154 @@ async function saveDB() {
     catch (error) {
         console.error("Supabase save error:", error);
         toast("Не удалось сохранить изменения в Supabase.");
+    }
+}
+
+/* ============================================================
+   E2E ENCRYPTION — passphrase modal
+   ------------------------------------------------------------
+   Blocks (inside loadDB, before the app UI is shown) only at the
+   two moments that actually need a person's input: setting up
+   encryption for the very first time on this account, or
+   unlocking it on a device that's never seen this account's key
+   before. On a device that already has the key cached locally,
+   this is a silent no-op — no interruption on normal logins.
+   ============================================================ */
+
+function renderCryptoModal({ title, description, mode, error }) {
+    const overlay = document.createElement("div");
+    overlay.className = "crypto-overlay";
+    overlay.innerHTML = `
+        <div class="crypto-box">
+            <h2>${title}</h2>
+            <p>${description}</p>
+            <form id="cryptoForm">
+                <div class="form-group">
+                    <label>Фраза-пароль шифрования</label>
+                    <input id="cryptoPassphrase" type="password" required minlength="8" placeholder="минимум 8 символов" autocomplete="off">
+                </div>
+                ${mode === "create" ? `
+                <div class="form-group">
+                    <label>Повтори фразу-пароль</label>
+                    <input id="cryptoPassphraseConfirm" type="password" required minlength="8" placeholder="ещё раз" autocomplete="off">
+                </div>` : ""}
+                ${error ? `<div class="error-text">${error}</div>` : ""}
+                <button class="primary full">${mode === "create" ? "Создать" : "Разблокировать"}</button>
+            </form>
+            ${mode === "unlock" ? `<button type="button" class="crypto-reset-link" id="cryptoResetLink">Не помню фразу-пароль</button>` : ""}
+            <button type="button" class="crypto-reset-link" id="cryptoSkipLink">Пропустить (сообщения будут ${mode === "create" ? "отправляться без шифрования" : "недоступны на этом устройстве"})</button>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    return overlay;
+}
+
+// Resolves with { action: "submit", passphrase } | { action: "reset" } | { action: "skip" }
+function askPassphrase(config) {
+    return new Promise(resolve => {
+        const overlay = renderCryptoModal(config);
+        overlay.querySelector("#cryptoForm").addEventListener("submit", e => {
+            e.preventDefault();
+            const passphrase = overlay.querySelector("#cryptoPassphrase").value;
+            if (config.mode === "create") {
+                const confirmValue = overlay.querySelector("#cryptoPassphraseConfirm").value;
+                if (passphrase !== confirmValue) {
+                    overlay.remove();
+                    resolve(askPassphrase({ ...config, error: "Фразы-пароли не совпадают. Попробуй ещё раз." }));
+                    return;
+                }
+            }
+            overlay.remove();
+            resolve({ action: "submit", passphrase });
+        });
+        const resetLink = overlay.querySelector("#cryptoResetLink");
+        if (resetLink) {
+            resetLink.addEventListener("click", () => {
+                const ok = confirm("Сбросить шифрование? Все старые сообщения (твои и собеседников) станет невозможно прочитать ни на одном устройстве. Отменить это нельзя.");
+                if (!ok) return;
+                overlay.remove();
+                resolve({ action: "reset" });
+            });
+        }
+        overlay.querySelector("#cryptoSkipLink").addEventListener("click", () => {
+            overlay.remove();
+            resolve({ action: "skip" });
+        });
+    });
+}
+
+async function ensureEncryptionReady(userId, meUser) {
+    if (await BubblesCrypto.hasLocalKeyForUser(userId)) return;
+
+    let keyRow;
+    try {
+        keyRow = await BubblesCrypto.fetchOwnKeyRow(userId);
+    } catch (error) {
+        console.error(error);
+        toast("Не удалось проверить статус шифрования сообщений.");
+        return;
+    }
+
+    if (!keyRow) {
+        // First time ever setting up E2E on this account.
+        while (true) {
+            const result = await askPassphrase({
+                mode: "create",
+                title: "🔒 Придумай фразу-пароль шифрования",
+                description: "Она защищает твои сообщения на сервере. Она отдельная от пароля аккаунта — сохрани её в надёжном месте: без неё сообщения не восстановить ни тебе, ни нам."
+            });
+            if (result.action === "skip") {
+                toast("Шифрование пропущено — новые сообщения будут отправляться без него, пока не настроишь его.", 6000);
+                return;
+            }
+            try {
+                await BubblesCrypto.createAccountKey(userId, result.passphrase);
+                if (meUser) meUser.publicKey = ""; // stale until next reload, not used locally anyway
+                toast("Шифрование сообщений включено ✨");
+                return;
+            } catch (error) {
+                console.error(error);
+                toast("Не удалось включить шифрование: " + (error?.message || error), 6000);
+                return;
+            }
+        }
+    }
+
+    // Existing account, new device — need the passphrase to unlock it here.
+    let error = null;
+    while (true) {
+        const result = await askPassphrase({
+            mode: "unlock",
+            title: "🔒 Разблокируй сообщения",
+            description: "Это устройство ещё не видело ключ шифрования этого аккаунта. Введи фразу-пароль шифрования, которую ты придумал(а) при первой настройке.",
+            error
+        });
+        if (result.action === "skip") {
+            toast("Ок, сообщения на этом устройстве останутся зашифрованными до разблокировки.", 6000);
+            return;
+        }
+        if (result.action === "reset") {
+            const created = await askPassphrase({
+                mode: "create",
+                title: "🔒 Новая фраза-пароль шифрования",
+                description: "Придумай новую фразу-пароль. Она будет действовать для всех устройств начиная с этого момента."
+            });
+            if (created.action !== "submit") return;
+            try {
+                await BubblesCrypto.resetAccountKey(userId, created.passphrase);
+                toast("Шифрование сброшено, новый ключ создан. Старые сообщения расшифровать больше нельзя.", 8000);
+            } catch (err) {
+                console.error(err);
+                toast("Не удалось сбросить шифрование: " + (err?.message || err), 6000);
+            }
+            return;
+        }
+        const ok = await BubblesCrypto.unlockAccountKey(userId, result.passphrase, keyRow);
+        if (ok) {
+            toast("Сообщения разблокированы ✨");
+            return;
+        }
+        error = "Неверная фраза-пароль. Попробуй ещё раз.";
     }
 }
 
@@ -3656,11 +3874,11 @@ function stopWatchingChatPartnerPresence() {
 function setupMessagesRealtime() {
     if (messagesChannel) sb.removeChannel(messagesChannel);
     messagesChannel = sb.channel("bubbles-messages-" + currentUserId)
-        .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, (payload) => {
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, async (payload) => {
             const row = payload.new;
             if (row.sender_id !== currentUserId && row.receiver_id !== currentUserId) return;
             if (row.sender_id === currentUserId) return; // I already added it optimistically
-            const message = rowToMessage(row);
+            const message = await rowToMessage(row);
             db.messages.push(message);
             if (currentPage === "messages" && selectedChatId === message.from) {
                 appendMessageToChat(message, message.from);
