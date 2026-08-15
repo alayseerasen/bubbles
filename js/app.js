@@ -22,6 +22,9 @@ let db = {
 let currentUserId = null;
 let currentPage = "feed";
 let selectedProfileId = null;
+let profileMusicExpanded = false;
+let profileFriendsExpanded = false;
+let lastProfileRenderId = null;
 let selectedChatId = null;
 let selectedMessageImage = null; // resized data URL staged to send in the current chat, or null
 let genderValue = "female";
@@ -1217,9 +1220,27 @@ async function deletePost(postId) {
    PROFILE
    ============================================================ */
 
+function toggleProfileMusicExpanded(){
+    profileMusicExpanded = !profileMusicExpanded;
+    renderProfile(lastProfileRenderId);
+}
+
+function toggleProfileFriendsExpanded(){
+    profileFriendsExpanded = !profileFriendsExpanded;
+    renderProfile(lastProfileRenderId);
+}
+
 function renderProfile(userId){
     const user = getUser(userId);
     if(!user){ navigate("feed"); return; }
+    if (userId !== lastProfileRenderId) {
+        // Fresh visit to a (possibly different) profile — start collapsed.
+        // Re-renders of the SAME profile (realtime updates etc.) keep
+        // whatever the person had expanded.
+        profileMusicExpanded = false;
+        profileFriendsExpanded = false;
+        lastProfileRenderId = userId;
+    }
     const posts = db.posts.filter(p => p.authorId === user.id).sort((a,b) => b.createdAt - a.createdAt);
     const friends = db.friends.filter(f => f.user1 === user.id || f.user2 === user.id);
     // "Their music" = tracks they uploaded + tracks they saved to their
@@ -1348,7 +1369,22 @@ function renderProfile(userId){
 
         ${
             music.length
-            ? music.map(musicProfileCard).join("")
+            ? `
+                ${
+                    (profileMusicExpanded ? music : music.slice(0, 3))
+                        .map(musicProfileCard)
+                        .join("")
+                }
+                ${
+                    music.length > 3
+                    ? `
+                        <button class="secondary full profile-expand-btn" onclick="toggleProfileMusicExpanded()">
+                            ${profileMusicExpanded ? "Свернуть ↑" : `Все ${music.length} →`}
+                        </button>
+                    `
+                    : ""
+                }
+            `
             : emptyState(
                 "🎵",
                 "Здесь пока нет музыки",
@@ -1370,7 +1406,7 @@ function renderProfile(userId){
                 <div class="friend-grid">
 
                     ${
-                        friends
+                        (profileFriendsExpanded ? friends : friends.slice(0, 3))
                         .map(f => {
 
                             const id =
@@ -1393,6 +1429,15 @@ function renderProfile(userId){
                     }
 
                 </div>
+                ${
+                    friends.length > 3
+                    ? `
+                        <button class="secondary full profile-expand-btn" onclick="toggleProfileFriendsExpanded()">
+                            ${profileFriendsExpanded ? "Свернуть ↑" : `Все ${friends.length} →`}
+                        </button>
+                    `
+                    : ""
+                }
             `
             : emptyState(
                 "🫂",
@@ -4112,5 +4157,6 @@ Object.assign(window,{
     saveProfile,previewAvatar,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
+    toggleProfileMusicExpanded,toggleProfileFriendsExpanded,
     renderAdmin,setUserRole,setUserBanned
 });
