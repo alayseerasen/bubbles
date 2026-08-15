@@ -896,6 +896,40 @@ select:focus{
     color:#82a0ae;
 }
 
+.encryption-status{
+    font-size:13px;
+    font-weight:700;
+    padding:9px 14px;
+    border-radius:14px;
+    margin-bottom:14px;
+    display:inline-block;
+}
+
+.encryption-status.ok{
+    background:#dffaea;
+    color:#1c8a4f;
+}
+
+.encryption-status.off{
+    background:#ffe3e8;
+    color:#c23a52;
+}
+
+[data-theme="dark"] .encryption-status.ok{
+    background:rgba(28,138,79,.25);
+    color:#7de8ab;
+}
+
+[data-theme="dark"] .encryption-status.off{
+    background:rgba(194,58,82,.25);
+    color:#ff9fb2;
+}
+
+.chat-encryption-badge{
+    margin-left:auto;
+    font-size:18px;
+}
+
 /* MUSIC */
 
 .music-card{
