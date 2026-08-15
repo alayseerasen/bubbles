@@ -2256,23 +2256,19 @@ function messageBubble(message){
 
             ${message.image ? `<img class="message-image" src="${message.image}" onclick="viewChatImage(this.src)">` : ""}
 
-            <div class="message-body">
+            ${message.text ? escapeHtml(message.text) : ""}
 
-                ${message.text ? escapeHtml(message.text) : ""}
-
-                <small>
-                    ${new Date(message.createdAt)
-                        .toLocaleTimeString(
-                            "ru-RU",
-                            {
-                                hour:"2-digit",
-                                minute:"2-digit"
-                            }
-                        )}
-                    ${mine ? `<span class="read-tick ${message.readAt ? "read" : ""}">${message.readAt ? "✓✓" : "✓"}</span>` : ""}
-                </small>
-
-            </div>
+            <small>
+                ${new Date(message.createdAt)
+                    .toLocaleTimeString(
+                        "ru-RU",
+                        {
+                            hour:"2-digit",
+                            minute:"2-digit"
+                        }
+                    )}
+                ${mine ? `<span class="read-tick ${message.readAt ? "read" : ""}">${message.readAt ? "✓✓" : "✓"}</span>` : ""}
+            </small>
 
         </div>
 
