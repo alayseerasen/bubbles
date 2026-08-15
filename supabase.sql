@@ -348,7 +348,12 @@ create policy comment_likes_delete on public.comment_likes for delete using (aut
 
 -- Friendships
  drop policy if exists friendships_select on public.friendships;
-create policy friendships_select on public.friendships for select using (auth.uid() = user1 or auth.uid() = user2);
+-- Public read: a confirmed friendship (both sides already accepted) is
+-- shown on profile pages to ANY visitor, same as posts/profiles — so it
+-- has to be selectable by everyone, not just the two people in it.
+-- (Pending requests are a separate table, friend_requests, which stays
+-- restricted to the two people involved — see below.)
+create policy friendships_select on public.friendships for select using (true);
  drop policy if exists friendships_insert on public.friendships;
 create policy friendships_insert on public.friendships for insert with check (auth.uid() = user1 or auth.uid() = user2);
  drop policy if exists friendships_delete on public.friendships;
