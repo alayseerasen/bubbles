@@ -30,6 +30,7 @@ let selectedMessageImage = null; // resized data URL staged to send in the curre
 let genderValue = "female";
 let currentlyPlayingMusicId = null;
 let heartbeatTimer = null;
+let onlineCountTimer = null;
 
 /* Music player state */
 let musicTab = "mine";           // "mine" | "all"
@@ -275,19 +276,86 @@ function stopPresenceHeartbeat(){
     }
 }
 
+function pluralPeople(n){
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return "человек";
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return "человека";
+    return "человек";
+}
+
+function getOnlineCount(){
+    return db.users.filter(u => isUserOnline(u.lastSeen)).length;
+}
+
+// Polls everyone's last_seen periodically so the "N онлайн" badge (topbar
+// + landing screen) stays roughly live without needing a dedicated
+// realtime presence channel. Computes the count straight from the query
+// result (not db.users) so it also works pre-login on the landing screen,
+// where db.users is still empty.
+async function refreshOnlineCount(){
+    let rows = [];
+    try{
+        const { data, error } = await sb.from("profiles").select("id,last_seen");
+        if(error) throw error;
+        rows = data || [];
+        rows.forEach(row => {
+            const u = getUser(row.id);
+            if(u) u.lastSeen = row.last_seen;
+        });
+    }catch(error){
+        console.error("Не удалось обновить счётчик онлайн:", error);
+        return;
+    }
+    const count = rows.filter(row => isUserOnline(row.last_seen)).length;
+    const topbarBadge = document.getElementById("topbarOnlineCount");
+    if(topbarBadge) topbarBadge.textContent = `🟢 ${count} онлайн`;
+    const landingBadge = document.getElementById("landingOnlineCount");
+    if(landingBadge) landingBadge.textContent = `🟢 ${count} ${pluralPeople(count)} сейчас в bubbles`;
+}
+
+function startOnlineCountPolling(){
+    refreshOnlineCount();
+    if(onlineCountTimer) return;
+    onlineCountTimer = setInterval(refreshOnlineCount, 20000);
+}
+
+function stopOnlineCountPolling(){
+    if(onlineCountTimer){
+        clearInterval(onlineCountTimer);
+        onlineCountTimer = null;
+    }
+}
+
 /* ============================================================
    AUTH
    ============================================================ */
 
-function showAuth(mode = "login") {
+function showAuth(mode = "landing") {
     document.getElementById("app").innerHTML = `
         <div class="auth-screen">
-            <div class="auth-box">
+            <div class="auth-box${mode === "landing" ? " landing-box" : ""}">
                 <div class="logo">bubbles</div>
                 <div class="logo-sub">маленькая социальная сеть с большим количеством пузырьков</div>
-                ${mode === "login" ? loginForm() : registerForm()}
+                ${mode === "landing" ? landingScreen() : mode === "login" ? loginForm() : registerForm()}
             </div>
         </div>
+    `;
+    refreshOnlineCount();
+}
+
+function landingScreen() {
+    return `
+        <p class="landing-description">
+            Публикуй посты, слушай и делись музыкой, переписывайся с друзьями —
+            и всё это с настоящим end-to-end шифрованием сообщений, которое
+            не сможем прочитать даже мы. Заходи, тут пузырьково 🫧
+        </p>
+        <div id="landingOnlineCount" class="landing-online">
+            🟢 считаем, кто сейчас в bubbles...
+        </div>
+        <button class="primary full" onclick="showAuth('login')">Войти</button>
+        <button class="secondary full landing-register-btn" onclick="showAuth('register')">Регистрация</button>
     `;
 }
 
@@ -308,6 +376,7 @@ function loginForm() {
             Нет аккаунта?
             <button onclick="showAuth('register')">Создать аккаунт</button>
         </div>
+        <button type="button" class="auth-back-link" onclick="showAuth('landing')">← Назад</button>
     `;
 }
 
@@ -343,6 +412,7 @@ function registerForm() {
             Уже есть аккаунт?
             <button onclick="showAuth('login')">Войти</button>
         </div>
+        <button type="button" class="auth-back-link" onclick="showAuth('landing')">← Назад</button>
     `;
 }
 
@@ -439,12 +509,13 @@ async function login(event) {
 
 async function logout(){
     stopPresenceHeartbeat();
+    stopOnlineCountPolling();
     teardownRealtime();
     closeMusicPlayer();
     await sb.auth.signOut();
     currentUserId = null;
     db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],messages:[],music:[]};
-    showAuth("login");
+    showAuth("landing");
 }
 
 /* ============================================================
@@ -467,6 +538,7 @@ function startApp(){
     setupFriendRequestsRealtime();
     setupSocialRealtime();
     renderApp();
+    startOnlineCountPolling();
 }
 
 function renderApp(){
@@ -497,6 +569,8 @@ function renderApp(){
 
 
             <div class="top-user">
+
+                <span id="topbarOnlineCount" class="topbar-online-badge" title="Сколько людей сейчас онлайн в bubbles">🟢 …</span>
 
                 <button
                     id="themeToggleBtn"
@@ -878,7 +952,11 @@ function renderPost(post){
 
             ${
                 post.text
-                ? `<div class="post-content">${escapeHtml(post.text)}</div>`
+                ? `
+                    <div class="post-content">
+                        ${escapeHtml(post.text)}
+                    </div>
+                `
                 : ""
             }
 
@@ -997,8 +1075,8 @@ async function createPost() {
             toast("Можно загружать только изображения.");
             return;
         }
-        if (file.size > 20 * 1024 * 1024) {
-            toast("Изображение слишком большое. Максимум 20 МБ.");
+        if (file.size > 15 * 1024 * 1024) {
+            toast("Изображение слишком большое. Максимум 15 МБ.");
             return;
         }
         try { image = await resizeImageFile(file, 1600); }
@@ -1325,7 +1403,11 @@ function renderProfile(userId){
 
                 ${
                     user.bio
-                    ? `<div class="bio">${escapeHtml(user.bio)}</div>`
+                    ? `
+                        <div class="bio">
+                            ${escapeHtml(user.bio)}
+                        </div>
+                    `
                     : ""
                 }
 
@@ -4123,10 +4205,10 @@ function teardownRealtime() {
         const {data:{session}}=await sb.auth.getSession();
         currentUserId=session?.user?.id||null;
         if(currentUserId) await bootstrapSession(session.user);
-        else showAuth("login");
+        else showAuth("landing");
     }catch(error){
         console.error("Bubbles init error:",error);
-        showAuth("login");
+        showAuth("landing");
         toast("Проверь Supabase URL и ключ в js/supabase-config.js");
     }
 })();
