@@ -2119,14 +2119,14 @@ html::after{
     overflow:hidden;
 }
 
-/* .sidebar needs position:relative for the sheen below, but NOT
-   overflow:hidden — on mobile .sidebar is a horizontally-scrolling nav
-   row (overflow-x:auto), and overflow:hidden here would silently clobber
-   that (same shorthand property), turning the scrollable tab bar back
-   into a clipped, static one. */
-.sidebar{
-    position:relative;
-}
+/* .sidebar is already position:sticky (see .sidebar rules above) —
+   sticky establishes a containing block for the ::before sheen below
+   exactly like relative would, so no extra rule is needed here. (A
+   position:relative override used to live here "for the sheen", but
+   since it didn't also clear .sidebar's top:72px/92px, the sidebar
+   just got visually shoved down by that amount while leaving a blank
+   gap behind in the layout — sticky already covers this without that
+   problem.) */
 
 .card::before,
 .auth-box::before,
