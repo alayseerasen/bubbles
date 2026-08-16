@@ -2108,7 +2108,6 @@ html::after{
 .card,
 .auth-box,
 .crypto-box,
-.sidebar,
 .topbar,
 .music-card,
 .friend-card,
@@ -2118,6 +2117,15 @@ html::after{
 .image-viewer-overlay img{
     position:relative;
     overflow:hidden;
+}
+
+/* .sidebar needs position:relative for the sheen below, but NOT
+   overflow:hidden — on mobile .sidebar is a horizontally-scrolling nav
+   row (overflow-x:auto), and overflow:hidden here would silently clobber
+   that (same shorthand property), turning the scrollable tab bar back
+   into a clipped, static one. */
+.sidebar{
+    position:relative;
 }
 
 .card::before,
