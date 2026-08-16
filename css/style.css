@@ -112,6 +112,52 @@ button{
     margin-bottom:25px;
 }
 
+.landing-box{
+    text-align:center;
+}
+
+.landing-description{
+    color:#39768e;
+    line-height:1.55;
+    margin:0 0 18px;
+    font-size:15px;
+}
+
+.landing-online{
+    display:inline-block;
+    margin:0 auto 22px;
+    padding:8px 16px;
+    border-radius:20px;
+    background:rgba(126,229,109,.16);
+    color:#1c8a4f;
+    font-weight:800;
+    font-size:13px;
+}
+
+.landing-register-btn{
+    margin-top:10px;
+}
+
+.auth-back-link{
+    display:block;
+    margin:16px auto 0;
+    border:0;
+    background:none;
+    color:#7297a8;
+    font-weight:700;
+    text-decoration:underline;
+}
+
+.topbar-online-badge{
+    font-size:12px;
+    font-weight:800;
+    color:#1c8a4f;
+    background:rgba(126,229,109,.16);
+    padding:6px 12px;
+    border-radius:20px;
+    white-space:nowrap;
+}
+
 .form-group{
     margin-bottom:15px;
 }
@@ -1292,11 +1338,11 @@ select:focus{
         top:72px;
         z-index:500;
         display:flex;
-        gap:7px;
+        gap:5px;
         overflow-x:auto;
         -webkit-overflow-scrolling:touch;
         touch-action:pan-x;
-        padding:8px;
+        padding:7px;
     }
 
     .nav-btn{
@@ -1304,9 +1350,9 @@ select:focus{
         flex:0 0 auto;
         white-space:nowrap;
         margin:0;
-        padding:10px 15px;
-        font-size:15px;
-        border-radius:13px;
+        padding:8px 11px;
+        font-size:14px;
+        border-radius:12px;
     }
 
     .back-button{
@@ -2062,6 +2108,8 @@ html::after{
 .card,
 .auth-box,
 .crypto-box,
+.sidebar,
+.topbar,
 .music-card,
 .friend-card,
 .post,
@@ -2069,26 +2117,6 @@ html::after{
 .message.them,
 .image-viewer-overlay img{
     position:relative;
-    overflow:hidden;
-}
-
-/* .sidebar and .topbar are already position:sticky (set earlier in this
-   file) — that's enough of a positioning context for their ::before sheen
-   below. Redeclaring position:relative here would silently override the
-   sticky and break both "stick while scrolling" and the mobile nav's
-   layout (a stray leftover `top` offset then shifts it out of flow,
-   leaving a blank gap above it).
-
-   .topbar gets overflow:hidden to clip its sheen (harmless — it never
-   scrolls). .sidebar does NOT: on mobile it's a horizontally-scrolling
-   row of tabs (overflow-x:auto, set in the responsive block below), and
-   `overflow:hidden` here is a shorthand for both axes — appearing later
-   in the cascade than that media query, it would silently win and lock
-   overflow-x back to hidden, which is exactly what made the tabs stop
-   scrolling. The sheen's own ::before is already sized to sit fully
-   inside .sidebar's box (inset 0 / height 42% / border-radius:inherit),
-   so it can't bleed outside anyway — .sidebar doesn't need the clip. */
-.topbar{
     overflow:hidden;
 }
 
@@ -2292,6 +2320,12 @@ html::after{
 }
 
 [data-theme="dark"] .empty{ color:#6f8894; }
+
+[data-theme="dark"] .landing-description{ color:#9bb7c4; }
+[data-theme="dark"] .landing-online{ background:rgba(126,229,109,.14); color:#7ee56d; }
+[data-theme="dark"] .topbar-online-badge{ background:rgba(126,229,109,.14); color:#7ee56d; }
+[data-theme="dark"] .auth-back-link{ color:#7f97a3; }
+
 
 [data-theme="dark"] .section-title{
     color:#8fe0f7;
