@@ -448,6 +448,18 @@ begin
     ) then
         alter publication supabase_realtime add table public.comment_likes;
     end if;
+    -- Public keys (profiles.public_key) previously only ever loaded once at
+    -- page load, with nothing to refresh them afterwards. If a partner sets
+    -- up or resets their E2E key mid-session, everyone already chatting with
+    -- them would silently keep encrypting/decrypting against the old key.
+    -- Live updates on profiles let the client pick up a new public_key the
+    -- moment it changes, instead of only on the next full reload.
+    if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'profiles'
+    ) then
+        alter publication supabase_realtime add table public.profiles;
+    end if;
 end $$;
 
 -- ------------------------------------------------------------
