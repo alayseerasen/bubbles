@@ -51,6 +51,7 @@ let typingIndicatorTimer = null;
 let messagesChannel = null;
 let friendRequestsChannel = null;
 let socialChannel = null;
+let profileKeysChannel = null;
 let chatPartnerPresenceTimer = null;
 
 /* ============================================================
@@ -558,6 +559,7 @@ function startApp(){
     setupMessagesRealtime();
     setupFriendRequestsRealtime();
     setupSocialRealtime();
+    setupProfileKeysRealtime();
     renderApp();
     startOnlineCountPolling();
 }
@@ -2934,10 +2936,9 @@ async function sendMessage(event, userId) {
         created_at: new Date(message.createdAt).toISOString()
     };
 
-    // Always refetch the recipient's current public_key from the server
-    // rather than trusting whatever was cached at page-load time — see
-    // refreshUserKey() for why the cached copy can be stale.
-    const recipient = await refreshUserKey(userId);
+    // Recipient's public_key is kept current by the profiles realtime
+    // subscription (see setupProfileKeyRealtime) rather than refetched here.
+    const recipient = getUser(userId);
     const sharedKey = recipient?.publicKey ? await BubblesCrypto.getSharedKeyFor(userId, recipient.publicKey) : null;
 
     if (sharedKey) {
@@ -4216,12 +4217,34 @@ function setupSocialRealtime() {
         .subscribe();
 }
 
+// Keeps db.users[*].publicKey current for the lifetime of the session. Without
+// this, public_key was only ever loaded once at loadDB() time — if a partner
+// sets up encryption for the first time, or resets their passphrase on
+// another device, mid-session, everyone still had their app's already-open
+// session pointed at the old key, and messages in both directions would fail
+// to decrypt until a full page reload. Any change to public_key now arrives
+// live and the crypto module's cached shared secret for that partner is
+// dropped so the next message re-derives it against the new key.
+function setupProfileKeysRealtime() {
+    if (profileKeysChannel) sb.removeChannel(profileKeysChannel);
+    profileKeysChannel = sb.channel("bubbles-profile-keys-" + currentUserId)
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "profiles" }, (payload) => {
+            const row = payload.new;
+            if (!row || row.public_key === payload.old?.public_key) return;
+            const user = getUser(row.id);
+            if (user) user.publicKey = row.public_key || "";
+            BubblesCrypto.invalidateSharedKeyFor(row.id);
+        })
+        .subscribe();
+}
+
 function teardownRealtime() {
-    [messagesChannel, friendRequestsChannel, typingChannel, socialChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
+    [messagesChannel, friendRequestsChannel, typingChannel, socialChannel, profileKeysChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
     messagesChannel = null;
     friendRequestsChannel = null;
     typingChannel = null;
     socialChannel = null;
+    profileKeysChannel = null;
     stopWatchingChatPartnerPresence();
 }
 
