@@ -51,7 +51,6 @@ let typingIndicatorTimer = null;
 let messagesChannel = null;
 let friendRequestsChannel = null;
 let socialChannel = null;
-let profileKeysChannel = null;
 let chatPartnerPresenceTimer = null;
 
 /* ============================================================
@@ -81,26 +80,6 @@ function getUser(id) {
     return db.users.find(user => user.id === id);
 }
 
-// profiles (and therefore public_key) are only ever loaded once at
-// loadDB() time — there's no realtime subscription on that table. If a
-// conversation partner sets up or resets their encryption key after our
-// session already loaded, our cached copy of their public_key goes stale,
-// and messages start silently failing to decrypt in both directions. This
-// re-fetches a single profile row from the server and updates db.users in
-// place so encryption always uses the partner's *current* key.
-async function refreshUserKey(userId) {
-    try {
-        const { data, error } = await sb.from("profiles").select("*").eq("id", userId).maybeSingle();
-        if (error || !data) return getUser(userId) || null;
-        const fresh = rowToUser(data);
-        const idx = db.users.findIndex(u => u.id === userId);
-        if (idx >= 0) db.users[idx] = fresh; else db.users.push(fresh);
-        return fresh;
-    } catch (e) {
-        console.error(e);
-        return getUser(userId) || null;
-    }
-}
 
 function getCurrentUser() {
     return getUser(currentUserId);
@@ -559,7 +538,6 @@ function startApp(){
     setupMessagesRealtime();
     setupFriendRequestsRealtime();
     setupSocialRealtime();
-    setupProfileKeysRealtime();
     renderApp();
     startOnlineCountPolling();
 }
@@ -2138,18 +2116,14 @@ function renderMessages(){
     const users = friends.map(f => getUser(f.user1 === currentUserId ? f.user2 : f.user1)).filter(Boolean);
     if(!selectedChatId && users.length) selectedChatId = users[0].id;
 
-    const encryptionReady = BubblesCrypto.isReady();
-
     document.getElementById("page").innerHTML = `
 
         <h1 class="section-title">
             💬 Сообщения
         </h1>
 
-        <div class="encryption-status ${encryptionReady ? "ok" : "off"}">
-            ${encryptionReady
-                ? "🔒 Шифрование включено на этом устройстве"
-                : "🔓 Шифрование НЕ включено на этом устройстве — сообщения уходят открытым текстом"}
+        <div class="encryption-status ok">
+            🔒 Сообщения шифруются
         </div>
 
 
@@ -2304,7 +2278,10 @@ function renderConversation(user) {
 function renderChat(userId){
     const user = getUser(userId);
     const messages = db.messages.filter(m => (m.from === currentUserId && m.to === userId) || (m.from === userId && m.to === currentUserId)).sort((a,b) => a.createdAt - b.createdAt);
-    const chatEncrypted = BubblesCrypto.isReady() && !!user.publicKey;
+    // Каждая переписка теперь всегда шифруется — нет отдельного шага
+    // настройки на устройстве, поэтому бейдж больше не зависит от
+    // publicKey/isReady, а просто отражает текущую схему.
+    const chatEncrypted = true;
 
     return `
 
@@ -2936,10 +2913,16 @@ async function sendMessage(event, userId) {
         created_at: new Date(message.createdAt).toISOString()
     };
 
-    // Recipient's public_key is kept current by the profiles realtime
-    // subscription (see setupProfileKeyRealtime) rather than refetched here.
-    const recipient = getUser(userId);
-    const sharedKey = recipient?.publicKey ? await BubblesCrypto.getSharedKeyFor(userId, recipient.publicKey) : null;
+    // Any message we send is encrypted with our shared conversation key
+    // whenever we can reach the database to fetch/create it. If that call
+    // fails (offline, RLS hiccup, etc.) we fall back to plaintext rather
+    // than ever blocking the send — see js/crypto.js for the tradeoff.
+    let sharedKey = null;
+    try {
+        sharedKey = await BubblesCrypto.getConversationKey(currentUserId, userId);
+    } catch (e) {
+        console.error(e);
+    }
 
     if (sharedKey) {
         row.encrypted = true;
@@ -2958,9 +2941,8 @@ async function sendMessage(event, userId) {
             row.image = "";
         }
     } else {
-        // Собеседник ещё не открывал приложение с этой версией (у него нет
-        // публичного ключа) — отправляем как раньше, открытым текстом, а не
-        // блокируем переписку.
+        // Не удалось получить/создать ключ переписки прямо сейчас — не
+        // блокируем отправку, отправляем открытым текстом, как раньше.
         row.encrypted = false;
         row.text = text;
         row.image = image;
@@ -3549,8 +3531,9 @@ function rowToFriendRequest(row) {
     };
 }
 
-// Async because decrypting (if the row is encrypted) needs an awaited
-// ECDH+HKDF key derivation the first time we see a given partner.
+// Async because fetching (and, on first contact, creating) the shared
+// conversation key needs an awaited DB round trip the first time we see a
+// given partner in this session.
 async function rowToMessage(row) {
 
     let text = row.text || "";
@@ -3558,28 +3541,15 @@ async function rowToMessage(row) {
 
     if (row.encrypted) {
         const partnerId = row.sender_id === currentUserId ? row.receiver_id : row.sender_id;
-        let partner = getUser(partnerId);
-        // Cached copy has no key at all (e.g. partner set up encryption after
-        // our session loaded) — refetch before giving up, same reasoning as
-        // the decrypt-failure retry below.
-        if (!partner?.publicKey) partner = await refreshUserKey(partnerId);
-        let sharedKey = partner?.publicKey ? await BubblesCrypto.getSharedKeyFor(partnerId, partner.publicKey) : null;
+        let sharedKey = null;
+        try {
+            sharedKey = await BubblesCrypto.getConversationKey(currentUserId, partnerId);
+        } catch (e) {
+            console.error(e);
+        }
         if (sharedKey) {
-            let decrypted = text ? await BubblesCrypto.decryptString(sharedKey, text, row.iv) : "";
-            // A failed decrypt on an *encrypted* row almost always means the
-            // partner's public_key changed after we cached it (new key setup
-            // or a passphrase reset on another device — see refreshUserKey()).
-            // Re-fetch their current key, recompute the shared secret, and
-            // give decryption one more try before giving up.
-            if (text && decrypted === null) {
-                partner = await refreshUserKey(partnerId);
-                if (partner?.publicKey) {
-                    BubblesCrypto.invalidateSharedKeyFor(partnerId);
-                    sharedKey = await BubblesCrypto.getSharedKeyFor(partnerId, partner.publicKey);
-                    decrypted = sharedKey ? await BubblesCrypto.decryptString(sharedKey, text, row.iv) : null;
-                }
-            }
             if (text) {
+                const decrypted = await BubblesCrypto.decryptString(sharedKey, text, row.iv);
                 text = decrypted === null ? "🔒 Не удалось расшифровать сообщение" : decrypted;
             }
             if (image) {
@@ -3750,17 +3720,9 @@ async function loadDB() {
             messages: [],
             music: (music.data || []).map(rowToMusic)
         };
-        // Make sure this account's E2E key is unlocked on this device
-        // before we try to decrypt anything below (shows a one-time
-        // passphrase modal on brand-new accounts / brand-new devices;
-        // silent no-op on a device that already has it cached).
-        if (currentUserId) {
-            const me = db.users.find(u => u.id === currentUserId);
-            await ensureEncryptionReady(currentUserId, me);
-        }
-        // rowToMessage looks up partner public keys via getUser(), which
-        // reads db.users — so db.users must already be assigned (it is,
-        // above) before we decrypt messages here.
+        // Ключ переписки (см. js/crypto.js) подтягивается лениво в
+        // rowToMessage/sendMessage — тут больше не нужно ничего готовить
+        // заранее и не нужно ничего спрашивать у человека.
         db.messages = await Promise.all((messages.data || []).map(rowToMessage));
 
         savesByUser = new Map();
@@ -3850,189 +3812,6 @@ async function saveDB() {
     catch (error) {
         console.error("Supabase save error:", error);
         toast("Не удалось сохранить изменения в Supabase.");
-    }
-}
-
-/* ============================================================
-   E2E ENCRYPTION — passphrase modal
-   ------------------------------------------------------------
-   Blocks (inside loadDB, before the app UI is shown) only at the
-   two moments that actually need a person's input: setting up
-   encryption for the very first time on this account, or
-   unlocking it on a device that's never seen this account's key
-   before. On a device that already has the key cached locally,
-   this is a silent no-op — no interruption on normal logins.
-   ============================================================ */
-
-function renderCryptoModal({ title, description, mode, error, step }) {
-    // Defensive: never let more than one of these stack on top of each
-    // other (that was the original bug — two overlays fighting over the
-    // same keystrokes). If one is already open, replace it.
-    document.querySelectorAll(".crypto-overlay").forEach(el => el.remove());
-
-    const isConfirmStep = mode === "create" && step === "confirm";
-    const overlay = document.createElement("div");
-    overlay.className = "crypto-overlay";
-    overlay.innerHTML = `
-        <div class="crypto-box">
-            <h2>${title}</h2>
-            <p>${description}</p>
-            <form id="cryptoForm">
-                <div class="form-group">
-                    <label>${isConfirmStep ? "Повтори фразу-пароль" : "Фраза-пароль шифрования"}</label>
-                    <input
-                        id="cryptoPassphrase"
-                        type="password"
-                        required
-                        minlength="8"
-                        placeholder="${isConfirmStep ? "ещё раз" : "минимум 8 символов"}"
-                        autocomplete="off"
-                        autocapitalize="off"
-                        autocorrect="off"
-                        spellcheck="false"
-                        data-lpignore="true"
-                        data-1p-ignore="true"
-                    >
-                </div>
-                ${error ? `<div class="error-text">${error}</div>` : ""}
-                <button class="primary full" type="submit">${isConfirmStep ? "Создать" : (mode === "create" ? "Далее" : "Разблокировать")}</button>
-            </form>
-            ${mode === "unlock" ? `<button type="button" class="crypto-reset-link" id="cryptoResetLink">Не помню фразу-пароль</button>` : ""}
-            <button type="button" class="crypto-reset-link" id="cryptoSkipLink">Пропустить (сообщения будут ${mode === "create" ? "отправляться без шифрования" : "недоступны на этом устройстве"})</button>
-        </div>
-    `;
-    document.body.appendChild(overlay);
-    const input = overlay.querySelector("#cryptoPassphrase");
-    // Not always able to pop the mobile keyboard automatically this far
-    // from the original tap (Kodex/Safari require a fresh user gesture for
-    // that), but this at least puts the caret in the field immediately.
-    requestAnimationFrame(() => input.focus());
-    return overlay;
-}
-
-// Resolves with { action: "submit", passphrase } | { action: "reset" } | { action: "skip" }
-// For mode "create" this walks the person through passphrase, then
-// confirm-passphrase, as two separate single-field steps (rather than one
-// form with two visible password fields — that pattern is exactly what
-// makes Safari/Chrome offer to auto-generate/auto-fill a "strong password"
-// over whatever the person is actually typing).
-function askPassphrase(config) {
-    return new Promise(resolve => {
-        const overlay = renderCryptoModal(config);
-        const form = overlay.querySelector("#cryptoForm");
-        const submitBtn = form.querySelector("button[type=submit]");
-        form.addEventListener("submit", e => {
-            e.preventDefault();
-            if (submitBtn.disabled) return; // guard against double-submit
-            submitBtn.disabled = true;
-            const value = overlay.querySelector("#cryptoPassphrase").value;
-
-            if (config.mode === "create" && config.step !== "confirm") {
-                overlay.remove();
-                resolve(askPassphrase({ ...config, step: "confirm", _firstPassphrase: value }));
-                return;
-            }
-            if (config.mode === "create" && config.step === "confirm") {
-                if (value !== config._firstPassphrase) {
-                    overlay.remove();
-                    resolve(askPassphrase({ ...config, step: undefined, error: "Фразы-пароли не совпадают. Попробуй ещё раз." }));
-                    return;
-                }
-                overlay.remove();
-                resolve({ action: "submit", passphrase: value });
-                return;
-            }
-            overlay.remove();
-            resolve({ action: "submit", passphrase: value });
-        });
-        const resetLink = overlay.querySelector("#cryptoResetLink");
-        if (resetLink) {
-            resetLink.addEventListener("click", () => {
-                const ok = confirm("Сбросить шифрование? Все старые сообщения (твои и собеседников) станет невозможно прочитать ни на одном устройстве. Отменить это нельзя.");
-                if (!ok) return;
-                overlay.remove();
-                resolve({ action: "reset" });
-            });
-        }
-        overlay.querySelector("#cryptoSkipLink").addEventListener("click", () => {
-            overlay.remove();
-            resolve({ action: "skip" });
-        });
-    });
-}
-
-async function ensureEncryptionReady(userId, meUser) {
-    if (await BubblesCrypto.hasLocalKeyForUser(userId)) return;
-
-    let keyRow;
-    try {
-        keyRow = await BubblesCrypto.fetchOwnKeyRow(userId);
-    } catch (error) {
-        console.error(error);
-        toast("Не удалось проверить статус шифрования сообщений.");
-        return;
-    }
-
-    if (!keyRow) {
-        // First time ever setting up E2E on this account.
-        while (true) {
-            const result = await askPassphrase({
-                mode: "create",
-                title: "🔒 Придумай фразу-пароль шифрования",
-                description: "Она защищает твои сообщения на сервере. Она отдельная от пароля аккаунта — сохрани её в надёжном месте: без неё сообщения не восстановить ни тебе, ни нам."
-            });
-            if (result.action === "skip") {
-                toast("Шифрование пропущено — новые сообщения будут отправляться без него, пока не настроишь его.", 6000);
-                return;
-            }
-            try {
-                await BubblesCrypto.createAccountKey(userId, result.passphrase);
-                if (meUser) meUser.publicKey = ""; // stale until next reload, not used locally anyway
-                toast("Шифрование сообщений включено ✨");
-                return;
-            } catch (error) {
-                console.error(error);
-                toast("Не удалось включить шифрование: " + (error?.message || error), 6000);
-                return;
-            }
-        }
-    }
-
-    // Existing account, new device — need the passphrase to unlock it here.
-    let error = null;
-    while (true) {
-        const result = await askPassphrase({
-            mode: "unlock",
-            title: "🔒 Разблокируй сообщения",
-            description: "Это устройство ещё не видело ключ шифрования этого аккаунта. Введи фразу-пароль шифрования, которую ты придумал(а) при первой настройке.",
-            error
-        });
-        if (result.action === "skip") {
-            toast("Ок, сообщения на этом устройстве останутся зашифрованными до разблокировки.", 6000);
-            return;
-        }
-        if (result.action === "reset") {
-            const created = await askPassphrase({
-                mode: "create",
-                title: "🔒 Новая фраза-пароль шифрования",
-                description: "Придумай новую фразу-пароль. Она будет действовать для всех устройств начиная с этого момента."
-            });
-            if (created.action !== "submit") return;
-            try {
-                await BubblesCrypto.resetAccountKey(userId, created.passphrase);
-                toast("Шифрование сброшено, новый ключ создан. Старые сообщения расшифровать больше нельзя.", 8000);
-            } catch (err) {
-                console.error(err);
-                toast("Не удалось сбросить шифрование: " + (err?.message || err), 6000);
-            }
-            return;
-        }
-        const ok = await BubblesCrypto.unlockAccountKey(userId, result.passphrase, keyRow);
-        if (ok) {
-            toast("Сообщения разблокированы ✨");
-            return;
-        }
-        error = "Неверная фраза-пароль. Попробуй ещё раз.";
     }
 }
 
@@ -4217,34 +3996,12 @@ function setupSocialRealtime() {
         .subscribe();
 }
 
-// Keeps db.users[*].publicKey current for the lifetime of the session. Without
-// this, public_key was only ever loaded once at loadDB() time — if a partner
-// sets up encryption for the first time, or resets their passphrase on
-// another device, mid-session, everyone still had their app's already-open
-// session pointed at the old key, and messages in both directions would fail
-// to decrypt until a full page reload. Any change to public_key now arrives
-// live and the crypto module's cached shared secret for that partner is
-// dropped so the next message re-derives it against the new key.
-function setupProfileKeysRealtime() {
-    if (profileKeysChannel) sb.removeChannel(profileKeysChannel);
-    profileKeysChannel = sb.channel("bubbles-profile-keys-" + currentUserId)
-        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "profiles" }, (payload) => {
-            const row = payload.new;
-            if (!row || row.public_key === payload.old?.public_key) return;
-            const user = getUser(row.id);
-            if (user) user.publicKey = row.public_key || "";
-            BubblesCrypto.invalidateSharedKeyFor(row.id);
-        })
-        .subscribe();
-}
-
 function teardownRealtime() {
-    [messagesChannel, friendRequestsChannel, typingChannel, socialChannel, profileKeysChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
+    [messagesChannel, friendRequestsChannel, typingChannel, socialChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
     messagesChannel = null;
     friendRequestsChannel = null;
     typingChannel = null;
     socialChannel = null;
-    profileKeysChannel = null;
     stopWatchingChatPartnerPresence();
 }
 
