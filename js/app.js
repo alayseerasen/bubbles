@@ -80,6 +80,27 @@ function getUser(id) {
     return db.users.find(user => user.id === id);
 }
 
+// profiles (and therefore public_key) are only ever loaded once at
+// loadDB() time — there's no realtime subscription on that table. If a
+// conversation partner sets up or resets their encryption key after our
+// session already loaded, our cached copy of their public_key goes stale,
+// and messages start silently failing to decrypt in both directions. This
+// re-fetches a single profile row from the server and updates db.users in
+// place so encryption always uses the partner's *current* key.
+async function refreshUserKey(userId) {
+    try {
+        const { data, error } = await sb.from("profiles").select("*").eq("id", userId).maybeSingle();
+        if (error || !data) return getUser(userId) || null;
+        const fresh = rowToUser(data);
+        const idx = db.users.findIndex(u => u.id === userId);
+        if (idx >= 0) db.users[idx] = fresh; else db.users.push(fresh);
+        return fresh;
+    } catch (e) {
+        console.error(e);
+        return getUser(userId) || null;
+    }
+}
+
 function getCurrentUser() {
     return getUser(currentUserId);
 }
@@ -2913,7 +2934,10 @@ async function sendMessage(event, userId) {
         created_at: new Date(message.createdAt).toISOString()
     };
 
-    const recipient = getUser(userId);
+    // Always refetch the recipient's current public_key from the server
+    // rather than trusting whatever was cached at page-load time — see
+    // refreshUserKey() for why the cached copy can be stale.
+    const recipient = await refreshUserKey(userId);
     const sharedKey = recipient?.publicKey ? await BubblesCrypto.getSharedKeyFor(userId, recipient.publicKey) : null;
 
     if (sharedKey) {
@@ -3533,11 +3557,28 @@ async function rowToMessage(row) {
 
     if (row.encrypted) {
         const partnerId = row.sender_id === currentUserId ? row.receiver_id : row.sender_id;
-        const partner = getUser(partnerId);
-        const sharedKey = partner?.publicKey ? await BubblesCrypto.getSharedKeyFor(partnerId, partner.publicKey) : null;
+        let partner = getUser(partnerId);
+        // Cached copy has no key at all (e.g. partner set up encryption after
+        // our session loaded) — refetch before giving up, same reasoning as
+        // the decrypt-failure retry below.
+        if (!partner?.publicKey) partner = await refreshUserKey(partnerId);
+        let sharedKey = partner?.publicKey ? await BubblesCrypto.getSharedKeyFor(partnerId, partner.publicKey) : null;
         if (sharedKey) {
+            let decrypted = text ? await BubblesCrypto.decryptString(sharedKey, text, row.iv) : "";
+            // A failed decrypt on an *encrypted* row almost always means the
+            // partner's public_key changed after we cached it (new key setup
+            // or a passphrase reset on another device — see refreshUserKey()).
+            // Re-fetch their current key, recompute the shared secret, and
+            // give decryption one more try before giving up.
+            if (text && decrypted === null) {
+                partner = await refreshUserKey(partnerId);
+                if (partner?.publicKey) {
+                    BubblesCrypto.invalidateSharedKeyFor(partnerId);
+                    sharedKey = await BubblesCrypto.getSharedKeyFor(partnerId, partner.publicKey);
+                    decrypted = sharedKey ? await BubblesCrypto.decryptString(sharedKey, text, row.iv) : null;
+                }
+            }
             if (text) {
-                const decrypted = await BubblesCrypto.decryptString(sharedKey, text, row.iv);
                 text = decrypted === null ? "🔒 Не удалось расшифровать сообщение" : decrypted;
             }
             if (image) {

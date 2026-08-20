@@ -219,6 +219,7 @@ const BubblesCrypto = (() => {
     async function resetAccountKey(userId, newPassphrase) {
         await idbDelete(localKeyName(userId));
         sharedKeyCache.clear();
+        rememberedPeerKey.clear();
         return createAccountKey(userId, newPassphrase);
     }
 
@@ -247,12 +248,25 @@ const BubblesCrypto = (() => {
     }
 
     // Cached per conversation partner so we don't redo ECDH+HKDF on every message.
+    // Keyed only by partnerId, which means if the partner's public key changes
+    // mid-session (they just set up encryption, or reset their passphrase on
+    // another device) this cache would silently keep deriving the OLD shared
+    // secret. rememberedPeerKey lets callers detect that mismatch and
+    // invalidateSharedKeyFor() lets them force a recompute against a fresh key.
+    const rememberedPeerKey = new Map(); // partnerId -> publicKeyB64 last used to derive the cached key
+
     function getSharedKeyFor(partnerId, partnerPublicKeyB64) {
         if (!partnerPublicKeyB64 || !myPrivateKey) return null;
-        if (!sharedKeyCache.has(partnerId)) {
+        if (rememberedPeerKey.get(partnerId) !== partnerPublicKeyB64) {
             sharedKeyCache.set(partnerId, deriveSharedKey(partnerPublicKeyB64));
+            rememberedPeerKey.set(partnerId, partnerPublicKeyB64);
         }
         return sharedKeyCache.get(partnerId);
+    }
+
+    function invalidateSharedKeyFor(partnerId) {
+        sharedKeyCache.delete(partnerId);
+        rememberedPeerKey.delete(partnerId);
     }
 
     async function encryptString(sharedKey, plaintext) {
@@ -292,6 +306,7 @@ const BubblesCrypto = (() => {
         unlockAccountKey,
         resetAccountKey,
         getSharedKeyFor,
+        invalidateSharedKeyFor,
         encryptString,
         decryptString,
         isReady: () => !!myPrivateKey
