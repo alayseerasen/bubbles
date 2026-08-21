@@ -26,17 +26,13 @@ create table if not exists public.profiles (
     created_at timestamptz not null default now()
 );
 
--- E2E-шифрование сообщений: публичный ключ аккаунта (ECDH P-256, spki,
--- base64) — не секрет, читается всеми, как и весь остальной профиль.
+-- E2E-шифрование сообщений (старая схема, ECDH P-256 + фраза-пароль на
+-- устройство) — БОЛЬШЕ НЕ ИСПОЛЬЗУЕТСЯ приложением. Колонка и таблица
+-- оставлены как есть (ничего не удаляем из чужих баз), но новый код их
+-- не читает и не пишет. Смотри conversation_keys ниже — это то, что
+-- реально используется сейчас.
 alter table public.profiles add column if not exists public_key text;
 
--- Приватный ключ ТОЖЕ хранится в базе (иначе не синхронизировать между
--- устройствами), но только в виде, зашифрованном отдельной фразой-паролем
--- шифрования (PBKDF2 + AES-256-GCM) — без неё этот блоб бесполезен.
--- Вынесен в отдельную таблицу с отдельной RLS-политикой (видна только
--- владельцу), а не в profiles: profiles читают все, а этот блоб не должен
--- быть доступен никому, кроме хозяина аккаунта — иначе кто угодно смог бы
--- скачать чужой шифроблоб и подбирать фразу-пароль офлайн без ограничений.
 create table if not exists public.profile_keys (
     id uuid primary key references public.profiles(id) on delete cascade,
     encrypted_private_key text not null,
@@ -52,6 +48,40 @@ drop policy if exists profile_keys_insert on public.profile_keys;
 create policy profile_keys_insert on public.profile_keys for insert with check (auth.uid() = id);
 drop policy if exists profile_keys_update on public.profile_keys;
 create policy profile_keys_update on public.profile_keys for update using (auth.uid() = id) with check (auth.uid() = id);
+
+-- ------------------------------------------------------------
+-- CONVERSATION KEYS — текущая схема шифрования сообщений.
+-- ------------------------------------------------------------
+-- Раньше ключ шифрования переписки собирался на КАЖДОМ устройстве заново
+-- из приватного ключа аккаунта, который был заперт отдельной фразой-
+-- паролем и жил только в IndexedDB конкретного устройства. Если фраза-
+-- пароль терялась или сбрасывалась на одном устройстве, все остальные
+-- устройства (и оба собеседника) переставали совпадать по ключу —
+-- сообщения переставали расшифровываться, иногда навсегда.
+--
+-- Теперь ключ переписки — один случайный AES-256 ключ на пару
+-- собеседников, который лежит в базе один раз и отдаётся любому
+-- залогиненному устройству любого из двоих через RLS — так же, как это
+-- устроено в большинстве соцсетей: шифрование при хранении и передаче
+-- есть, но оно не завязано на секрет, который может отсутствовать на
+-- конкретном устройстве. Из-за этого Supabase технически МОЖЕТ прочитать
+-- ключ (в отличие от старой схемы) — это осознанный компромисс в пользу
+-- того, чтобы переписка никогда не "залипала" нерасшифровываемой.
+create table if not exists public.conversation_keys (
+    user1 uuid not null references public.profiles(id) on delete cascade,
+    user2 uuid not null references public.profiles(id) on delete cascade,
+    encryption_key text not null,
+    created_at timestamptz not null default now(),
+    primary key (user1, user2),
+    constraint conversation_keys_ordered check (user1 < user2)
+);
+alter table public.conversation_keys enable row level security;
+drop policy if exists conversation_keys_select on public.conversation_keys;
+create policy conversation_keys_select on public.conversation_keys for select
+using (auth.uid() = user1 or auth.uid() = user2);
+drop policy if exists conversation_keys_insert on public.conversation_keys;
+create policy conversation_keys_insert on public.conversation_keys for insert
+with check (auth.uid() = user1 or auth.uid() = user2);
 
 -- ------------------------------------------------------------
 -- POSTS
