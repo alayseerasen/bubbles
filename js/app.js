@@ -16,7 +16,8 @@ let db = {
     friends: [],
     friendRequests: [],
     messages: [],
-    music: []
+    music: [],
+    reports: []
 };
 
 let currentUserId = null;
@@ -515,7 +516,7 @@ async function logout(){
     closeMusicPlayer();
     await sb.auth.signOut();
     currentUserId = null;
-    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],messages:[],music:[]};
+    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],messages:[],music:[],reports:[]};
     showAuth("landing");
 }
 
@@ -612,6 +613,7 @@ function renderApp(){
                     onclick="navigate('profile')"
                 >
                     👤 Профиль
+                    <span id="pendingReportsBadge" class="nav-badge hidden"></span>
                 </button>
 
                 <button
@@ -655,21 +657,6 @@ function renderApp(){
                 >
                     ⚙️ Настройки
                 </button>
-
-                ${
-                    isAdmin()
-                    ? `
-                        <button
-                            class="nav-btn"
-                            data-page="admin"
-                            onclick="navigate('admin')"
-                        >
-                            🛡️ Админ
-                        </button>
-                    `
-                    : ""
-                }
-
 
                 <div class="back-button">
 
@@ -719,13 +706,17 @@ function navigate(page, id = null){
 
     switch(page){
         case "feed": renderFeed(); break;
-        case "profile": renderProfile(id || currentUserId); break;
+        // selectedProfileId was just updated above (id || selectedProfileId) —
+        // using it here (not just `id`) matters when navigate("profile") is
+        // called with no id, e.g. from renderApp()'s post-action re-render,
+        // so it keeps showing whichever profile was open instead of
+        // snapping back to your own.
+        case "profile": renderProfile(selectedProfileId || currentUserId); break;
         case "friends": renderFriends(); break;
         case "messages": renderMessages(); break;
         case "music": renderMusic(); break;
         case "edit": renderEditProfile(); break;
         case "search": renderSearchResults((id != null ? id : userSearchQuery).trim().toLowerCase()); break;
-        case "admin": renderAdmin(); break;
         default: renderFeed();
     }
 
@@ -853,6 +844,20 @@ function renderCommentRow(postId, comment, topComment){
                             title="${comment.authorId === currentUserId ? "Удалить" : "Удалить (админ)"}"
                         >
                             🗑️
+                        </button>
+                    `
+                    : ""
+                }
+
+                ${
+                    comment.authorId !== currentUserId
+                    ? `
+                        <button
+                            class="comment-action-btn"
+                            onclick="reportComment('${postId}','${comment.id}')"
+                            title="Пожаловаться"
+                        >
+                            🚩
                         </button>
                     `
                     : ""
@@ -1011,6 +1016,20 @@ function renderPost(post){
                             title="${post.authorId === currentUserId ? "Удалить" : "Удалить (админ)"}"
                         >
                             🗑️
+                        </button>
+                    `
+                    : ""
+                }
+
+                ${
+                    post.authorId !== currentUserId
+                    ? `
+                        <button
+                            class="action-btn"
+                            onclick="reportPost('${post.id}')"
+                            title="Пожаловаться"
+                        >
+                            🚩
                         </button>
                     `
                     : ""
@@ -1394,6 +1413,14 @@ function renderProfile(userId){
                                     `
                                     : ""
                                 }
+
+                                <button
+                                    class="secondary"
+                                    onclick="reportProfile('${user.id}')"
+                                    title="Пожаловаться"
+                                >
+                                    🚩 Пожаловаться
+                                </button>
                             `
                         }
 
@@ -1435,6 +1462,8 @@ function renderProfile(userId){
             </div>
 
         </div>
+
+        ${isMe && isAdmin() ? renderModerationQueue() : adminProfileControls(user)}
 
 
         <h2 class="section-title">
@@ -3409,81 +3438,41 @@ async function deleteMusic(id) {
 }
 
 /* ============================================================
-   ADMIN
+   ADMIN / MODERATION
+   ------------------------------------------------------------
+   No standalone "Админ" page any more. Everything lives on the
+   profile page:
+     - On someone ELSE's profile, an admin sees a small "🛡️
+       Модерация" panel with make/revoke-admin and ban/unban.
+     - On YOUR OWN profile, if you're an admin, you instead see
+       the moderation queue: pending reports on posts, comments
+       and profiles, with buttons to ban the reported person,
+       delete the reported content, or dismiss the report.
    ============================================================ */
 
-function renderAdmin(){
-    if(!isAdmin()){
-        navigate("feed");
-        return;
-    }
-    const users = [...db.users].sort((a,b) => a.createdAt - b.createdAt);
-
-    document.getElementById("page").innerHTML = `
-
-        <h1 class="section-title">
-            🛡️ Админ
-        </h1>
-
-        <div class="card" style="margin-bottom:20px;">
-            Здесь можно забанить/разбанить пользователя и выдать/снять права
-            администратора. Удалить чужой пост, комментарий или трек можно
-            прямо там, где он показан, — рядом появится 🗑️.
-        </div>
-
-        ${
-            users.length
-            ? users.map(user => adminUserRow(user)).join("")
-            : emptyState("🛡️", "Пользователей нет", "Пока никто не зарегистрировался.")
-        }
-
-    `;
-}
-
-function adminUserRow(user){
-    const self = user.id === currentUserId;
+// Rendered inside renderProfile() for any profile that ISN'T your own,
+// only if you're an admin looking at a non-admin-viewing-themselves case.
+function adminProfileControls(user){
+    if (!isAdmin() || user.id === currentUserId) return "";
     return `
-        <div class="card" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-
-            <img
-                class="mini-avatar"
-                src="${user.avatar || defaultAvatar()}"
-                onclick="navigate('profile','${user.id}')"
-                style="cursor:pointer"
-            >
-
-            <div style="flex:1;min-width:160px;">
-                <strong style="cursor:pointer" onclick="navigate('profile','${user.id}')">
-                    ${escapeHtml(user.displayName)}
-                </strong>
-                <div style="opacity:.7;font-size:14px;">
-                    @${escapeHtml(user.username)}
-                    ${user.role === "admin" ? " · 🛡️ админ" : ""}
-                    ${user.banned ? ` · 🚫 забанен${user.banReason ? ": " + escapeHtml(user.banReason) : ""}` : ""}
-                    ${self ? " · это ты" : ""}
-                </div>
+        <div class="card" style="margin-top:14px;">
+            <h3 style="margin-top:0;">🛡️ Модерация</h3>
+            <div style="opacity:.7;font-size:14px;margin-bottom:10px;">
+                ${user.role === "admin" ? "🛡️ Администратор" : "Обычный пользователь"}
+                ${user.banned ? ` · 🚫 забанен${user.banReason ? ": " + escapeHtml(user.banReason) : ""}` : ""}
             </div>
-
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
-
                 ${
-                    self
-                    ? ""
-                    : user.role === "admin"
-                        ? `<button class="secondary" onclick="setUserRole('${user.id}',false)">Снять права админа</button>`
-                        : `<button class="secondary" onclick="setUserRole('${user.id}',true)">Сделать админом</button>`
+                    user.role === "admin"
+                    ? `<button class="secondary" onclick="setUserRole('${user.id}',false)">Снять права админа</button>`
+                    : `<button class="secondary" onclick="setUserRole('${user.id}',true)">Сделать админом</button>`
                 }
-
                 ${
-                    self
-                    ? ""
-                    : user.banned
-                        ? `<button class="secondary" onclick="setUserBanned('${user.id}',false)">Разбанить</button>`
-                        : `<button class="danger" onclick="setUserBanned('${user.id}',true)">Забанить</button>`
+                    user.banned
+                    ? `<button class="secondary" onclick="setUserBanned('${user.id}',false)">Разбанить</button>`
+                    : `<button class="danger" onclick="setUserBanned('${user.id}',true)">Забанить</button>`
                 }
-
             </div>
-
         </div>
     `;
 }
@@ -3504,7 +3493,6 @@ async function setUserRole(userId, makeAdmin) {
     user.role = role;
     toast(makeAdmin ? "Права администратора выданы." : "Права администратора сняты.");
     renderApp();
-    navigate("admin");
 }
 
 async function setUserBanned(userId, banned) {
@@ -3528,8 +3516,213 @@ async function setUserBanned(userId, banned) {
     }
     user.banned = banned;
     user.banReason = reason;
+
+    // Banning (or unbanning) someone resolves every pending report against
+    // them in one go — the admin came here BECAUSE of a report, most of
+    // the time, so there's no reason to make them dismiss it separately too.
+    const affectedIds = db.reports.filter(r => r.targetUserId === userId && r.status === "pending").map(r => r.id);
+    if (affectedIds.length) {
+        const { error: reportsError } = await sb.from("reports")
+            .update({ status: "resolved", resolved_at: new Date().toISOString(), resolved_by: currentUserId })
+            .in("id", affectedIds);
+        if (!reportsError) db.reports.forEach(r => { if (affectedIds.includes(r.id)) r.status = "resolved"; });
+    }
+
     toast(banned ? "Пользователь забанен." : "Пользователь разбанен.");
-    navigate("admin");
+    renderApp();
+}
+
+/* ------------------------------------------------------------
+   REPORTS (жалобы)
+   ------------------------------------------------------------ */
+
+function pendingReports() {
+    return db.reports.filter(r => r.status === "pending").sort((a,b) => b.createdAt - a.createdAt);
+}
+
+// Shared insert used by reportPost/reportComment/reportProfile below.
+async function submitReport(targetType, targetId, targetUserId, promptLabel) {
+    if (!currentUserId) return;
+    if (targetUserId === currentUserId) {
+        toast("Нельзя пожаловаться на себя.");
+        return;
+    }
+    const input = prompt(`Почему ты жалуешься ${promptLabel}? (необязательно)`, "");
+    if (input === null) return; // cancelled
+    const { error } = await sb.from("reports").insert({
+        id: uid("report"),
+        reporter_id: currentUserId,
+        target_type: targetType,
+        target_id: targetId,
+        target_user_id: targetUserId,
+        reason: input.trim()
+    });
+    if (error) {
+        console.error(error);
+        // Most likely the unique "one pending report per target" index —
+        // not a real failure from the person's point of view.
+        toast(error.code === "23505" ? "Ты уже жаловался на это." : "Не удалось отправить жалобу.");
+        return;
+    }
+    toast("Жалоба отправлена. Спасибо!");
+}
+
+function reportPost(postId) {
+    const post = db.posts.find(p => p.id === postId);
+    if (!post) return;
+    submitReport("post", postId, post.authorId, "на этот пост");
+}
+
+function reportComment(postId, commentId) {
+    const comment = db.comments.find(c => c.id === commentId);
+    if (!comment) return;
+    submitReport("comment", commentId, comment.authorId, "на этот комментарий");
+}
+
+function reportProfile(userId) {
+    submitReport("profile", userId, userId, "на этот профиль");
+}
+
+// One line describing what a report is about, for the moderation queue —
+// falls back gracefully if the reported post/comment was since deleted.
+function reportTargetPreview(report) {
+    if (report.targetType === "post") {
+        const post = db.posts.find(p => p.id === report.targetId);
+        if (!post) return "Пост удалён.";
+        return post.text ? escapeHtml(post.text).slice(0, 140) : (post.image ? "📷 Фото" : "Пустой пост");
+    }
+    if (report.targetType === "comment") {
+        const comment = db.comments.find(c => c.id === report.targetId);
+        if (!comment) return "Комментарий удалён.";
+        return escapeHtml(comment.text).slice(0, 140);
+    }
+    return "Профиль пользователя.";
+}
+
+function renderModerationQueue() {
+    const reports = pendingReports();
+    if (!reports.length) {
+        return `
+            <h2 class="section-title">🚩 Жалобы</h2>
+            ${emptyState("🚩", "Жалоб нет", "Пока никто ни на что не пожаловался.")}
+        `;
+    }
+    return `
+        <h2 class="section-title">🚩 Жалобы (${reports.length})</h2>
+        ${reports.map(reportRow).join("")}
+    `;
+}
+
+function reportRow(report) {
+    const reporter = getUser(report.reporterId);
+    const target = getUser(report.targetUserId);
+    if (!target) return "";
+    const typeLabel = report.targetType === "post" ? "🗒️ Пост" : report.targetType === "comment" ? "💬 Комментарий" : "👤 Профиль";
+    const canDeleteContent = report.targetType === "post" || report.targetType === "comment";
+    return `
+        <div class="card" style="display:flex;flex-direction:column;gap:8px;">
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <img
+                    class="mini-avatar"
+                    src="${target.avatar || defaultAvatar()}"
+                    onclick="navigate('profile','${target.id}')"
+                    style="cursor:pointer"
+                >
+                <div style="flex:1;min-width:160px;">
+                    <strong style="cursor:pointer" onclick="navigate('profile','${target.id}')">${escapeHtml(target.displayName)}</strong>
+                    <div style="opacity:.7;font-size:13px;">
+                        ${typeLabel} · ${timeAgo(report.createdAt)}
+                        ${reporter ? ` · пожаловался(-ась) ${escapeHtml(reporter.displayName)}` : ""}
+                    </div>
+                </div>
+            </div>
+
+            <div style="opacity:.85;font-size:14px;">
+                «${reportTargetPreview(report)}»
+            </div>
+
+            ${
+                report.reason
+                ? `<div style="font-size:14px;font-style:italic;opacity:.8;">Причина: ${escapeHtml(report.reason)}</div>`
+                : ""
+            }
+
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+
+                ${
+                    target.banned
+                        ? `<button class="secondary" onclick="setUserBanned('${target.id}',false)">Разбанить</button>`
+                        : `<button class="danger" onclick="setUserBanned('${target.id}',true)">Забанить</button>`
+                }
+
+                ${
+                    canDeleteContent
+                    ? `<button class="secondary" onclick="moderateDeleteReportedContent('${report.id}')">🗑️ Удалить контент</button>`
+                    : ""
+                }
+
+                <button class="secondary" onclick="dismissReport('${report.id}')">Отклонить жалобу</button>
+
+            </div>
+
+        </div>
+    `;
+}
+
+async function dismissReport(reportId) {
+    if (!isAdmin()) return;
+    const report = db.reports.find(r => r.id === reportId);
+    if (!report) return;
+    const { error } = await sb.from("reports")
+        .update({ status: "dismissed", resolved_at: new Date().toISOString(), resolved_by: currentUserId })
+        .eq("id", reportId);
+    if (error) {
+        console.error(error);
+        toast("Не удалось отклонить жалобу.");
+        return;
+    }
+    report.status = "dismissed";
+    toast("Жалоба отклонена.");
+    renderApp();
+}
+
+async function moderateDeleteReportedContent(reportId) {
+    if (!isAdmin()) return;
+    const report = db.reports.find(r => r.id === reportId);
+    if (!report) return;
+    if (!confirm("Удалить этот контент? Действие нельзя отменить."))
+        return;
+
+    if (report.targetType === "post") {
+        const [postResult, commentResult] = await Promise.all([
+            sb.from("posts").delete().eq("id", report.targetId),
+            sb.from("comments").delete().eq("post_id", report.targetId)
+        ]);
+        if (postResult.error || commentResult.error) {
+            toast("Не удалось удалить пост.");
+            return;
+        }
+        db.posts = db.posts.filter(p => p.id !== report.targetId);
+        db.comments = db.comments.filter(c => c.postId !== report.targetId);
+    } else if (report.targetType === "comment") {
+        const idsToRemove = new Set([report.targetId]);
+        db.comments.forEach(c => { if (c.parentId === report.targetId) idsToRemove.add(c.id); });
+        const { error } = await sb.from("comments").delete().eq("id", report.targetId);
+        if (error) {
+            toast("Не удалось удалить комментарий.");
+            return;
+        }
+        db.comments = db.comments.filter(c => !idsToRemove.has(c.id));
+    }
+
+    const { error: reportError } = await sb.from("reports")
+        .update({ status: "resolved", resolved_at: new Date().toISOString(), resolved_by: currentUserId })
+        .eq("id", reportId);
+    if (!reportError) report.status = "resolved";
+
+    toast("Контент удалён.");
+    renderApp();
 }
 
 /* ============================================================
@@ -3654,6 +3847,19 @@ function rowToFriend(row) {
         id: row.id,
         user1: row.user1,
         user2: row.user2,
+        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
+    };
+}
+
+function rowToReport(row) {
+    return {
+        id: row.id,
+        reporterId: row.reporter_id,
+        targetType: row.target_type,
+        targetId: row.target_id,
+        targetUserId: row.target_user_id,
+        reason: row.reason || "",
+        status: row.status || "pending",
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
@@ -3794,6 +4000,10 @@ function setNavBadge(id, count) {
 function updateNavBadges() {
     setNavBadge("messagesUnreadBadge", getUnreadMessagesCount());
     setNavBadge("friendRequestsBadge", myIncomingRequests().length);
+    // There's no separate "Admin" nav item any more — moderation lives on
+    // your own profile page (see renderProfile), so this badge on
+    // "Профиль" is the only hint an admin gets that reports are waiting.
+    setNavBadge("pendingReportsBadge", isAdmin() ? pendingReports().length : 0);
 }
 
 // Kept as an alias since old inline handlers / other files may still call it.
@@ -3832,7 +4042,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, messages, music, musicSaves] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, messages, music, musicSaves, reports] = await Promise.all([
             sb.from("profiles").select("*").order("created_at", { ascending: true }),
             sb.from("posts").select("*").order("created_at", { ascending: false }),
             sb.from("comments").select("*").order("created_at", { ascending: true }),
@@ -3842,9 +4052,13 @@ async function loadDB() {
             currentUserId ? sb.from("friend_requests").select("*").eq("status", "pending") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("messages").select("*").order("created_at", { ascending: true }) : Promise.resolve({ data: [], error: null }),
             sb.from("music").select("*").order("created_at", { ascending: false }),
-            sb.from("music_saves").select("music_id,user_id")
+            sb.from("music_saves").select("music_id,user_id"),
+            // RLS only ever actually returns rows here for the reporter or an
+            // admin, so this is cheap/empty for a regular user and only an
+            // admin's own profile page ends up showing anything from it.
+            currentUserId ? sb.from("reports").select("*").order("created_at", { ascending: false }) : Promise.resolve({ data: [], error: null })
         ]);
-        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, messages, music, musicSaves];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, messages, music, musicSaves, reports];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -3855,7 +4069,8 @@ async function loadDB() {
             friends: (friends.data || []).map(rowToFriend),
             friendRequests: (friendRequests.data || []).map(rowToFriendRequest),
             messages: [],
-            music: (music.data || []).map(rowToMusic)
+            music: (music.data || []).map(rowToMusic),
+            reports: (reports.data || []).map(rowToReport)
         };
         // Ключ переписки (см. js/crypto.js) подтягивается лениво в
         // rowToMessage/sendMessage — тут больше не нужно ничего готовить
@@ -4190,5 +4405,6 @@ Object.assign(window,{
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
     toggleProfileMusicExpanded,toggleProfileFriendsExpanded,
-    renderAdmin,setUserRole,setUserBanned
+    setUserRole,setUserBanned,
+    reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent
 });
