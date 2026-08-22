@@ -1104,70 +1104,85 @@ function renderCommentRow(postId, comment, topComment){
     const threadId = topComment ? topComment.id : comment.id;
     const replyBoxOpenHere = openReplyThreads.has(threadId) &&
         (openReplyThreads.get(threadId).anchorId === comment.id);
+    // Only send people to a profile that actually exists — a comment from
+    // a deleted account still shows "Пользователь" but isn't clickable.
+    const goToProfile = user ? `navigate('profile','${user.id}')` : "";
 
     return `
         <div class="comment${isReply ? " comment-reply" : ""}">
 
-            <strong>
-                ${escapeHtml(user?.displayName || "Пользователь")}
-            </strong>
+            <img
+                class="mini-avatar small comment-avatar"
+                src="${user?.avatar || defaultAvatar()}"
+                ${user ? `onclick="${goToProfile}" style="cursor:pointer"` : ""}
+            >
 
-            ${escapeHtml(comment.text)}
+            <div class="comment-body">
 
-            <div class="comment-actions">
-
-                <button
-                    class="comment-action-btn ${liked ? "liked" : ""}"
-                    onclick="toggleCommentLike('${postId}','${comment.id}')"
+                <strong
+                    ${user ? `onclick="${goToProfile}" style="cursor:pointer"` : ""}
                 >
-                    ${liked ? "♥" : "♡"}
-                    ${comment.likes?.length || 0}
-                </button>
+                    ${escapeHtml(user?.displayName || "Пользователь")}
+                </strong>
 
-                <button
-                    class="comment-action-btn"
-                    onclick="openReplyBox('${postId}','${threadId}','${comment.id}'${
-                        isReply ? `,'${escapeHtml(user?.username || "")}'` : ""
-                    })"
-                >
-                    ↩ Ответить
-                </button>
+                ${escapeHtml(comment.text)}
+
+                <div class="comment-actions">
+
+                    <button
+                        class="comment-action-btn ${liked ? "liked" : ""}"
+                        onclick="toggleCommentLike('${postId}','${comment.id}')"
+                    >
+                        ${liked ? "♥" : "♡"}
+                        ${comment.likes?.length || 0}
+                    </button>
+
+                    <button
+                        class="comment-action-btn"
+                        onclick="openReplyBox('${postId}','${threadId}','${comment.id}'${
+                            isReply ? `,'${escapeHtml(user?.username || "")}'` : ""
+                        })"
+                    >
+                        ↩ Ответить
+                    </button>
+
+                    ${
+                        comment.authorId === currentUserId || isAdmin()
+                        ? `
+                            <button
+                                class="comment-action-btn"
+                                onclick="deleteComment('${postId}','${comment.id}')"
+                                title="${comment.authorId === currentUserId ? "Удалить" : "Удалить (админ)"}"
+                            >
+                                🗑️
+                            </button>
+                        `
+                        : ""
+                    }
+
+                    ${
+                        comment.authorId !== currentUserId
+                        ? `
+                            <button
+                                class="comment-action-btn"
+                                onclick="reportComment('${postId}','${comment.id}')"
+                                title="Пожаловаться"
+                            >
+                                🚩
+                            </button>
+                        `
+                        : ""
+                    }
+
+                </div>
 
                 ${
-                    comment.authorId === currentUserId || isAdmin()
-                    ? `
-                        <button
-                            class="comment-action-btn"
-                            onclick="deleteComment('${postId}','${comment.id}')"
-                            title="${comment.authorId === currentUserId ? "Удалить" : "Удалить (админ)"}"
-                        >
-                            🗑️
-                        </button>
-                    `
-                    : ""
-                }
-
-                ${
-                    comment.authorId !== currentUserId
-                    ? `
-                        <button
-                            class="comment-action-btn"
-                            onclick="reportComment('${postId}','${comment.id}')"
-                            title="Пожаловаться"
-                        >
-                            🚩
-                        </button>
-                    `
+                    replyBoxOpenHere
+                    ? renderReplyBox(postId, threadId)
                     : ""
                 }
 
             </div>
-
-            ${
-                replyBoxOpenHere
-                ? renderReplyBox(postId, threadId)
-                : ""
-            }
 
         </div>
     `;
