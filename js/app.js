@@ -48,6 +48,7 @@ let openReplyThreads = new Map();
 
 /* Messenger state */
 let typingChannel = null;
+let typingChannelPartnerId = null;
 let typingIndicatorTimer = null;
 let messagesChannel = null;
 let friendRequestsChannel = null;
@@ -2153,6 +2154,13 @@ function renderMessages(){
     const users = friends.map(f => getUser(f.user1 === currentUserId ? f.user2 : f.user1)).filter(Boolean);
     if(!selectedChatId && users.length) selectedChatId = users[0].id;
 
+    // Covers BOTH ways a chat ends up open: an explicit click (openChat()
+    // already calls this too — the guard above makes that a harmless
+    // no-op) and this page just defaulting to the first friend above,
+    // which used to skip joinTypingChannel() entirely and left "печатает…"
+    // silently never firing until you clicked a conversation row yourself.
+    joinTypingChannel(selectedChatId);
+
     document.getElementById("page").innerHTML = `
 
         <h1 class="section-title">
@@ -2621,7 +2629,12 @@ function chatChannelName(userId) {
 }
 
 function joinTypingChannel(partnerId) {
+    // Already listening for this exact partner — re-subscribing on every
+    // render (renderMessages() calls this too, see below) would just
+    // needlessly tear down and rebuild the same realtime channel.
+    if (typingChannel && typingChannelPartnerId === partnerId) return;
     if (typingChannel) { sb.removeChannel(typingChannel); typingChannel = null; }
+    typingChannelPartnerId = partnerId || null;
     if (!partnerId || !currentUserId) return;
     typingChannel = sb.channel(chatChannelName(partnerId))
         .on("broadcast", { event: "typing" }, (payload) => {
@@ -4367,6 +4380,7 @@ function teardownRealtime() {
     messagesChannel = null;
     friendRequestsChannel = null;
     typingChannel = null;
+    typingChannelPartnerId = null;
     socialChannel = null;
     stopWatchingChatPartnerPresence();
 }
