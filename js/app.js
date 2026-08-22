@@ -16,6 +16,7 @@ let db = {
     comments: [],
     friends: [],
     friendRequests: [],
+    notifications: [],
     messages: [],
     music: [],
     reports: []
@@ -53,6 +54,7 @@ let typingChannelPartnerId = null;
 let typingIndicatorTimer = null;
 let messagesChannel = null;
 let friendRequestsChannel = null;
+let notificationsChannel = null;
 let socialChannel = null;
 let chatPartnerPresenceTimer = null;
 
@@ -518,7 +520,7 @@ async function logout(){
     closeMusicPlayer();
     await sb.auth.signOut();
     currentUserId = null;
-    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],messages:[],music:[],reports:[]};
+    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],notifications:[],messages:[],music:[],reports:[]};
     showAuth("landing");
 }
 
@@ -541,6 +543,7 @@ function startApp(){
     setupMessagesRealtime();
     setupFriendRequestsRealtime();
     setupSocialRealtime();
+    setupNotificationsRealtime();
     renderApp();
     startOnlineCountPolling();
 }
@@ -575,6 +578,19 @@ function renderApp(){
             <div class="top-user">
 
                 <span id="topbarOnlineCount" class="topbar-online-badge" title="Сколько людей сейчас онлайн в bubbles">🟢 …</span>
+
+                <div class="notif-wrap">
+                    <button
+                        id="notifBellBtn"
+                        class="notif-bell-btn"
+                        onclick="toggleNotificationsPanel(event)"
+                        title="Уведомления"
+                    >
+                        🔔
+                        <span id="notifBadge" class="nav-badge notif-badge hidden"></span>
+                    </button>
+                    <div id="notifPanel" class="notif-panel hidden"></div>
+                </div>
 
                 <button
                     id="themeToggleBtn"
@@ -1161,7 +1177,10 @@ async function toggleLike(postId) {
         post.likes = wasLiked ? [...post.likes, currentUserId] : post.likes.filter(id => id !== currentUserId);
         refreshPostInPlace(postId);
         toast("Не удалось поставить лайк.");
+        return;
     }
+
+    if (!wasLiked) createNotification({ userId: post.authorId, type: "post_like", postId });
 }
 
 async function toggleCommentLike(postId, commentId) {
@@ -1217,6 +1236,9 @@ async function addComment(postId, parentId = null) {
         refreshPostInPlace(postId);
         return;
     }
+
+    const post = db.posts.find(p => p.id === postId);
+    if (post) createNotification({ userId: post.authorId, type: "post_comment", postId, commentId: comment.id });
 }
 
 function focusComment(postId){
@@ -1952,6 +1974,7 @@ async function sendFriendRequest(userId) {
     }
     db.friendRequests.push(request);
     toast("Заявка в друзья отправлена.");
+    createNotification({ userId, type: "friend_request" });
     if (currentPage === "profile") renderProfile(selectedProfileId || userId);
     else if (currentPage === "friends") renderFriends();
     updateNavBadges();
@@ -1995,6 +2018,7 @@ async function acceptFriendRequest(requestId, otherUserId) {
     if (reqError) console.error(reqError);
     db.friendRequests = db.friendRequests.filter(r => r.id !== requestId);
     toast("Теперь вы друзья 🎉");
+    createNotification({ userId: otherUserId, type: "friend_accept" });
     navigate(currentPage, selectedProfileId);
     updateNavBadges();
 }
@@ -2010,6 +2034,135 @@ async function removeFriend(userId) {
     db.friends = db.friends.filter(x => x.id !== f.id);
     toast("Пользователь удалён из друзей.");
     navigate(currentPage, selectedProfileId || userId);
+}
+
+/* ============================================================
+   NOTIFICATIONS
+   ============================================================ */
+
+// Writes one notification row for someone ELSE to see later — the same
+// client-writes-directly pattern as the rest of this app. Silently
+// no-ops on self-actions (e.g. liking your own post) and swallows
+// errors, since a failed notification insert shouldn't roll back or
+// interrupt the like/comment/request that triggered it.
+async function createNotification({ userId, type, postId = null, commentId = null }) {
+    if (!userId || userId === currentUserId) return;
+    const { error } = await sb.from("notifications").insert({
+        id: uid("notif"),
+        user_id: userId,
+        actor_id: currentUserId,
+        type,
+        post_id: postId,
+        comment_id: commentId
+    });
+    if (error) console.error("❌ Не удалось создать уведомление:", error);
+}
+
+function unreadNotificationsCount() {
+    return db.notifications.filter(n => !n.readAt).length;
+}
+
+// One line of copy + a click target per notification type. Likes and
+// comments both just take you back to the post (comments render inline
+// under it, so there's no separate page to jump to); friend events go
+// to Друзья / the other person's profile.
+function notificationLine(n) {
+    const actor = getUser(n.actorId);
+    const name = escapeHtml(actor?.displayName || actor?.username || "Кто-то");
+    switch (n.type) {
+        case "friend_request":
+            return { text: `${name} отправил(а) заявку в друзья 🫂`, onclick: `navigate('friends')` };
+        case "friend_accept":
+            return { text: `${name} принял(а) вашу заявку в друзья 🎉`, onclick: `navigate('profile','${n.actorId}')` };
+        case "post_like":
+            return { text: `${name} оценил(а) ваш пост ❤️`, onclick: `goToPost('${n.postId}')` };
+        case "post_comment":
+            return { text: `${name} прокомментировал(а) ваш пост 💬`, onclick: `goToPost('${n.postId}')` };
+        default:
+            return { text: name, onclick: "" };
+    }
+}
+
+function renderNotificationsPanel() {
+    const items = [...db.notifications].sort((a, b) => b.createdAt - a.createdAt);
+    return `
+        <div class="notif-panel-header">Уведомления</div>
+        <div class="notif-panel-list">
+            ${
+                items.length
+                ? items.map(n => {
+                    const { text, onclick } = notificationLine(n);
+                    const actor = getUser(n.actorId);
+                    return `
+                        <div class="notif-item${n.readAt ? "" : " unread"}" onclick="${onclick};closeNotificationsPanel();">
+                            <img class="mini-avatar" src="${actor?.avatar || defaultAvatar()}">
+                            <div class="notif-item-body">
+                                <span>${text}</span>
+                                <small>${new Date(n.createdAt).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</small>
+                            </div>
+                        </div>
+                    `;
+                }).join("")
+                : `<div class="empty notif-empty">Пока ничего нет.</div>`
+            }
+        </div>
+    `;
+}
+
+// Opens/closes the bell dropdown and, on open, marks everything read —
+// same "clears when you look at it" behaviour as most notification
+// bells. stopPropagation keeps the outside-click listener below from
+// closing it on the same click that opened it.
+function toggleNotificationsPanel(event) {
+    event.stopPropagation();
+    const panel = document.getElementById("notifPanel");
+    if (!panel) return;
+    const wasOpen = !panel.classList.contains("hidden");
+    if (wasOpen) {
+        closeNotificationsPanel();
+        return;
+    }
+    panel.innerHTML = renderNotificationsPanel();
+    panel.classList.remove("hidden");
+    markAllNotificationsRead();
+}
+
+function closeNotificationsPanel() {
+    const panel = document.getElementById("notifPanel");
+    if (panel) panel.classList.add("hidden");
+}
+
+document.addEventListener("click", closeNotificationsPanel);
+
+async function markAllNotificationsRead() {
+    const unread = db.notifications.filter(n => !n.readAt);
+    if (!unread.length) return;
+    const readAt = new Date().toISOString();
+    unread.forEach(n => { n.readAt = Date.parse(readAt); });
+    setNavBadge("notifBadge", 0);
+
+    const { error } = await sb
+        .from("notifications")
+        .update({ read_at: readAt })
+        .in("id", unread.map(n => n.id))
+        .eq("user_id", currentUserId);
+
+    if (error) console.error("❌ Не удалось отметить уведомления прочитанными:", error);
+}
+
+// Jumps to the feed and scrolls/highlights one post — used by post_like
+// and post_comment notifications. The post might have scrolled off, been
+// deleted, or belong to someone whose posts aren't shown here, so this
+// fails quietly if the element never shows up.
+function goToPost(postId) {
+    navigate("feed");
+    setTimeout(() => {
+        const el = document.querySelector(`[data-bubbles-post-id="${postId}"]`);
+        if (!el) return;
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("post-highlight");
+        setTimeout(() => el.classList.remove("post-highlight"), 1600);
+    }, 50);
 }
 
 /* ============================================================
@@ -4029,6 +4182,19 @@ function rowToFriendRequest(row) {
     };
 }
 
+function rowToNotification(row) {
+    return {
+        id: row.id,
+        userId: row.user_id,
+        actorId: row.actor_id,
+        type: row.type,
+        postId: row.post_id || null,
+        commentId: row.comment_id || null,
+        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
+        readAt: row.read_at ? Date.parse(row.read_at) : null
+    };
+}
+
 // Async because fetching (and, on first contact, creating) the shared
 // conversation key needs an awaited DB round trip the first time we see a
 // given partner in this session.
@@ -4159,6 +4325,7 @@ function setNavBadge(id, count) {
 function updateNavBadges() {
     setNavBadge("messagesUnreadBadge", getUnreadMessagesCount());
     setNavBadge("friendRequestsBadge", myIncomingRequests().length);
+    setNavBadge("notifBadge", unreadNotificationsCount());
     // There's no separate "Admin" nav item any more — moderation lives on
     // your own profile page (see renderProfile), so this badge on
     // "Профиль" is the only hint an admin gets that reports are waiting.
@@ -4201,7 +4368,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, messages, messageReactions, music, musicSaves, reports] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports] = await Promise.all([
             sb.from("profiles").select("*").order("created_at", { ascending: true }),
             sb.from("posts").select("*").order("created_at", { ascending: false }),
             sb.from("comments").select("*").order("created_at", { ascending: true }),
@@ -4209,6 +4376,7 @@ async function loadDB() {
             sb.from("comment_likes").select("*"),
             currentUserId ? sb.from("friendships").select("*") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("friend_requests").select("*").eq("status", "pending") : Promise.resolve({ data: [], error: null }),
+            currentUserId ? sb.from("notifications").select("*").eq("user_id", currentUserId).order("created_at", { ascending: false }).limit(50) : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("messages").select("*").order("created_at", { ascending: true }) : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("message_reactions").select("*") : Promise.resolve({ data: [], error: null }),
             sb.from("music").select("*").order("created_at", { ascending: false }),
@@ -4218,7 +4386,7 @@ async function loadDB() {
             // admin's own profile page ends up showing anything from it.
             currentUserId ? sb.from("reports").select("*").order("created_at", { ascending: false }) : Promise.resolve({ data: [], error: null })
         ]);
-        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, messages, messageReactions, music, musicSaves, reports];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -4228,6 +4396,7 @@ async function loadDB() {
             comments: (comments.data || []).map(rowToComment),
             friends: (friends.data || []).map(rowToFriend),
             friendRequests: (friendRequests.data || []).map(rowToFriendRequest),
+            notifications: (notifications.data || []).map(rowToNotification),
             messages: [],
             music: (music.data || []).map(rowToMusic),
             reports: (reports.data || []).map(rowToReport)
@@ -4466,6 +4635,25 @@ function applyRemoteReaction(payload) {
     refreshMessageBubbleInPlace(row.message_id);
 }
 
+function setupNotificationsRealtime() {
+    if (notificationsChannel) sb.removeChannel(notificationsChannel);
+    notificationsChannel = sb.channel("bubbles-notifications-" + currentUserId)
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications" }, (payload) => {
+            const row = payload.new;
+            if (row.user_id !== currentUserId) return;
+            if (db.notifications.some(n => n.id === row.id)) return;
+            db.notifications.unshift(rowToNotification(row));
+            updateNavBadges();
+            // No toast here on purpose — friend requests, friend
+            // acceptance, and new messages already announce themselves
+            // via their own toast/popup elsewhere. This just keeps the
+            // bell's badge and history in sync in the background.
+            const panel = document.getElementById("notifPanel");
+            if (panel && !panel.classList.contains("hidden")) panel.innerHTML = renderNotificationsPanel();
+        })
+        .subscribe();
+}
+
 function setupFriendRequestsRealtime() {
     if (friendRequestsChannel) sb.removeChannel(friendRequestsChannel);
     friendRequestsChannel = sb.channel("bubbles-friend-requests-" + currentUserId)
@@ -4543,9 +4731,10 @@ function setupSocialRealtime() {
 }
 
 function teardownRealtime() {
-    [messagesChannel, friendRequestsChannel, typingChannel, socialChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
+    [messagesChannel, friendRequestsChannel, notificationsChannel, typingChannel, socialChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
     messagesChannel = null;
     friendRequestsChannel = null;
+    notificationsChannel = null;
     typingChannel = null;
     typingChannelPartnerId = null;
     socialChannel = null;
@@ -4598,6 +4787,7 @@ Object.assign(window,{
     searchUsers,createPost,toggleLike,toggleCommentLike,addComment,deleteComment,focusComment,openReplyBox,closeReplyBox,sharePost,deletePost,
     saveProfile,previewAvatar,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
     toggleMessageReaction,toggleReactionPicker,
+    toggleNotificationsPanel,goToPost,
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
     toggleProfileMusicExpanded,toggleProfileFriendsExpanded,
