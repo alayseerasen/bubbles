@@ -2202,7 +2202,7 @@ function startMessagesRealtime() {
      * входящего сообщения.
      */
 
-    function handleRealtimeMessage(
+    async function handleRealtimeMessage(
         row
     ) {
 
@@ -2238,7 +2238,7 @@ function startMessagesRealtime() {
             ) {
 
                 message =
-                    rowToMessage(
+                    await rowToMessage(
                         row
                     );
 
