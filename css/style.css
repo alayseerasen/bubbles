@@ -398,9 +398,7 @@ select:focus{
 }
 
 .notif-panel{
-    position:absolute;
-    top:calc(100% + 10px);
-    right:0;
+    position:fixed;
     width:320px;
     max-width:calc(100vw - 24px);
     max-height:420px;
@@ -409,7 +407,7 @@ select:focus{
     border:2px solid #d5eef3;
     border-radius:16px;
     box-shadow:0 12px 30px rgba(20,60,70,.18);
-    z-index:50;
+    z-index:1200;
 }
 
 .notif-panel.hidden{
