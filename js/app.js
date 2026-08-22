@@ -2047,7 +2047,7 @@ async function removeFriend(userId) {
 // interrupt the like/comment/request that triggered it.
 async function createNotification({ userId, type, postId = null, commentId = null }) {
     if (!userId || userId === currentUserId) return;
-    const { error } = await sb.from("notifications").insert({
+    const { error } = await sb.from("bubbles_notifications").insert({
         id: uid("notif"),
         user_id: userId,
         actor_id: currentUserId,
@@ -2142,7 +2142,7 @@ async function markAllNotificationsRead() {
     setNavBadge("notifBadge", 0);
 
     const { error } = await sb
-        .from("notifications")
+        .from("bubbles_notifications")
         .update({ read_at: readAt })
         .in("id", unread.map(n => n.id))
         .eq("user_id", currentUserId);
@@ -4376,7 +4376,7 @@ async function loadDB() {
             sb.from("comment_likes").select("*"),
             currentUserId ? sb.from("friendships").select("*") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("friend_requests").select("*").eq("status", "pending") : Promise.resolve({ data: [], error: null }),
-            currentUserId ? sb.from("notifications").select("*").eq("user_id", currentUserId).order("created_at", { ascending: false }).limit(50) : Promise.resolve({ data: [], error: null }),
+            currentUserId ? sb.from("bubbles_notifications").select("*").eq("user_id", currentUserId).order("created_at", { ascending: false }).limit(50) : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("messages").select("*").order("created_at", { ascending: true }) : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("message_reactions").select("*") : Promise.resolve({ data: [], error: null }),
             sb.from("music").select("*").order("created_at", { ascending: false }),
@@ -4638,7 +4638,7 @@ function applyRemoteReaction(payload) {
 function setupNotificationsRealtime() {
     if (notificationsChannel) sb.removeChannel(notificationsChannel);
     notificationsChannel = sb.channel("bubbles-notifications-" + currentUserId)
-        .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications" }, (payload) => {
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "bubbles_notifications" }, (payload) => {
             const row = payload.new;
             if (row.user_id !== currentUserId) return;
             if (db.notifications.some(n => n.id === row.id)) return;
