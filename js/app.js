@@ -3037,12 +3037,18 @@ function stopTyping() {
 function appendMessageToChat(message, partnerId) {
     const box = document.getElementById("chatMessages");
     if (box && selectedChatId === partnerId && currentPage === "messages") {
-        const empty = box.querySelector(".empty");
-        if (empty) empty.remove();
-        const wrapper = document.createElement("div");
-        wrapper.innerHTML = messageBubble(message).trim();
-        box.appendChild(wrapper.firstElementChild);
-        box.scrollTop = box.scrollHeight;
+        // Guards against double-appending the same bubble — e.g. the
+        // sender's own realtime echo of a message they already appended
+        // optimistically in sendMessage(), or the same INSERT arriving
+        // twice on a flaky connection.
+        if (!box.querySelector(`[data-bubbles-message-id="${message.id}"]`)) {
+            const empty = box.querySelector(".empty");
+            if (empty) empty.remove();
+            const wrapper = document.createElement("div");
+            wrapper.innerHTML = messageBubble(message).trim();
+            box.appendChild(wrapper.firstElementChild);
+            box.scrollTop = box.scrollHeight;
+        }
     }
     refreshConversationPreview(partnerId);
 }
