@@ -177,6 +177,25 @@ alter table public.messages add column if not exists iv text not null default ''
 alter table public.messages add column if not exists img_iv text not null default '';
 
 -- ------------------------------------------------------------
+-- MESSAGE REACTIONS
+-- One row per (message, user), same pattern as post_likes/comment_likes —
+-- lets either side of a chat add/remove their own reaction without an
+-- update to the message row itself (which only the sender may touch).
+-- One reaction per user per message (tapback-style): reacting again with
+-- a different emoji replaces it, tapping your own current emoji again
+-- removes it.
+-- ------------------------------------------------------------
+create table if not exists public.message_reactions (
+    message_id text not null references public.messages(id) on delete cascade,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    emoji text not null,
+    created_at timestamptz not null default now(),
+    primary key (message_id, user_id)
+);
+
+create index if not exists message_reactions_message_id_idx on public.message_reactions(message_id);
+
+-- ------------------------------------------------------------
 -- FRIEND REQUESTS (new — pending/accepted/declined handshake)
 -- Accepted requests still create a row in public.friendships,
 -- exactly like the old instant "add friend" button used to.
@@ -361,6 +380,7 @@ alter table public.posts enable row level security;
 alter table public.comments enable row level security;
 alter table public.friendships enable row level security;
 alter table public.messages enable row level security;
+alter table public.message_reactions enable row level security;
 alter table public.music enable row level security;
 alter table public.friend_requests enable row level security;
 alter table public.post_likes enable row level security;
@@ -444,6 +464,33 @@ with check (auth.uid() = sender_id or auth.uid() = receiver_id);
  drop policy if exists messages_delete on public.messages;
 create policy messages_delete on public.messages for delete using (auth.uid() = sender_id);
 
+-- Message reactions — visible/addable only to the two people in that
+-- conversation, checked via the parent message row each time.
+ drop policy if exists message_reactions_select on public.message_reactions;
+create policy message_reactions_select on public.message_reactions for select using (
+    exists (
+        select 1 from public.messages m
+        where m.id = message_id
+          and (m.sender_id = auth.uid() or m.receiver_id = auth.uid())
+    )
+);
+ drop policy if exists message_reactions_insert on public.message_reactions;
+create policy message_reactions_insert on public.message_reactions for insert with check (
+    auth.uid() = user_id
+    and not public.is_banned()
+    and exists (
+        select 1 from public.messages m
+        where m.id = message_id
+          and (m.sender_id = auth.uid() or m.receiver_id = auth.uid())
+    )
+);
+ drop policy if exists message_reactions_update on public.message_reactions;
+create policy message_reactions_update on public.message_reactions for update
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+ drop policy if exists message_reactions_delete on public.message_reactions;
+create policy message_reactions_delete on public.message_reactions for delete using (auth.uid() = user_id);
+
 -- Friend requests
  drop policy if exists friend_requests_select on public.friend_requests;
 create policy friend_requests_select on public.friend_requests for select
@@ -490,6 +537,12 @@ begin
         where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'messages'
     ) then
         alter publication supabase_realtime add table public.messages;
+    end if;
+    if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'message_reactions'
+    ) then
+        alter publication supabase_realtime add table public.message_reactions;
     end if;
     if not exists (
         select 1 from pg_publication_tables
