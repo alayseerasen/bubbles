@@ -4764,7 +4764,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, blocks] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, blocks, stories, storyViews] = await Promise.all([
             sb.from("profiles").select("*").order("created_at", { ascending: true }),
             sb.from("posts").select("*").order("created_at", { ascending: false }),
             sb.from("comments").select("*").order("created_at", { ascending: true }),
