@@ -6,6 +6,7 @@
 const MAX_MUSIC_SIZE = 15 * 1024 * 1024;
 const MAX_COVER_SIZE = 5 * 1024 * 1024;
 const MUSIC_BUCKET = "music";
+const QUICK_REACTIONS = ["❤️", "😂", "👍", "😮", "😢"];
 
 const sb = window.bubblesSupabase;
 
@@ -2423,6 +2424,17 @@ function renderChat(userId){
 
 function messageBubble(message){
     const mine = message.from === currentUserId;
+
+    // Group the flat reactions list (one row per person) into
+    // emoji -> [userIds], so two people reacting with the same emoji show
+    // as one pill with a count instead of two separate pills.
+    const reactions = message.reactions || [];
+    const grouped = new Map();
+    reactions.forEach(r => {
+        if (!grouped.has(r.emoji)) grouped.set(r.emoji, []);
+        grouped.get(r.emoji).push(r.userId);
+    });
+
     return `
 
         <div class="message ${mine ? "me" : "them"}${message.image ? " has-image" : ""}" data-bubbles-message-id="${message.id}">
@@ -2443,11 +2455,118 @@ function messageBubble(message){
                 ${mine ? `<span class="read-tick ${message.readAt ? "read" : ""}">${message.readAt ? "✓✓" : "✓"}</span>` : ""}
             </small>
 
+            <div class="message-reactions">
+
+                ${
+                    [...grouped.entries()].map(([emoji, userIds]) => `
+                        <button
+                            type="button"
+                            class="reaction-pill${userIds.includes(currentUserId) ? " mine" : ""}"
+                            onclick="toggleMessageReaction('${message.id}','${emoji}')"
+                            title="${userIds.length}"
+                        >
+                            ${emoji}${userIds.length > 1 ? `<span>${userIds.length}</span>` : ""}
+                        </button>
+                    `).join("")
+                }
+
+                <button
+                    type="button"
+                    class="reaction-add-btn"
+                    onclick="toggleReactionPicker(event,'${message.id}')"
+                    title="Добавить реакцию"
+                >
+                    🙂
+                </button>
+
+                <div class="reaction-picker hidden">
+                    ${
+                        QUICK_REACTIONS.map(emoji => `
+                            <button
+                                type="button"
+                                onclick="toggleMessageReaction('${message.id}','${emoji}');closeReactionPickers();"
+                            >
+                                ${emoji}
+                            </button>
+                        `).join("")
+                    }
+                </div>
+
+            </div>
+
         </div>
 
     `;
 
 }
+
+// Adds/replaces/removes the current user's reaction to one message
+// (tapback-style: one emoji per person per message). Optimistic-update-
+// then-reconcile, same pattern as toggleLike/toggleCommentLike above.
+async function toggleMessageReaction(messageId, emoji) {
+    const message = db.messages.find(m => m.id === messageId);
+    if (!message) return;
+    if (!message.reactions) message.reactions = [];
+
+    const mine = message.reactions.find(r => r.userId === currentUserId);
+    const removing = !!mine && mine.emoji === emoji;
+
+    message.reactions = message.reactions.filter(r => r.userId !== currentUserId);
+    if (!removing) message.reactions.push({ userId: currentUserId, emoji });
+    refreshMessageBubbleInPlace(messageId);
+
+    // Each person only ever writes their OWN row here (message_id, user_id
+    // primary key), which RLS can safely allow on either side of the
+    // chat — unlike updating the whole message row, which only the
+    // sender is allowed to do.
+    const { error } = removing
+        ? await sb.from("message_reactions").delete().eq("message_id", messageId).eq("user_id", currentUserId)
+        : await sb.from("message_reactions").upsert(
+            { message_id: messageId, user_id: currentUserId, emoji },
+            { onConflict: "message_id,user_id" }
+        );
+
+    if (error) {
+        console.error(error);
+        // roll back
+        message.reactions = message.reactions.filter(r => r.userId !== currentUserId);
+        if (mine) message.reactions.push(mine);
+        refreshMessageBubbleInPlace(messageId);
+        toast("Не удалось поставить реакцию.");
+    }
+}
+
+// Re-renders just one message bubble in place (if its chat is currently
+// open), same trick as refreshPostInPlace — keeps scroll position stable.
+function refreshMessageBubbleInPlace(messageId) {
+    const message = db.messages.find(m => m.id === messageId);
+    const el = document.querySelector(`[data-bubbles-message-id="${messageId}"]`);
+    if (!message || !el) return;
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = messageBubble(message).trim();
+    el.replaceWith(wrapper.firstElementChild);
+}
+
+// Opens the quick-emoji picker for one bubble, closing any other picker
+// that was already open. stopPropagation keeps the outside-click listener
+// (below) from immediately closing the one we just opened.
+function toggleReactionPicker(event, messageId) {
+    event.stopPropagation();
+    const bubble = document.querySelector(`[data-bubbles-message-id="${messageId}"]`);
+    const picker = bubble?.querySelector(".reaction-picker");
+    if (!picker) return;
+    const wasOpen = !picker.classList.contains("hidden");
+    closeReactionPickers();
+    if (!wasOpen) picker.classList.remove("hidden");
+}
+
+function closeReactionPickers() {
+    document.querySelectorAll(".reaction-picker").forEach(el => el.classList.add("hidden"));
+}
+
+// Clicking anywhere outside an open picker closes it — same idea as
+// dismissing any other popover/menu.
+document.addEventListener("click", closeReactionPickers);
 
 // Resizes/stages a photo picked from the chat's attach button. Stored as a
 // data URL, same trick used for post images, so no Storage bucket is needed.
@@ -3104,7 +3223,7 @@ async function sendMessage(event, userId) {
     removeMessageImage();
     // Shown locally right away in plaintext — we already know the plaintext,
     // no need to round-trip through decryption for our own optimistic bubble.
-    const message = { id: uid("message"), from: currentUserId, to: userId, text, image, createdAt: Date.now(), readAt: null };
+    const message = { id: uid("message"), from: currentUserId, to: userId, text, image, createdAt: Date.now(), readAt: null, reactions: [] };
     db.messages.push(message);
     appendMessageToChat(message, userId);
 
@@ -3961,7 +4080,11 @@ async function rowToMessage(row) {
         readAt:
             row.read_at
                 ? Date.parse(row.read_at)
-                : null
+                : null,
+
+        // Filled in separately from message_reactions after load — see
+        // loadDB — same two-step attach as post.likes/comment.likes.
+        reactions: []
 
     };
 
@@ -4078,7 +4201,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, messages, music, musicSaves, reports] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, messages, messageReactions, music, musicSaves, reports] = await Promise.all([
             sb.from("profiles").select("*").order("created_at", { ascending: true }),
             sb.from("posts").select("*").order("created_at", { ascending: false }),
             sb.from("comments").select("*").order("created_at", { ascending: true }),
@@ -4087,6 +4210,7 @@ async function loadDB() {
             currentUserId ? sb.from("friendships").select("*") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("friend_requests").select("*").eq("status", "pending") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("messages").select("*").order("created_at", { ascending: true }) : Promise.resolve({ data: [], error: null }),
+            currentUserId ? sb.from("message_reactions").select("*") : Promise.resolve({ data: [], error: null }),
             sb.from("music").select("*").order("created_at", { ascending: false }),
             sb.from("music_saves").select("music_id,user_id"),
             // RLS only ever actually returns rows here for the reporter or an
@@ -4094,7 +4218,7 @@ async function loadDB() {
             // admin's own profile page ends up showing anything from it.
             currentUserId ? sb.from("reports").select("*").order("created_at", { ascending: false }) : Promise.resolve({ data: [], error: null })
         ]);
-        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, messages, music, musicSaves, reports];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, messages, messageReactions, music, musicSaves, reports];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -4112,6 +4236,16 @@ async function loadDB() {
         // rowToMessage/sendMessage — тут больше не нужно ничего готовить
         // заранее и не нужно ничего спрашивать у человека.
         db.messages = await Promise.all((messages.data || []).map(rowToMessage));
+
+        // Same two-step attach as post/comment likes: reactions live in
+        // their own table (message_reactions) so either side of a chat
+        // can add/remove their own row without touching the message.
+        const reactionsByMessage = new Map();
+        (messageReactions.data || []).forEach(row => {
+            if (!reactionsByMessage.has(row.message_id)) reactionsByMessage.set(row.message_id, []);
+            reactionsByMessage.get(row.message_id).push({ userId: row.user_id, emoji: row.emoji });
+        });
+        db.messages.forEach(message => { message.reactions = reactionsByMessage.get(message.id) || []; });
 
         savesByUser = new Map();
         (musicSaves.data || []).forEach(row => {
@@ -4305,7 +4439,31 @@ function setupMessagesRealtime() {
                 }
             }
         })
+        // A reaction insert/switch. Supabase's upsert (used when someone
+        // changes their emoji) replicates as an UPDATE once the row
+        // already exists, so INSERT and UPDATE get the same handling here.
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "message_reactions" }, applyRemoteReaction)
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "message_reactions" }, applyRemoteReaction)
+        .on("postgres_changes", { event: "DELETE", schema: "public", table: "message_reactions" }, (payload) => {
+            const row = payload.old;
+            if (row.user_id === currentUserId) return; // already applied optimistically
+            const message = db.messages.find(m => m.id === row.message_id);
+            if (!message) return;
+            message.reactions = (message.reactions || []).filter(r => r.userId !== row.user_id);
+            refreshMessageBubbleInPlace(row.message_id);
+        })
         .subscribe();
+}
+
+function applyRemoteReaction(payload) {
+    const row = payload.new;
+    if (row.user_id === currentUserId) return; // already applied optimistically
+    const message = db.messages.find(m => m.id === row.message_id);
+    if (!message) return;
+    if (!message.reactions) message.reactions = [];
+    message.reactions = message.reactions.filter(r => r.userId !== row.user_id);
+    message.reactions.push({ userId: row.user_id, emoji: row.emoji });
+    refreshMessageBubbleInPlace(row.message_id);
 }
 
 function setupFriendRequestsRealtime() {
@@ -4439,6 +4597,7 @@ Object.assign(window,{
     navigate,renderFeed,renderProfile,renderFriends,renderMessages,renderMusic,renderEditProfile,
     searchUsers,createPost,toggleLike,toggleCommentLike,addComment,deleteComment,focusComment,openReplyBox,closeReplyBox,sharePost,deletePost,
     saveProfile,previewAvatar,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
+    toggleMessageReaction,toggleReactionPicker,
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
     toggleProfileMusicExpanded,toggleProfileFriendsExpanded,
