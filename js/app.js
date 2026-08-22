@@ -3013,9 +3013,7 @@ function messageBubble(message){
                     class="reaction-add-btn"
                     onclick="toggleReactionPicker(event,'${message.id}')"
                     title="Добавить реакцию"
-                >
-                    🙂
-                </button>
+                >🙂</button>
 
                 <div class="reaction-picker hidden">
                     ${
