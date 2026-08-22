@@ -149,6 +149,37 @@ create unique index if not exists friendships_pair_unique
 on public.friendships (least(user1,user2), greatest(user1,user2));
 
 -- ------------------------------------------------------------
+-- BLOCKS
+-- One-way, personal, and silent — blocking someone is NOT moderation
+-- (that's what reports/bans are for), it's "I don't want to see or hear
+-- from this specific person". The blocked person is never told they've
+-- been blocked; blocks_select below only ever lets you read your OWN
+-- block list.
+-- ------------------------------------------------------------
+create table if not exists public.blocks (
+    id text primary key,
+    blocker_id uuid not null references public.profiles(id) on delete cascade,
+    blocked_id uuid not null references public.profiles(id) on delete cascade,
+    created_at timestamptz not null default now(),
+    constraint block_not_self check (blocker_id <> blocked_id)
+);
+
+create unique index if not exists blocks_pair_unique on public.blocks (blocker_id, blocked_id);
+create index if not exists blocks_blocked_id_idx on public.blocks(blocked_id);
+
+create or replace function public.is_blocked(blocker uuid, blockee uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+    select exists(select 1 from public.blocks where blocker_id = blocker and blocked_id = blockee);
+$$;
+
+grant execute on function public.is_blocked(uuid, uuid) to authenticated;
+
+-- ------------------------------------------------------------
 -- MESSAGES
 -- ------------------------------------------------------------
 create table if not exists public.messages (
@@ -262,6 +293,39 @@ on public.friend_requests (from_user, to_user)
 where status = 'pending';
 
 -- ------------------------------------------------------------
+-- STORIES — 24-hour disappearing posts. Image is stored the same way
+-- post images are (a resized base64 data URL right in the row), so no
+-- Storage bucket/policy is needed. expires_at is set at insert time and
+-- the select policy below only ever returns rows that haven't expired
+-- yet — nothing has to actively delete them for them to "disappear";
+-- old rows just linger unseen in the table. If that bothers you later,
+-- a periodic `delete from public.stories where expires_at < now()` (a
+-- Supabase cron / Edge Function) would clean them up for real.
+-- ------------------------------------------------------------
+create table if not exists public.stories (
+    id text primary key,
+    author_id uuid not null references public.profiles(id) on delete cascade,
+    image text not null,
+    caption text not null default '',
+    created_at timestamptz not null default now(),
+    expires_at timestamptz not null default (now() + interval '24 hours')
+);
+
+create index if not exists stories_author_created_idx on public.stories(author_id, created_at);
+
+-- Who's seen which story — lets the author see a view count and lets a
+-- viewer's ring go from "unseen" (colourful) to "seen" (grey) once
+-- they've watched it, same idea as messages.read_at.
+create table if not exists public.story_views (
+    id text primary key,
+    story_id text not null references public.stories(id) on delete cascade,
+    viewer_id uuid not null references public.profiles(id) on delete cascade,
+    viewed_at timestamptz not null default now()
+);
+
+create unique index if not exists story_views_unique on public.story_views(story_id, viewer_id);
+
+-- ------------------------------------------------------------
 -- MUSIC
 -- ------------------------------------------------------------
 create table if not exists public.music (
@@ -330,6 +394,68 @@ $$;
 grant execute on function public.is_admin() to authenticated;
 grant execute on function public.is_banned() to authenticated;
 
+-- ------------------------------------------------------------
+-- PUSH SUBSCRIPTIONS
+-- One row per browser/device that's granted notification permission —
+-- a person using Bubbles on two phones ends up with two rows, and both
+-- get pushed to. The Edge Function that actually sends pushes (see
+-- supabase/functions/send-push, deployed separately — this file only
+-- covers the database side) reads this table with the SERVICE ROLE
+-- key, which bypasses RLS entirely, so the restrictive policies below
+-- are purely about what a normal logged-in person can see/manage —
+-- their own devices, nobody else's.
+-- ------------------------------------------------------------
+create table if not exists public.push_subscriptions (
+    id text primary key,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    endpoint text not null,
+    p256dh text not null,
+    auth text not null,
+    created_at timestamptz not null default now()
+);
+
+create unique index if not exists push_subscriptions_endpoint_unique on public.push_subscriptions(endpoint);
+create index if not exists push_subscriptions_user_idx on public.push_subscriptions(user_id);
+
+alter table public.push_subscriptions enable row level security;
+drop policy if exists push_subscriptions_select on public.push_subscriptions;
+create policy push_subscriptions_select on public.push_subscriptions for select using (auth.uid() = user_id);
+drop policy if exists push_subscriptions_insert on public.push_subscriptions;
+create policy push_subscriptions_insert on public.push_subscriptions for insert with check (auth.uid() = user_id);
+drop policy if exists push_subscriptions_update on public.push_subscriptions;
+create policy push_subscriptions_update on public.push_subscriptions for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists push_subscriptions_delete on public.push_subscriptions;
+create policy push_subscriptions_delete on public.push_subscriptions for delete using (auth.uid() = user_id);
+
+-- Stories RLS lives here (rather than right next to the table above)
+-- because it needs is_admin()/is_banned()/is_blocked(), which have to
+-- exist first.
+alter table public.stories enable row level security;
+alter table public.story_views enable row level security;
+
+drop policy if exists stories_select on public.stories;
+create policy stories_select on public.stories for select
+using (
+    expires_at > now()
+    and (
+        auth.uid() is null
+        or (not public.is_blocked(author_id, auth.uid()) and not public.is_blocked(auth.uid(), author_id))
+    )
+);
+drop policy if exists stories_insert on public.stories;
+create policy stories_insert on public.stories for insert with check (auth.uid() = author_id and not public.is_banned());
+drop policy if exists stories_delete on public.stories;
+create policy stories_delete on public.stories for delete using (auth.uid() = author_id or public.is_admin());
+
+drop policy if exists story_views_select on public.story_views;
+create policy story_views_select on public.story_views for select
+using (
+    auth.uid() = viewer_id
+    or exists(select 1 from public.stories where stories.id = story_id and stories.author_id = auth.uid())
+);
+drop policy if exists story_views_insert on public.story_views;
+create policy story_views_insert on public.story_views for insert with check (auth.uid() = viewer_id);
+
 -- Stops a non-admin from granting themselves (or anyone) admin, or
 -- un-banning themselves, by editing their own profile row — no matter
 -- which update policy let the row through, role/banned/ban_reason only
@@ -393,6 +519,7 @@ where status = 'pending';
 create index if not exists reports_status_idx on public.reports(status, created_at desc);
 
 alter table public.reports enable row level security;
+alter table public.blocks enable row level security;
 drop policy if exists reports_select on public.reports;
 create policy reports_select on public.reports for select
 using (auth.uid() = reporter_id or public.is_admin());
@@ -403,6 +530,13 @@ drop policy if exists reports_update on public.reports;
 create policy reports_update on public.reports for update
 using (public.is_admin())
 with check (public.is_admin());
+
+drop policy if exists blocks_select on public.blocks;
+create policy blocks_select on public.blocks for select using (auth.uid() = blocker_id);
+drop policy if exists blocks_insert on public.blocks;
+create policy blocks_insert on public.blocks for insert with check (auth.uid() = blocker_id and not public.is_banned());
+drop policy if exists blocks_delete on public.blocks;
+create policy blocks_delete on public.blocks for delete using (auth.uid() = blocker_id);
 
 -- ------------------------------------------------------------
 -- INDEXES
@@ -452,7 +586,11 @@ with check (public.is_admin());
 
 -- Posts
  drop policy if exists posts_select on public.posts;
-create policy posts_select on public.posts for select using (true);
+create policy posts_select on public.posts for select
+using (
+    auth.uid() is null
+    or (not public.is_blocked(author_id, auth.uid()) and not public.is_blocked(auth.uid(), author_id))
+);
  drop policy if exists posts_insert on public.posts;
 create policy posts_insert on public.posts for insert with check (auth.uid() = author_id and not public.is_banned());
  drop policy if exists posts_update on public.posts;
@@ -462,7 +600,11 @@ create policy posts_delete on public.posts for delete using (auth.uid() = author
 
 -- Comments
  drop policy if exists comments_select on public.comments;
-create policy comments_select on public.comments for select using (true);
+create policy comments_select on public.comments for select
+using (
+    auth.uid() is null
+    or (not public.is_blocked(author_id, auth.uid()) and not public.is_blocked(auth.uid(), author_id))
+);
  drop policy if exists comments_insert on public.comments;
 create policy comments_insert on public.comments for insert with check (auth.uid() = author_id and not public.is_banned());
  drop policy if exists comments_update on public.comments;
@@ -503,7 +645,12 @@ create policy friendships_delete on public.friendships for delete using (auth.ui
  drop policy if exists messages_select on public.messages;
 create policy messages_select on public.messages for select using (auth.uid() = sender_id or auth.uid() = receiver_id);
  drop policy if exists messages_insert on public.messages;
-create policy messages_insert on public.messages for insert with check (auth.uid() = sender_id and not public.is_banned());
+create policy messages_insert on public.messages for insert
+with check (
+    auth.uid() = sender_id
+    and not public.is_banned()
+    and not public.is_blocked(receiver_id, sender_id)
+);
  drop policy if exists messages_update on public.messages;
 create policy messages_update on public.messages for update
 using (auth.uid() = sender_id or auth.uid() = receiver_id)
@@ -557,7 +704,7 @@ create policy friend_requests_select on public.friend_requests for select
 using (auth.uid() = from_user or auth.uid() = to_user);
  drop policy if exists friend_requests_insert on public.friend_requests;
 create policy friend_requests_insert on public.friend_requests for insert
-with check (auth.uid() = from_user);
+with check (auth.uid() = from_user and not public.is_blocked(to_user, from_user));
  drop policy if exists friend_requests_update on public.friend_requests;
 create policy friend_requests_update on public.friend_requests for update
 using (auth.uid() = from_user or auth.uid() = to_user)
