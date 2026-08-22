@@ -10,6 +10,15 @@ const QUICK_REACTIONS = ["❤️", "😂", "👍", "😮", "😢"];
 
 const sb = window.bubblesSupabase;
 
+// Registered immediately (not gated behind login) purely so the browser
+// sees an active service worker early and can offer "Add to Home
+// Screen" even from the landing/login page. Requesting notification
+// permission and actually subscribing to push, on the other hand, only
+// happens once someone's logged in — see subscribeToPush() in startApp().
+if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("js/sw.js", { scope: "./" }).catch(() => {});
+}
+
 let db = {
     users: [],
     posts: [],
@@ -19,7 +28,10 @@ let db = {
     notifications: [],
     messages: [],
     music: [],
-    reports: []
+    reports: [],
+    blocks: [],
+    stories: [],
+    storyViews: []
 };
 
 let currentUserId = null;
@@ -115,6 +127,258 @@ function myOutgoingRequests() {
 function isFriend(userId) {
     return db.friends.some(f => (f.user1 === currentUserId && f.user2 === userId) ||
         (f.user2 === currentUserId && f.user1 === userId));
+}
+
+/* ------------------------------------------------------------
+   BLOCKING
+   ------------------------------------------------------------
+   One-way and personal — not moderation. Blocking someone hides them
+   from your feed/search and stops them messaging or friend-requesting
+   you (enforced at the DB level too, see supabase.sql), but it's not
+   visible to anyone but you: the blocked person just quietly stops
+   reaching you.
+   ------------------------------------------------------------ */
+
+function isBlockedByMe(userId) {
+    return db.blocks.some(b => b.blockerId === currentUserId && b.blockedId === userId);
+}
+
+// The reverse direction — did THEY block ME. We can't read their block
+// row (RLS only lets people see their own list), so this only ever
+// reflects what we can infer client-side (e.g. a failed send). Kept
+// separate from isBlockedByMe so call sites are explicit about which
+// direction they mean.
+function isBlockedByThem(userId) {
+    return db.blocks.some(b => b.blockerId === userId && b.blockedId === currentUserId);
+}
+
+async function toggleBlockUser(userId) {
+    if (!currentUserId || userId === currentUserId) return;
+    const user = getUser(userId);
+    if (!user) return;
+    const already = isBlockedByMe(userId);
+    if (already) {
+        const { error } = await sb.from("blocks")
+            .delete()
+            .eq("blocker_id", currentUserId)
+            .eq("blocked_id", userId);
+        if (error) { console.error(error); toast("Не удалось разблокировать."); return; }
+        db.blocks = db.blocks.filter(b => !(b.blockerId === currentUserId && b.blockedId === userId));
+        toast(`${user.displayName} разблокирован(-а).`);
+    } else {
+        if (!confirm(`Заблокировать ${user.displayName}? Вы перестанете видеть посты друг друга, а писать сообщения станет невозможно.`))
+            return;
+        const { data, error } = await sb.from("blocks")
+            .insert({ id: uid("block"), blocker_id: currentUserId, blocked_id: userId })
+            .select()
+            .single();
+        if (error) { console.error(error); toast("Не удалось заблокировать."); return; }
+        db.blocks.push({ id: data.id, blockerId: data.blocker_id, blockedId: data.blocked_id });
+        // Blocking someone you're friends with quietly ends the
+        // friendship too — staying "friends" while blocked doesn't make
+        // sense, and it would otherwise keep them visible in your chat list.
+        const friendship = db.friends.find(f => (f.user1 === currentUserId && f.user2 === userId) || (f.user2 === currentUserId && f.user1 === userId));
+        if (friendship) {
+            await sb.from("friendships").delete().eq("id", friendship.id);
+            db.friends = db.friends.filter(f => f.id !== friendship.id);
+        }
+        if (selectedChatId === userId) selectedChatId = null;
+        toast(`${user.displayName} заблокирован(-а).`);
+    }
+    renderApp();
+}
+
+/* ------------------------------------------------------------
+   STORIES (24 часа)
+   ------------------------------------------------------------ */
+
+let storyViewerState = null; // { authorId, index, timer }
+const STORY_DURATION_MS = 5000;
+
+function activeStories() {
+    const now = Date.now();
+    return db.stories.filter(s => s.expiresAt > now);
+}
+
+function storiesByAuthor(authorId) {
+    return activeStories().filter(s => s.authorId === authorId).sort((a,b) => a.createdAt - b.createdAt);
+}
+
+function hasUnseenStories(authorId) {
+    if (authorId === currentUserId) return false;
+    return storiesByAuthor(authorId).some(s => !db.storyViews.some(v => v.storyId === s.id && v.viewerId === currentUserId));
+}
+
+// Grouped one entry per author, own account first (if you have any),
+// everyone else after sorted unseen-first so new stuff doesn't get
+// buried once you've caught up on a few.
+function storyRailEntries() {
+    const authorIds = [...new Set(activeStories().map(s => s.authorId))];
+    const others = authorIds.filter(id => id !== currentUserId)
+        .sort((a,b) => (hasUnseenStories(b) ? 1 : 0) - (hasUnseenStories(a) ? 1 : 0));
+    const ordered = authorIds.includes(currentUserId) ? [currentUserId, ...others] : others;
+    return ordered.map(id => getUser(id)).filter(Boolean);
+}
+
+function renderStoryRail() {
+    const entries = storyRailEntries();
+    const me = getCurrentUser();
+    return `
+        <div class="story-rail">
+
+            <div class="story-ring-item">
+                <div
+                    class="story-ring ${storiesByAuthor(currentUserId).length ? "mine" : "empty"}"
+                    onclick="${storiesByAuthor(currentUserId).length ? `openStoryViewer('${currentUserId}')` : "addStoryPrompt()"}"
+                >
+                    <img class="story-ring-avatar" src="${me?.avatar || defaultAvatar()}">
+                    ${!storiesByAuthor(currentUserId).length ? `<span class="story-add-badge">+</span>` : ""}
+                </div>
+                <span class="story-ring-label">Ты</span>
+            </div>
+
+            ${entries.filter(u => u.id !== currentUserId).map(u => `
+                <div class="story-ring-item">
+                    <div class="story-ring ${hasUnseenStories(u.id) ? "unseen" : "seen"}" onclick="openStoryViewer('${u.id}')">
+                        <img class="story-ring-avatar" src="${u.avatar || defaultAvatar()}">
+                    </div>
+                    <span class="story-ring-label">${escapeHtml(u.displayName.split(" ")[0])}</span>
+                </div>
+            `).join("")}
+
+        </div>
+    `;
+}
+
+function addStoryPrompt() {
+    document.getElementById("storyFileInput")?.remove();
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.id = "storyFileInput";
+    input.style.display = "none";
+    input.onchange = async () => {
+        const file = input.files?.[0];
+        input.remove();
+        if (!file) return;
+        let image;
+        try { image = await resizeImageFile(file, 1080); }
+        catch (e) { console.error(e); toast("Не удалось обработать фото."); return; }
+        const caption = (prompt("Подпись к истории (необязательно):", "") || "").trim();
+        const { data, error } = await sb.from("stories")
+            .insert({ id: uid("story"), author_id: currentUserId, image, caption })
+            .select()
+            .single();
+        if (error) { console.error(error); toast("Не удалось опубликовать историю."); return; }
+        db.stories.push(rowToStory(data));
+        toast("История опубликована! Пропадёт через 24 часа.");
+        renderApp();
+    };
+    document.body.appendChild(input);
+    input.click();
+}
+
+function openStoryViewer(authorId) {
+    const stories = storiesByAuthor(authorId);
+    if (!stories.length) return;
+    storyViewerState = { authorId, index: 0 };
+    renderStoryViewer();
+}
+
+function closeStoryViewer() {
+    if (storyViewerState?.timer) clearTimeout(storyViewerState.timer);
+    storyViewerState = null;
+    document.getElementById("storyViewerOverlay")?.remove();
+}
+
+function storyViewerAdvance(delta) {
+    if (!storyViewerState) return;
+    const stories = storiesByAuthor(storyViewerState.authorId);
+    const nextIndex = storyViewerState.index + delta;
+    if (nextIndex < 0) return; // already on the first — do nothing
+    if (nextIndex >= stories.length) { closeStoryViewer(); return; }
+    storyViewerState.index = nextIndex;
+    renderStoryViewer();
+}
+
+async function markStorySeen(story) {
+    if (story.authorId === currentUserId) return;
+    if (db.storyViews.some(v => v.storyId === story.id && v.viewerId === currentUserId)) return;
+    const { data, error } = await sb.from("story_views")
+        .insert({ id: uid("storyview"), story_id: story.id, viewer_id: currentUserId })
+        .select()
+        .single();
+    if (!error && data) db.storyViews.push({ id: data.id, storyId: data.story_id, viewerId: data.viewer_id });
+}
+
+async function deleteCurrentStory() {
+    if (!storyViewerState) return;
+    const stories = storiesByAuthor(storyViewerState.authorId);
+    const story = stories[storyViewerState.index];
+    if (!story || story.authorId !== currentUserId) return;
+    if (!confirm("Удалить эту историю?")) return;
+    const { error } = await sb.from("stories").delete().eq("id", story.id);
+    if (error) { console.error(error); toast("Не удалось удалить историю."); return; }
+    db.stories = db.stories.filter(s => s.id !== story.id);
+    const remaining = storiesByAuthor(storyViewerState.authorId);
+    if (!remaining.length) { closeStoryViewer(); renderApp(); return; }
+    storyViewerState.index = Math.min(storyViewerState.index, remaining.length - 1);
+    renderStoryViewer();
+    renderApp();
+}
+
+function renderStoryViewer() {
+    if (storyViewerState?.timer) clearTimeout(storyViewerState.timer);
+    if (!storyViewerState) return;
+    const stories = storiesByAuthor(storyViewerState.authorId);
+    const story = stories[storyViewerState.index];
+    if (!story) { closeStoryViewer(); return; }
+    const author = getUser(story.authorId);
+    const isMine = story.authorId === currentUserId;
+    const viewCount = isMine ? db.storyViews.filter(v => v.storyId === story.id).length : 0;
+
+    markStorySeen(story);
+
+    let overlay = document.getElementById("storyViewerOverlay");
+    if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.id = "storyViewerOverlay";
+        document.body.appendChild(overlay);
+    }
+
+    overlay.innerHTML = `
+        <div class="story-viewer-overlay">
+
+            <div class="story-progress-row">
+                ${stories.map((s, i) => `
+                    <div class="story-progress-seg">
+                        <div class="story-progress-fill ${i < storyViewerState.index ? "full" : i === storyViewerState.index ? "active" : ""}"></div>
+                    </div>
+                `).join("")}
+            </div>
+
+            <div class="story-viewer-header">
+                <img class="story-ring-avatar small" src="${author?.avatar || defaultAvatar()}">
+                <strong>${escapeHtml(author?.displayName || "")}</strong>
+                <span class="story-time">${timeAgo(story.createdAt)}</span>
+                <div style="flex:1;"></div>
+                ${isMine ? `<button class="story-viewer-icon-btn" onclick="deleteCurrentStory()" title="Удалить">🗑️</button>` : ""}
+                <button class="story-viewer-icon-btn" onclick="closeStoryViewer()" title="Закрыть">✕</button>
+            </div>
+
+            <div class="story-viewer-body">
+                <div class="story-tap-zone left" onclick="storyViewerAdvance(-1)"></div>
+                <div class="story-tap-zone right" onclick="storyViewerAdvance(1)"></div>
+                <img class="story-viewer-image" src="${story.image}">
+                ${story.caption ? `<div class="story-caption">${escapeHtml(story.caption)}</div>` : ""}
+            </div>
+
+            ${isMine ? `<div class="story-view-count">👁️ ${viewCount}</div>` : ""}
+
+        </div>
+    `;
+
+    storyViewerState.timer = setTimeout(() => storyViewerAdvance(1), STORY_DURATION_MS);
 }
 
 /* ------------------------------------------------------------
@@ -520,7 +784,7 @@ async function logout(){
     closeMusicPlayer();
     await sb.auth.signOut();
     currentUserId = null;
-    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],notifications:[],messages:[],music:[],reports:[]};
+    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],notifications:[],messages:[],music:[],reports:[],blocks:[],stories:[],storyViews:[]};
     showAuth("landing");
 }
 
@@ -546,6 +810,7 @@ function startApp(){
     setupNotificationsRealtime();
     renderApp();
     startOnlineCountPolling();
+    subscribeToPush(); // fire-and-forget — a person who ignores/denies the permission prompt should still get a working app
 }
 
 function renderApp(){
@@ -729,6 +994,7 @@ function renderApp(){
 function navigate(page, id = null){
     currentPage = page;
     selectedProfileId = id || selectedProfileId;
+    closeStoryViewer(); // it's a full-screen modal appended to <body>, outside the normal page — don't leave it floating over the newly navigated-to page
 
     document.querySelectorAll(".nav-btn[data-page]").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.page === page);
@@ -769,6 +1035,8 @@ function renderFeed(){
         <h1 class="section-title">
             🫧 Лента
         </h1>
+
+        ${renderStoryRail()}
 
 
         <div class="card">
@@ -1434,6 +1702,15 @@ function renderProfile(userId){
                                     ⚙️ Редактировать
                                 </button>
                             `
+                            : isBlockedByMe(user.id)
+                            ? `
+                                <button
+                                    class="secondary"
+                                    onclick="toggleBlockUser('${user.id}')"
+                                >
+                                    🚫 Разблокировать
+                                </button>
+                            `
                             : `
                                 ${friendActionButtons(user.id)}
 
@@ -1456,6 +1733,14 @@ function renderProfile(userId){
                                     title="Пожаловаться"
                                 >
                                     🚩 Пожаловаться
+                                </button>
+
+                                <button
+                                    class="secondary"
+                                    onclick="toggleBlockUser('${user.id}')"
+                                    title="Заблокировать"
+                                >
+                                    🚫 Заблокировать
                                 </button>
                             `
                         }
@@ -2068,6 +2353,65 @@ async function createNotification({ userId, type, postId = null, commentId = nul
         comment_id: commentId
     });
     if (error) console.error("❌ Не удалось создать уведомление:", error);
+}
+
+/* ------------------------------------------------------------
+   PUSH NOTIFICATIONS
+   ------------------------------------------------------------
+   The actual SENDING of a push (when someone likes/comments/messages
+   you while you're not looking) happens server-side, in a Supabase
+   Edge Function — see supabase/functions/send-push/. Everything here
+   is just the client's half: register the service worker, ask for
+   permission, subscribe, and hand Supabase the subscription so that
+   function knows where to deliver to.
+   ------------------------------------------------------------ */
+
+function urlBase64ToUint8Array(base64String) {
+    const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(base64);
+    return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+async function subscribeToPush() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return; // unsupported browser — just skip, quietly
+    if (!window.BUBBLES_VAPID_PUBLIC_KEY) return;
+    if (Notification.permission === "denied") return; // they said no once — don't nag every session
+
+    try {
+        // Already registered up top, at script load — just wait for it to
+        // be active rather than registering (the same URL+scope) again.
+        const registration = await navigator.serviceWorker.ready;
+
+        let subscription = await registration.pushManager.getSubscription();
+        if (!subscription) {
+            const permission = await Notification.requestPermission();
+            if (permission !== "granted") return;
+            subscription = await registration.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: urlBase64ToUint8Array(window.BUBBLES_VAPID_PUBLIC_KEY)
+            });
+        }
+
+        const json = subscription.toJSON();
+        // Upsert on endpoint: the SAME browser subscription re-registering
+        // (e.g. a different person logging in on a shared device) should
+        // just take over the row rather than fail on the unique index.
+        const { error } = await sb.from("push_subscriptions").upsert({
+            id: uid("push"),
+            user_id: currentUserId,
+            endpoint: json.endpoint,
+            p256dh: json.keys?.p256dh,
+            auth: json.keys?.auth
+        }, { onConflict: "endpoint" });
+        if (error) console.error("❌ Не удалось сохранить push-подписку:", error);
+    } catch (error) {
+        // Notification permission prompts and service worker registration
+        // can fail for lots of harmless reasons (iOS Safari outside a
+        // installed PWA, permission dismissed, etc.) — never let this
+        // break login.
+        console.error("Push subscribe failed:", error);
+    }
 }
 
 function unreadNotificationsCount() {
@@ -4213,6 +4557,17 @@ function rowToReport(row) {
     };
 }
 
+function rowToStory(row) {
+    return {
+        id: row.id,
+        authorId: row.author_id,
+        image: row.image,
+        caption: row.caption || "",
+        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
+        expiresAt: row.expires_at ? Date.parse(row.expires_at) : Date.now() + 86400000
+    };
+}
+
 function rowToFriendRequest(row) {
     return {
         id: row.id,
@@ -4409,7 +4764,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, blocks] = await Promise.all([
             sb.from("profiles").select("*").order("created_at", { ascending: true }),
             sb.from("posts").select("*").order("created_at", { ascending: false }),
             sb.from("comments").select("*").order("created_at", { ascending: true }),
@@ -4425,9 +4780,16 @@ async function loadDB() {
             // RLS only ever actually returns rows here for the reporter or an
             // admin, so this is cheap/empty for a regular user and only an
             // admin's own profile page ends up showing anything from it.
-            currentUserId ? sb.from("reports").select("*").order("created_at", { ascending: false }) : Promise.resolve({ data: [], error: null })
+            currentUserId ? sb.from("reports").select("*").order("created_at", { ascending: false }) : Promise.resolve({ data: [], error: null }),
+            // RLS restricts this to blocker_id = you, so this is always just
+            // your own block list — nobody else's, and nobody can see theirs.
+            currentUserId ? sb.from("blocks").select("*") : Promise.resolve({ data: [], error: null }),
+            // The select policy already excludes expired rows, so this is
+            // just "everyone's currently-active stories".
+            sb.from("stories").select("*").order("created_at", { ascending: true }),
+            currentUserId ? sb.from("story_views").select("*") : Promise.resolve({ data: [], error: null })
         ]);
-        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, blocks, stories, storyViews];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -4440,7 +4802,10 @@ async function loadDB() {
             notifications: (notifications.data || []).map(rowToNotification),
             messages: [],
             music: (music.data || []).map(rowToMusic),
-            reports: (reports.data || []).map(rowToReport)
+            reports: (reports.data || []).map(rowToReport),
+            blocks: (blocks.data || []).map(row => ({ id: row.id, blockerId: row.blocker_id, blockedId: row.blocked_id })),
+            stories: (stories.data || []).map(rowToStory),
+            storyViews: (storyViews.data || []).map(row => ({ id: row.id, storyId: row.story_id, viewerId: row.viewer_id }))
         };
         // Ключ переписки (см. js/crypto.js) подтягивается лениво в
         // rowToMessage/sendMessage — тут больше не нужно ничего готовить
@@ -4833,5 +5198,7 @@ Object.assign(window,{
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
     toggleProfileMusicExpanded,toggleProfileFriendsExpanded,
     setUserRole,setUserBanned,
-    reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent
+    reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent,
+    toggleBlockUser,
+    addStoryPrompt,openStoryViewer,closeStoryViewer,storyViewerAdvance,deleteCurrentStory
 });
