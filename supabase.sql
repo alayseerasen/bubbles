@@ -297,6 +297,49 @@ before update on public.profiles
 for each row execute function public.protect_profile_role_columns();
 
 -- ------------------------------------------------------------
+-- REPORTS (жалобы) — on posts, comments, and profiles.
+-- target_type/target_id point at the reported thing itself; target_user_id
+-- is always the author behind it (for a profile report, that's just the
+-- profile owner) so moderation can ban/unban straight from a report
+-- without having to re-derive who it was against, even after the
+-- underlying post/comment gets deleted.
+-- ------------------------------------------------------------
+create table if not exists public.reports (
+    id text primary key,
+    reporter_id uuid not null references public.profiles(id) on delete cascade,
+    target_type text not null check (target_type in ('post','comment','profile')),
+    target_id text not null,
+    target_user_id uuid not null references public.profiles(id) on delete cascade,
+    reason text not null default '',
+    status text not null default 'pending' check (status in ('pending','resolved','dismissed')),
+    created_at timestamptz not null default now(),
+    resolved_at timestamptz,
+    resolved_by uuid references public.profiles(id) on delete set null,
+    constraint reports_not_self check (reporter_id <> target_user_id)
+);
+
+-- Stops someone from spamming the same report over and over — one open
+-- (pending) report per person per target is enough; they can still submit
+-- again later if it gets dismissed.
+create unique index if not exists reports_pending_unique
+on public.reports (reporter_id, target_type, target_id)
+where status = 'pending';
+
+create index if not exists reports_status_idx on public.reports(status, created_at desc);
+
+alter table public.reports enable row level security;
+drop policy if exists reports_select on public.reports;
+create policy reports_select on public.reports for select
+using (auth.uid() = reporter_id or public.is_admin());
+drop policy if exists reports_insert on public.reports;
+create policy reports_insert on public.reports for insert
+with check (auth.uid() = reporter_id and not public.is_banned());
+drop policy if exists reports_update on public.reports;
+create policy reports_update on public.reports for update
+using (public.is_admin())
+with check (public.is_admin());
+
+-- ------------------------------------------------------------
 -- INDEXES
 -- ------------------------------------------------------------
 create index if not exists posts_created_at_idx on public.posts(created_at desc);
@@ -489,6 +532,14 @@ begin
         where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'profiles'
     ) then
         alter publication supabase_realtime add table public.profiles;
+    end if;
+    -- Lets an admin's moderation queue (on their own profile page) pick up
+    -- a new report the moment it's filed, without needing a reload.
+    if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'reports'
+    ) then
+        alter publication supabase_realtime add table public.reports;
     end if;
 end $$;
 
