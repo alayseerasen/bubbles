@@ -196,6 +196,31 @@ create table if not exists public.message_reactions (
 create index if not exists message_reactions_message_id_idx on public.message_reactions(message_id);
 
 -- ------------------------------------------------------------
+-- NOTIFICATIONS
+-- One row per event a person should be told about: an incoming friend
+-- request, a friend request you sent getting accepted, a like or a
+-- comment on your own post. Written directly by whoever performed the
+-- action (same client-writes pattern as everything else here) — user_id
+-- is who SEES the notification, actor_id is who caused it.
+-- Deliberately doesn't cover new messages — the messenger already has
+-- its own unread badge and popup for that; this is for the things that
+-- otherwise only ever announce themselves once and vanish.
+-- ------------------------------------------------------------
+create table if not exists public.notifications (
+    id text primary key,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    actor_id uuid not null references public.profiles(id) on delete cascade,
+    type text not null check (type in ('friend_request','friend_accept','post_like','post_comment')),
+    post_id text references public.posts(id) on delete cascade,
+    comment_id text references public.comments(id) on delete cascade,
+    created_at timestamptz not null default now(),
+    read_at timestamptz,
+    constraint notification_not_self check (user_id <> actor_id)
+);
+
+create index if not exists notifications_user_id_idx on public.notifications(user_id, created_at desc);
+
+-- ------------------------------------------------------------
 -- FRIEND REQUESTS (new — pending/accepted/declined handshake)
 -- Accepted requests still create a row in public.friendships,
 -- exactly like the old instant "add friend" button used to.
@@ -381,6 +406,7 @@ alter table public.comments enable row level security;
 alter table public.friendships enable row level security;
 alter table public.messages enable row level security;
 alter table public.message_reactions enable row level security;
+alter table public.notifications enable row level security;
 alter table public.music enable row level security;
 alter table public.friend_requests enable row level security;
 alter table public.post_likes enable row level security;
@@ -491,6 +517,19 @@ with check (auth.uid() = user_id);
  drop policy if exists message_reactions_delete on public.message_reactions;
 create policy message_reactions_delete on public.message_reactions for delete using (auth.uid() = user_id);
 
+-- Notifications — you can only ever see your own; anyone can write a row
+-- FOR someone else (that's how a like/comment/request notifies its
+-- recipient), but only as themselves as the actor, and only the
+-- recipient can mark it read or delete it.
+ drop policy if exists notifications_select on public.notifications;
+create policy notifications_select on public.notifications for select using (auth.uid() = user_id);
+ drop policy if exists notifications_insert on public.notifications;
+create policy notifications_insert on public.notifications for insert with check (auth.uid() = actor_id and not public.is_banned());
+ drop policy if exists notifications_update on public.notifications;
+create policy notifications_update on public.notifications for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+ drop policy if exists notifications_delete on public.notifications;
+create policy notifications_delete on public.notifications for delete using (auth.uid() = user_id);
+
 -- Friend requests
  drop policy if exists friend_requests_select on public.friend_requests;
 create policy friend_requests_select on public.friend_requests for select
@@ -543,6 +582,12 @@ begin
         where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'message_reactions'
     ) then
         alter publication supabase_realtime add table public.message_reactions;
+    end if;
+    if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'notifications'
+    ) then
+        alter publication supabase_realtime add table public.notifications;
     end if;
     if not exists (
         select 1 from pg_publication_tables
