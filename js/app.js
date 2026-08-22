@@ -2124,7 +2124,32 @@ function toggleNotificationsPanel(event) {
     }
     panel.innerHTML = renderNotificationsPanel();
     panel.classList.remove("hidden");
+    positionNotificationsPanel(panel);
     markAllNotificationsRead();
+}
+
+// The bell isn't the last icon in the topbar (theme toggle + avatar +
+// name come after it), so a plain CSS "position:absolute; right:0"
+// anchors the panel to the BELL's own right edge, not the screen's —
+// on a narrow phone screen there isn't room to its right for a 320px
+// panel and it runs off-screen. Switching to position:fixed, measured
+// from the button's actual on-screen position and clamped to the
+// viewport, keeps it fully visible no matter how narrow the screen is
+// or how the surrounding icons shift around.
+function positionNotificationsPanel(panel) {
+    const btn = document.getElementById("notifBellBtn");
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const margin = 12;
+    const width = Math.min(320, window.innerWidth - margin * 2);
+    let left = rect.right - width;
+    left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+    panel.style.position = "fixed";
+    panel.style.top = (rect.bottom + 10) + "px";
+    panel.style.left = left + "px";
+    panel.style.right = "auto";
+    panel.style.width = width + "px";
+    panel.style.maxHeight = Math.min(420, window.innerHeight - rect.bottom - 24) + "px";
 }
 
 function closeNotificationsPanel() {
@@ -2133,6 +2158,10 @@ function closeNotificationsPanel() {
 }
 
 document.addEventListener("click", closeNotificationsPanel);
+window.addEventListener("resize", () => {
+    const panel = document.getElementById("notifPanel");
+    if (panel && !panel.classList.contains("hidden")) positionNotificationsPanel(panel);
+});
 
 async function markAllNotificationsRead() {
     const unread = db.notifications.filter(n => !n.readAt);
