@@ -206,7 +206,7 @@ create index if not exists message_reactions_message_id_idx on public.message_re
 -- its own unread badge and popup for that; this is for the things that
 -- otherwise only ever announce themselves once and vanish.
 -- ------------------------------------------------------------
-create table if not exists public.notifications (
+create table if not exists public.bubbles_notifications (
     id text primary key,
     user_id uuid not null references public.profiles(id) on delete cascade,
     actor_id uuid not null references public.profiles(id) on delete cascade,
@@ -218,7 +218,7 @@ create table if not exists public.notifications (
     constraint notification_not_self check (user_id <> actor_id)
 );
 
-create index if not exists notifications_user_id_idx on public.notifications(user_id, created_at desc);
+create index if not exists bubbles_notifications_user_id_idx on public.bubbles_notifications(user_id, created_at desc);
 
 -- ------------------------------------------------------------
 -- FRIEND REQUESTS (new — pending/accepted/declined handshake)
@@ -406,7 +406,7 @@ alter table public.comments enable row level security;
 alter table public.friendships enable row level security;
 alter table public.messages enable row level security;
 alter table public.message_reactions enable row level security;
-alter table public.notifications enable row level security;
+alter table public.bubbles_notifications enable row level security;
 alter table public.music enable row level security;
 alter table public.friend_requests enable row level security;
 alter table public.post_likes enable row level security;
@@ -521,14 +521,14 @@ create policy message_reactions_delete on public.message_reactions for delete us
 -- FOR someone else (that's how a like/comment/request notifies its
 -- recipient), but only as themselves as the actor, and only the
 -- recipient can mark it read or delete it.
- drop policy if exists notifications_select on public.notifications;
-create policy notifications_select on public.notifications for select using (auth.uid() = user_id);
- drop policy if exists notifications_insert on public.notifications;
-create policy notifications_insert on public.notifications for insert with check (auth.uid() = actor_id and not public.is_banned());
- drop policy if exists notifications_update on public.notifications;
-create policy notifications_update on public.notifications for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
- drop policy if exists notifications_delete on public.notifications;
-create policy notifications_delete on public.notifications for delete using (auth.uid() = user_id);
+ drop policy if exists bubbles_notifications_select on public.bubbles_notifications;
+create policy bubbles_notifications_select on public.bubbles_notifications for select using (auth.uid() = user_id);
+ drop policy if exists bubbles_notifications_insert on public.bubbles_notifications;
+create policy bubbles_notifications_insert on public.bubbles_notifications for insert with check (auth.uid() = actor_id and not public.is_banned());
+ drop policy if exists bubbles_notifications_update on public.bubbles_notifications;
+create policy bubbles_notifications_update on public.bubbles_notifications for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+ drop policy if exists bubbles_notifications_delete on public.bubbles_notifications;
+create policy bubbles_notifications_delete on public.bubbles_notifications for delete using (auth.uid() = user_id);
 
 -- Friend requests
  drop policy if exists friend_requests_select on public.friend_requests;
@@ -585,9 +585,9 @@ begin
     end if;
     if not exists (
         select 1 from pg_publication_tables
-        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'notifications'
+        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'bubbles_notifications'
     ) then
-        alter publication supabase_realtime add table public.notifications;
+        alter publication supabase_realtime add table public.bubbles_notifications;
     end if;
     if not exists (
         select 1 from pg_publication_tables
