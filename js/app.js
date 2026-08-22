@@ -1256,11 +1256,7 @@ function renderPost(post){
 
             ${
                 post.text
-                ? `
-                    <div class="post-content">
-                        ${escapeHtml(post.text)}
-                    </div>
-                `
+                ? `<div class="post-content">${escapeHtml(post.text)}</div>`
                 : ""
             }
 
@@ -1752,11 +1748,7 @@ function renderProfile(userId){
 
                 ${
                     user.bio
-                    ? `
-                        <div class="bio">
-                            ${escapeHtml(user.bio)}
-                        </div>
-                    `
+                    ? `<div class="bio">${escapeHtml(user.bio)}</div>`
                     : ""
                 }
 
