@@ -2210,6 +2210,15 @@ function renderMessages(){
         </div>
 
     `;
+
+    // Open on the latest messages instead of the top of the conversation.
+    // Runs after the innerHTML above is in the DOM, and only matters when
+    // a chat is actually open (nothing to scroll on the "выбери друга"
+    // placeholder).
+    if (selectedChatId) {
+        const box = document.getElementById("chatMessages");
+        if (box) box.scrollTop = box.scrollHeight;
+    }
 }
 
 function renderConversation(user) {
