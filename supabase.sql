@@ -206,6 +206,27 @@ create index if not exists message_reactions_message_id_idx on public.message_re
 -- its own unread badge and popup for that; this is for the things that
 -- otherwise only ever announce themselves once and vanish.
 -- ------------------------------------------------------------
+-- Self-healing guard: an earlier version of this script may have already
+-- created bubbles_notifications with a different column layout. "create
+-- table if not exists" below would then silently skip creating it, and
+-- every policy/index further down that references actor_id would fail
+-- with "column does not exist". Notifications are disposable (each one
+-- announces itself once and is gone), so it's safe to just drop and
+-- recreate if the shape doesn't match what this script expects.
+do $$
+begin
+    if to_regclass('public.bubbles_notifications') is not null
+        and not exists (
+            select 1 from information_schema.columns
+            where table_schema = 'public'
+              and table_name = 'bubbles_notifications'
+              and column_name = 'actor_id'
+        )
+    then
+        drop table public.bubbles_notifications cascade;
+    end if;
+end $$;
+
 create table if not exists public.bubbles_notifications (
     id text primary key,
     user_id uuid not null references public.profiles(id) on delete cascade,
