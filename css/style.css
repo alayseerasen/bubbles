@@ -2860,3 +2860,228 @@ html::after{
 }
 [data-theme="dark"] .bubble-pop-result-card p{ color:#8fa9b6; }
 
+
+/* ============================================================
+   STORIES (24-hour rail + full-screen viewer)
+   ============================================================ */
+
+.story-rail{
+    display:flex;
+    gap:14px;
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+    padding:4px 2px 14px;
+    margin-bottom:6px;
+}
+
+.story-ring-item{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:6px;
+    flex:0 0 auto;
+    width:68px;
+}
+
+.story-ring{
+    width:64px;
+    height:64px;
+    border-radius:50%;
+    padding:3px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    position:relative;
+    overflow:hidden;
+    flex-shrink:0;
+    background:linear-gradient(135deg,#ff6ec7,#64d9fa,#7ee8a0);
+    box-shadow:0 4px 14px rgba(100,180,220,.35),0 0 0 1px rgba(255,255,255,.6) inset;
+    transition:transform .15s ease,box-shadow .15s ease;
+}
+
+.story-ring:hover{
+    box-shadow:0 6px 18px rgba(100,180,220,.45),0 0 0 1px rgba(255,255,255,.6) inset;
+}
+
+.story-ring:active{ transform:scale(.94); }
+
+.story-ring.seen{ background:#cfe3e8; box-shadow:0 2px 8px rgba(100,180,220,.2) inset; }
+
+.story-ring.empty{ background:#cfe3e8; box-shadow:0 2px 8px rgba(100,180,220,.2) inset; }
+
+.story-ring-avatar{
+    width:100%;
+    height:100%;
+    min-width:0;
+    min-height:0;
+    max-width:100%;
+    max-height:100%;
+    border-radius:50%;
+    object-fit:cover;
+    border:2px solid #fff;
+    background:#fff;
+    flex-shrink:1;
+}
+
+.story-ring-avatar.small{
+    width:34px;
+    height:34px;
+    min-width:0;
+    min-height:0;
+    border:2px solid rgba(255,255,255,.8);
+}
+
+.story-add-badge{
+    position:absolute;
+    bottom:-2px;
+    right:-2px;
+    width:21px;
+    height:21px;
+    border-radius:50%;
+    background:linear-gradient(135deg,#64d9fa,var(--blue2));
+    color:#fff;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:14px;
+    font-weight:700;
+    border:2px solid #fff;
+    box-shadow:0 2px 6px rgba(22,143,208,.4);
+}
+
+.story-ring-label{
+    font-size:12px;
+    font-weight:700;
+    max-width:68px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    opacity:.85;
+}
+
+.story-viewer-overlay{
+    position:fixed;
+    inset:0;
+    background:#000;
+    z-index:30000;
+    display:flex;
+    flex-direction:column;
+    animation:storyFadeIn .15s ease;
+}
+
+@keyframes storyFadeIn{
+    from{ opacity:0; }
+    to{ opacity:1; }
+}
+
+.story-progress-row{
+    display:flex;
+    gap:4px;
+    padding:10px 10px 0;
+}
+
+.story-progress-seg{
+    flex:1;
+    height:3px;
+    border-radius:3px;
+    background:rgba(255,255,255,.3);
+    overflow:hidden;
+}
+
+.story-progress-fill{
+    height:100%;
+    width:0%;
+    background:#fff;
+    border-radius:3px;
+}
+
+.story-progress-fill.full{ width:100%; }
+
+.story-progress-fill.active{
+    width:100%;
+    animation:storyProgress 5s linear;
+}
+
+@keyframes storyProgress{
+    from{ width:0%; }
+    to{ width:100%; }
+}
+
+.story-viewer-header{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:12px 14px;
+    color:#fff;
+}
+
+.story-time{
+    font-size:13px;
+    opacity:.7;
+}
+
+.story-viewer-icon-btn{
+    background:rgba(255,255,255,.15);
+    border:none;
+    color:#fff;
+    width:34px;
+    height:34px;
+    border-radius:50%;
+    font-size:16px;
+    cursor:pointer;
+}
+
+.story-viewer-body{
+    flex:1;
+    position:relative;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    overflow:hidden;
+}
+
+.story-viewer-image{
+    max-width:100%;
+    max-height:100%;
+    object-fit:contain;
+    border-radius:8px;
+}
+
+.story-tap-zone{
+    position:absolute;
+    top:0;
+    bottom:0;
+    width:35%;
+    z-index:2;
+    cursor:pointer;
+}
+
+.story-tap-zone.left{ left:0; }
+.story-tap-zone.right{ right:0; }
+
+.story-caption{
+    position:absolute;
+    left:16px;
+    right:16px;
+    bottom:20px;
+    color:#fff;
+    background:rgba(0,0,0,.45);
+    padding:10px 14px;
+    border-radius:14px;
+    font-size:15px;
+    text-align:center;
+}
+
+.story-view-count{
+    color:#fff;
+    opacity:.85;
+    text-align:center;
+    padding:10px 0 16px;
+    font-size:14px;
+}
+
+[data-theme="dark"] .story-ring.seen,
+[data-theme="dark"] .story-ring.empty{
+    background:#33454f;
+}
