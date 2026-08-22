@@ -962,11 +962,15 @@ select:focus{
 }
 
 .reaction-add-btn{
+    display:flex;
+    align-items:center;
+    justify-content:center;
     border:1px dashed #b8dde5;
     background:transparent;
-    border-radius:12px;
+    border-radius:50%;
     width:22px;
     height:22px;
+    padding:0;
     font-size:12px;
     line-height:1;
     cursor:pointer;
