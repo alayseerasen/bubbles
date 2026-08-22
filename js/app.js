@@ -589,7 +589,6 @@ function renderApp(){
                         🔔
                         <span id="notifBadge" class="nav-badge notif-badge hidden"></span>
                     </button>
-                    <div id="notifPanel" class="notif-panel hidden"></div>
                 </div>
 
                 <button
@@ -611,6 +610,19 @@ function renderApp(){
             </div>
 
         </header>
+
+        <!--
+            Deliberately NOT nested inside <header>: .topbar has a
+            backdrop-filter (for the frosted-glass look), and an
+            ancestor with backdrop-filter/filter/transform creates its
+            own containing block for position:fixed descendants. That
+            trapped this panel inside the header's own (lower) stacking
+            context, so it rendered UNDER the rest of the page no
+            matter how high its z-index was. Living here, as a sibling
+            of everything else, its position:fixed is relative to the
+            real viewport like it should be.
+        -->
+        <div id="notifPanel" class="notif-panel hidden"></div>
 
 
         <div class="layout">
