@@ -333,6 +333,12 @@ select:focus{
     background:#d5f7ff;
 }
 
+.mini-avatar.small{
+    width:26px;
+    height:26px;
+    border-width:1.5px;
+}
+
 .top-user span{
     max-width:120px;
     overflow:hidden;
@@ -648,11 +654,25 @@ select:focus{
 }
 
 .comment{
+    display:flex;
+    align-items:flex-start;
+    gap:8px;
     padding:8px 10px;
     border-radius:12px;
     background:#effaff;
     margin-top:6px;
     overflow-wrap:anywhere;
+}
+
+.comment-avatar{
+    flex-shrink:0;
+    min-width:0;
+    margin-top:2px;
+}
+
+.comment-body{
+    min-width:0;
+    flex:1;
 }
 
 .comment strong{
