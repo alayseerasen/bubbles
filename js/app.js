@@ -634,8 +634,17 @@ const sb = window.bubblesSupabase;
 // Screen" even from the landing/login page. Requesting notification
 // permission and actually subscribing to push, on the other hand, only
 // happens once someone's logged in — see subscribeToPush() in startApp().
+//
+// IMPORTANT: this must live at the SITE ROOT (./sw.js), not under /js/.
+// A service worker's default max scope is the directory it's served
+// from — registering js/sw.js with scope:"./" (the whole site) exceeds
+// that and throws a SecurityError, which the .catch() below used to
+// swallow silently. That's not a hypothetical: it's exactly what was
+// breaking "Enable notifications" for everyone, including on the real
+// deployed site, not just when testing this zip locally.
 if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("js/sw.js", { scope: "./" }).catch(() => {});
+    navigator.serviceWorker.register("./sw.js", { scope: "./" })
+        .catch(err => console.error("Service worker registration failed:", err));
 }
 
 let db = {
@@ -3581,12 +3590,28 @@ async function subscribeToPush({ requestPermission = false } = {}) {
     if (!window.BUBBLES_VAPID_PUBLIC_KEY) return false;
     if (typeof Notification === "undefined") return false;
 
+    // Service workers can't run at all over file:// (opening index.html
+    // straight from disk) — the browser refuses to register one, so
+    // there's nothing to subscribe with. This used to fail completely
+    // silently (the button just looked broken); now it says why.
+    if (location.protocol === "file:") {
+        if (requestPermission) toast("Уведомления не работают при открытии файла напрямую — размести сайт на сервере (например, GitHub Pages).", 7000);
+        return false;
+    }
+
     // iOS only exposes Web Push to Home Screen web apps, not ordinary Safari tabs.
     if (isIOSDevice() && !isBubblesInstalled()) return false;
     if (Notification.permission === "denied") return false;
 
     try {
-        const registration = await navigator.serviceWorker.ready;
+        // navigator.serviceWorker.ready never resolves if registration
+        // failed for any reason (wrong scope, network hiccup, etc.) — a
+        // bare `await` on it used to just hang forever with no feedback.
+        // Racing it against a timeout turns that into a clear error instead.
+        const registration = await Promise.race([
+            navigator.serviceWorker.ready,
+            new Promise((_, reject) => setTimeout(() => reject(new Error("service worker not ready in time")), 8000))
+        ]);
         let subscription = await registration.pushManager.getSubscription();
 
         // If Bubbles rotated its VAPID key, the old browser subscription is
@@ -3642,8 +3667,15 @@ async function enablePushNotifications() {
         return;
     }
     const ok = await subscribeToPush({ requestPermission: true });
-    if (!ok && typeof Notification !== "undefined" && Notification.permission === "denied") {
+    if (ok) return;
+    if (typeof Notification !== "undefined" && Notification.permission === "denied") {
         toast("Уведомления запрещены. Включи их в настройках уведомлений Bubbles на iPhone.", 7000);
+    } else if (location.protocol !== "file:") {
+        // file: already showed its own specific message inside subscribeToPush().
+        // Anything else that fails here (registration hiccup, timeout, etc.)
+        // should still say SOMETHING rather than leaving the button looking
+        // like it silently did nothing.
+        toast("Не удалось включить уведомления. Попробуй ещё раз через пару секунд.", 6000);
     }
 }
 
