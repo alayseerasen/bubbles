@@ -1449,6 +1449,7 @@ async function logout(){
     closeMusicPlayer();
     await sb.auth.signOut();
     currentUserId = null;
+    teardownCallSignaling();
     db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],notifications:[],messages:[],music:[],reports:[],blocks:[],stories:[],storyViews:[],pet:null};
     showAuth("landing");
 }
@@ -1474,6 +1475,7 @@ function startApp(){
     setupFriendRequestsRealtime();
     setupSocialRealtime();
     setupNotificationsRealtime();
+    initCallSignaling();
     renderApp();
     startOnlineCountPolling();
     subscribeToPush(); // fire-and-forget — a person who ignores/denies the permission prompt should still get a working app
@@ -1614,14 +1616,6 @@ function renderApp(){
 
                 <button
                     class="nav-btn"
-                    data-page="calls"
-                    onclick="navigate('calls')"
-                >
-                    📞 Звонки
-                </button>
-
-                <button
-                    class="nav-btn"
                     data-page="pet"
                     onclick="navigate('pet')"
                 >
@@ -1697,14 +1691,9 @@ function navigate(page, id = null){
         case "music": renderMusic(); break;
         case "pet": renderPet(); break;
         case "edit": renderEditProfile(); break;
-        case "calls": renderCallsPage(); break;
         case "search": renderSearchResults((id != null ? id : userSearchQuery).trim().toLowerCase()); break;
         default: renderFeed();
     }
-
-    // "Лобби"-подписки на странице "Звонки" (нужны только чтобы видеть, кто
-    // сейчас в каналах, не заходя в них) живут только пока страница открыта.
-    if (page !== "calls") teardownAllLobbySubs();
 
     stopWatchingChatPartnerPresence();
     if (page === "messages" && selectedChatId) watchChatPartnerPresence(selectedChatId);
@@ -4073,6 +4062,13 @@ function renderChat(userId){
             </div>
 
             <span class="chat-encryption-badge" title="${chatEncrypted ? "Сообщения шифруются" : "Сообщения НЕ шифруются"}">${chatEncrypted ? "🔒" : "🔓"}</span>
+
+            <button
+                type="button"
+                class="chat-call-btn"
+                onclick="startDirectCall('${userId}')"
+                title="Позвонить"
+            >📞</button>
 
         </div>
 

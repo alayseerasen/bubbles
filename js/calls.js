@@ -1,19 +1,20 @@
 /* ============================================================
-   BUBBLES — ЗВОНКИ (голосовые каналы, видео, демонстрация экрана)
+   BUBBLES — ЗВОНКИ В ЛИЧНЫХ СООБЩЕНИЯХ
    ------------------------------------------------------------
-   Работает как в TeamSpeak: список постоянных каналов, заходишь —
-   тебя слышат все, кто внутри. Видео и показ экрана — по желанию,
-   отдельными кнопками.
+   Звонишь конкретному другу прямо из чата: кнопка 📞 в шапке
+   переписки. У получателя, если он online (открыт сайт),
+   выскакивает окно "входящий звонок" с приёмом/отклонением.
+   Внутри звонка — голос, видео с камеры, показ экрана,
+   настройки микрофона/камеры/динамика и качества.
 
-   Технически — P2P WebRTC (mesh: у каждого участника прямое
-   соединение с каждым, без отдельного медиа-сервера). Отлично
-   работает для небольших групп (комфортно людей до 5-6 в одном
-   канале одновременно, дальше нагрузка на исходящий канал каждого
-   участника растёт линейно — это ограничение подхода "без сервера").
+   Технически — P2P WebRTC, без медиа-сервера. Сигналинг (кто кому
+   звонит, обмен offer/answer/ICE) идёт через Supabase Realtime
+   Broadcast, ничего не пишется в базу — всё эфемерно, как и
+   typing-индикатор в чате.
 
-   Сигналинг (обмен offer/answer/ICE) идёт через Supabase Realtime
-   Broadcast + Presence по каналу "call:<id>" — ничего не пишется
-   в базу, всё эфемерно, как уже сделано для typing-индикатора.
+   Ограничение такого подхода: звонок долетит, только если у
+   собеседника открыта вкладка с сайтом в этот момент — офлайн-пуша
+   на "тебе звонят" здесь нет (это отдельная, более сложная тема).
    ============================================================ */
 
 const CALL_QUALITY_PRESETS = {
@@ -22,7 +23,13 @@ const CALL_QUALITY_PRESETS = {
     fhd: { label: "Full HD (1080p)", width: 1920, height: 1080, frameRate: 30, videoBitrate: 3_500_000, screenBitrate: 5_000_000 }
 };
 
-const CALL_AUDIO_BITRATE = 128_000; // opus, кбит/с — заметно лучше дефолтных ~32кбит/с
+const CALL_AUDIO_BITRATE = 128_000; // opus, бит/с — заметно лучше дефолтных ~32кбит/с
+const CALL_RING_TIMEOUT_MS = 45_000;
+
+const CALL_ICE_SERVERS = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:global.stun.twilio.com:3478" }
+];
 
 function loadCallSettings() {
     try {
@@ -46,266 +53,301 @@ function saveCallSettings() {
 }
 
 let callSettings = loadCallSettings();
+let ringChannel = null; // персональный канал "мне звонят", живёт всё время, пока открыт сайт
 
-// Всё состояние текущего звонка живёт здесь. channelId === null значит
-// "не в звонке". Пока не зашли ни в один канал — localStream тоже null.
+// status: "idle" | "calling" (я звоню, жду ответа) | "ringing" (мне звонят) | "connected"
 let callState = {
-    channelId: null,
-    channelName: "",
-    presenceChannel: null,   // канал Supabase Realtime для этого звонка
-    localStream: null,       // микрофон (+ камера, если включена)
-    screenStream: null,      // отдельный поток показа экрана
-    peers: new Map(),        // userId -> { pc, polite, makingOffer, ignoreOffer, videoEl, screenEl }
-    members: new Map(),      // userId -> presence-мета { name, avatar, video, screen, muted }
+    status: "idle",
+    callId: null,
+    remoteUserId: null,
+    remoteName: "",
+    remoteAvatar: "",
+    channel: null,
+    pc: null,
+    polite: false,
+    makingOffer: false,
+    ignoreOffer: false,
+    localStream: null,
+    screenStream: null,
     micOn: true,
     camOn: false,
-    screenOn: false
+    screenOn: false,
+    remoteVideoOn: false,
+    remoteScreenOn: false,
+    ringTimeout: null,
+    stopRingtone: null
 };
 
-let callChannelsList = [];       // список каналов из БД
-let callLobbySubs = new Map();   // channelId -> {channel, count, sample:[]} — для превью участников на странице "Звонки", без входа в звонок
-
 /* ------------------------------------------------------------
-   ЗАГРУЗКА СПИСКА КАНАЛОВ
+   ПЕРСОНАЛЬНЫЙ КАНАЛ "МНЕ ЗВОНЯТ" — живёт всё время сессии
    ------------------------------------------------------------ */
 
-async function loadCallChannels() {
-    const { data, error } = await sb.from("call_channels").select("*").order("created_at", { ascending: true });
-    if (error) { console.error(error); return; }
-    callChannelsList = data || [];
+function initCallSignaling() {
+    teardownCallSignaling();
+    if (!currentUserId) return;
+    ringChannel = sb.channel("call-ring-" + currentUserId)
+        .on("broadcast", { event: "invite" }, ({ payload }) => handleIncomingInvite(payload))
+        .on("broadcast", { event: "cancel" }, ({ payload }) => {
+            if (callState.status === "ringing" && callState.callId === payload.callId) endCallLocally("Звонок отменён.");
+        })
+        .on("broadcast", { event: "decline" }, ({ payload }) => {
+            if (callState.status === "calling" && callState.callId === payload.callId) endCallLocally(payload.reason === "busy" ? "Собеседник сейчас на другом звонке." : "Звонок отклонён.");
+        })
+        .subscribe();
 }
 
-/* ------------------------------------------------------------
-   СТРАНИЦА "ЗВОНКИ"
-   ------------------------------------------------------------ */
-
-async function renderCallsPage() {
-    const page = document.getElementById("page");
-    page.innerHTML = `<h1 class="section-title">📞 Звонки</h1><div class="card"><p class="muted">Загрузка каналов…</p></div>`;
-
-    await loadCallChannels();
-    teardownAllLobbySubs();
-
-    page.innerHTML = `
-        <h1 class="section-title">📞 Звонки</h1>
-
-        <div class="card">
-            <h3>Новый канал</h3>
-            <div style="display:flex;gap:10px;flex-wrap:wrap;">
-                <input id="newCallChannelName" placeholder="Название канала" maxlength="40" style="flex:1;min-width:160px;">
-                <button onclick="createCallChannel()">➕ Создать</button>
-            </div>
-        </div>
-
-        <div id="callChannelsList"></div>
-    `;
-
-    renderCallChannelsList();
-
-    // Подписываемся на presence каждого канала только чтобы показать,
-    // кто там сейчас — сами при этом никуда не "заходим" (track() не
-    // вызываем), поэтому в списках у других это не отображается как визит.
-    callChannelsList.forEach(ch => {
-        if (ch.id === callState.channelId) return; // уже подключены по-настоящему
-        const lobby = sb.channel(`call:${ch.id}`, { config: { presence: { key: `lobby-${currentUserId}-${Math.random().toString(36).slice(2)}` } } });
-        lobby
-            .on("presence", { event: "sync" }, () => {
-                const state = lobby.presenceState();
-                const sample = Object.values(state).flat().filter(p => !String(p.key || "").startsWith("lobby-"));
-                callLobbySubs.set(ch.id, { channel: lobby, members: sample });
-                renderCallChannelsList();
-            })
-            .subscribe();
-        callLobbySubs.set(ch.id, { channel: lobby, members: [] });
-    });
+function teardownCallSignaling() {
+    if (ringChannel) { try { sb.removeChannel(ringChannel); } catch (e) {} ringChannel = null; }
+    if (callState.status !== "idle") endCallLocally();
 }
 
-function teardownAllLobbySubs() {
-    callLobbySubs.forEach(entry => { try { sb.removeChannel(entry.channel); } catch (e) {} });
-    callLobbySubs.clear();
-}
-
-function renderCallChannelsList() {
-    const el = document.getElementById("callChannelsList");
-    if (!el) return;
-
-    if (!callChannelsList.length) {
-        el.innerHTML = `<div class="card"><p class="muted">Пока нет ни одного канала — создай первый выше.</p></div>`;
+function handleIncomingInvite(payload) {
+    if (callState.status !== "idle") {
+        // Уже на другом звонке — сразу "занято", не мучаем модалкой.
+        sb.channel("call-ring-" + payload.from).send({ type: "broadcast", event: "decline", payload: { callId: payload.callId, reason: "busy" } })
+            .then(() => {});
         return;
     }
 
-    el.innerHTML = callChannelsList.map(ch => {
-        const isHere = ch.id === callState.channelId;
-        const lobby = callLobbySubs.get(ch.id);
-        const members = isHere
-            ? Array.from(callState.members.values())
-            : (lobby ? lobby.members : []);
-        // я сам, если уже в этом канале
-        const meMember = isHere ? [{ userId: currentUserId, name: getUser(currentUserId)?.display_name || "Я", avatar: getUser(currentUserId)?.avatar, video: callState.camOn, screen: callState.screenOn, muted: !callState.micOn }] : [];
-        const all = [...meMember, ...members];
+    callState.status = "ringing";
+    callState.callId = payload.callId;
+    callState.remoteUserId = payload.from;
+    callState.remoteName = payload.name || "Кто-то";
+    callState.remoteAvatar = payload.avatar || "";
 
-        const avatarsHtml = all.length
-            ? `<div class="call-channel-members">${all.map(m => `
-                <div class="call-member-chip" title="${escapeHtml(m.name || "")}">
-                    <img src="${m.avatar || defaultAvatar()}">
-                    ${m.muted ? '<span class="call-member-badge">🔇</span>' : ''}
-                    ${m.video ? '<span class="call-member-badge call-member-badge-video">🎥</span>' : ''}
-                    ${m.screen ? '<span class="call-member-badge call-member-badge-video">🖥️</span>' : ''}
-                </div>
-            `).join("")}</div>`
-            : `<p class="muted" style="margin:6px 0 0;">Никого нет</p>`;
+    playRingtone();
+    renderIncomingCallModal();
 
-        const canDelete = ch.created_by === currentUserId;
-
-        return `
-            <div class="card call-channel-card">
-                <div class="call-channel-head">
-                    <div>
-                        <h3 style="margin:0;">🔊 ${escapeHtml(ch.name)}</h3>
-                        ${avatarsHtml}
-                    </div>
-                    <div class="call-channel-actions">
-                        ${isHere
-                            ? `<button class="secondary" onclick="leaveCallChannel()">Выйти</button>`
-                            : `<button onclick="joinCallChannel('${ch.id}','${escapeHtml(ch.name).replace(/'/g, "\\'")}')">Войти</button>`}
-                        ${canDelete ? `<button class="danger" onclick="deleteCallChannel('${ch.id}')" title="Удалить канал">🗑️</button>` : ""}
-                    </div>
-                </div>
-            </div>
-        `;
-    }).join("");
-}
-
-async function createCallChannel() {
-    const input = document.getElementById("newCallChannelName");
-    const name = (input?.value || "").trim();
-    if (!name) { toast("Введи название канала."); return; }
-    const { data, error } = await sb.from("call_channels").insert({ name, created_by: currentUserId }).select().single();
-    if (error) { console.error(error); toast("Не удалось создать канал."); return; }
-    callChannelsList.push(data);
-    input.value = "";
-    renderCallChannelsList();
-}
-
-async function deleteCallChannel(channelId) {
-    if (callState.channelId === channelId) await leaveCallChannel();
-    const { error } = await sb.from("call_channels").delete().eq("id", channelId);
-    if (error) { console.error(error); toast("Не удалось удалить канал."); return; }
-    callChannelsList = callChannelsList.filter(c => c.id !== channelId);
-    const lobby = callLobbySubs.get(channelId);
-    if (lobby) { try { sb.removeChannel(lobby.channel); } catch (e) {} callLobbySubs.delete(channelId); }
-    renderCallChannelsList();
+    callState.ringTimeout = setTimeout(() => {
+        if (callState.status === "ringing") endCallLocally("Пропущенный звонок.");
+    }, CALL_RING_TIMEOUT_MS);
 }
 
 /* ------------------------------------------------------------
-   ВХОД / ВЫХОД ИЗ ЗВОНКА
+   ИСХОДЯЩИЙ ЗВОНОК
    ------------------------------------------------------------ */
 
-async function joinCallChannel(channelId, channelName) {
-    if (callState.channelId) {
-        if (callState.channelId === channelId) return;
-        await leaveCallChannel();
-    }
+async function startDirectCall(partnerId) {
+    if (callState.status !== "idle") { toast("Ты уже на звонке."); return; }
 
-    // Останавливаем "лобби"-подписку этого канала — дальше будем сидеть в нём по-настоящему.
-    const lobby = callLobbySubs.get(channelId);
-    if (lobby) { try { sb.removeChannel(lobby.channel); } catch (e) {} callLobbySubs.delete(channelId); }
+    const partner = getUser(partnerId);
+    if (!partner) return;
 
+    let localStream;
     try {
-        callState.localStream = await getMicStream();
+        localStream = await getMicStream();
     } catch (e) {
         console.error(e);
         toast("Не удалось получить доступ к микрофону. Проверь разрешения браузера.");
         return;
     }
 
-    callState.channelId = channelId;
-    callState.channelName = channelName;
-    callState.micOn = true;
-    callState.camOn = false;
-    callState.screenOn = false;
-    callState.members = new Map();
-    callState.peers = new Map();
-
     const me = getUser(currentUserId);
-    const channel = sb.channel(`call:${channelId}`, { config: { presence: { key: currentUserId } } });
-    callState.presenceChannel = channel;
+    const callId = (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2)));
 
-    channel
-        .on("presence", { event: "sync" }, () => {
-            const state = channel.presenceState();
-            const seen = new Set();
-            Object.entries(state).forEach(([userId, metas]) => {
-                if (userId === currentUserId) return;
-                seen.add(userId);
-                const meta = metas[metas.length - 1];
-                callState.members.set(userId, meta);
-                ensurePeerConnection(userId);
-            });
-            // убираем тех, кто пропал из presence
-            Array.from(callState.peers.keys()).forEach(userId => {
-                if (!seen.has(userId)) closePeerConnection(userId);
-            });
-            renderCallBar();
-            renderCallChannelsList();
-        })
-        .on("presence", { event: "leave" }, ({ key }) => {
-            if (key === currentUserId) return;
-            closePeerConnection(key);
-            callState.members.delete(key);
-            renderCallBar();
-            renderCallChannelsList();
-        })
-        .on("broadcast", { event: "signal" }, ({ payload }) => {
-            if (!payload || payload.to !== currentUserId) return;
-            handleSignal(payload.from, payload.data);
-        })
-        .subscribe(async (status) => {
-            if (status === "SUBSCRIBED") {
-                await channel.track({
-                    userId: currentUserId,
-                    name: me?.display_name || me?.username || "Без имени",
-                    avatar: me?.avatar || "",
-                    video: false,
-                    screen: false,
-                    muted: false
-                });
-            }
-        });
+    callState.status = "calling";
+    callState.callId = callId;
+    callState.remoteUserId = partnerId;
+    callState.remoteName = partner.displayName;
+    callState.remoteAvatar = partner.avatar;
+    callState.localStream = localStream;
+    callState.polite = currentUserId > partnerId; // одинаковая детерминированная роль с обеих сторон
 
-    renderCallBar();
-    renderCallChannelsList();
-    toast(`Заходим в канал «${channelName}»…`);
+    joinCallChannel(callId, partnerId);
+
+    sb.channel("call-ring-" + partnerId).send({
+        type: "broadcast",
+        event: "invite",
+        payload: { callId, from: currentUserId, name: me?.displayName || "Кто-то", avatar: me?.avatar || "" }
+    });
+
+    renderOutgoingCallModal();
+
+    callState.ringTimeout = setTimeout(() => {
+        if (callState.status === "calling") {
+            sb.channel("call-ring-" + partnerId).send({ type: "broadcast", event: "cancel", payload: { callId } });
+            endCallLocally("Абонент не отвечает.");
+        }
+    }, CALL_RING_TIMEOUT_MS);
 }
 
-async function leaveCallChannel() {
-    if (!callState.channelId) return;
+function cancelOutgoingCall() {
+    if (callState.status !== "calling") return;
+    sb.channel("call-ring-" + callState.remoteUserId).send({ type: "broadcast", event: "cancel", payload: { callId: callState.callId } });
+    endCallLocally();
+}
 
-    Array.from(callState.peers.keys()).forEach(closePeerConnection);
+/* ------------------------------------------------------------
+   ПРИНЯТЬ / ОТКЛОНИТЬ ВХОДЯЩИЙ
+   ------------------------------------------------------------ */
 
-    if (callState.presenceChannel) {
-        try { await callState.presenceChannel.untrack(); } catch (e) {}
-        try { sb.removeChannel(callState.presenceChannel); } catch (e) {}
+async function acceptIncomingCall() {
+    if (callState.status !== "ringing") return;
+    stopRingtone();
+    closeBubblesModal();
+
+    let localStream;
+    try {
+        localStream = await getMicStream();
+    } catch (e) {
+        console.error(e);
+        toast("Не удалось получить доступ к микрофону. Проверь разрешения браузера.");
+        declineIncomingCall();
+        return;
     }
 
+    callState.localStream = localStream;
+    callState.polite = currentUserId > callState.remoteUserId;
+    if (callState.ringTimeout) { clearTimeout(callState.ringTimeout); callState.ringTimeout = null; }
+
+    joinCallChannel(callState.callId, callState.remoteUserId);
+}
+
+function declineIncomingCall() {
+    if (callState.status !== "ringing") return;
+    sb.channel("call-ring-" + callState.remoteUserId).send({ type: "broadcast", event: "decline", payload: { callId: callState.callId } });
+    stopRingtone();
+    closeBubblesModal();
+    endCallLocally();
+}
+
+/* ------------------------------------------------------------
+   КАНАЛ ЗВОНКА (сигналинг + сам WebRTC)
+   ------------------------------------------------------------ */
+
+function joinCallChannel(callId, partnerId) {
+    const channel = sb.channel("call:" + callId)
+        .on("broadcast", { event: "signal" }, ({ payload }) => {
+            if (payload.to !== currentUserId) return;
+            handleSignal(payload.data);
+        })
+        .on("broadcast", { event: "state" }, ({ payload }) => {
+            if (payload.from !== callState.remoteUserId) return;
+            callState.remoteVideoOn = !!payload.video;
+            callState.remoteScreenOn = !!payload.screen;
+            renderCallBar();
+        })
+        .on("broadcast", { event: "hangup" }, ({ payload }) => {
+            if (payload.from !== callState.remoteUserId) return;
+            endCallLocally("Собеседник завершил звонок.");
+        })
+        .subscribe();
+
+    callState.channel = channel;
+    callState.status = "connected";
+    setupPeerConnection();
+    renderCallBar();
+}
+
+function setupPeerConnection() {
+    const pc = new RTCPeerConnection({ iceServers: CALL_ICE_SERVERS });
+    callState.pc = pc;
+
+    callState.localStream?.getTracks().forEach(track => {
+        const sender = pc.addTrack(track, callState.localStream);
+        if (track.kind === "video") applyEncodingBitrate(sender, CALL_QUALITY_PRESETS[callSettings.quality].videoBitrate);
+    });
+
+    pc.onnegotiationneeded = async () => {
+        try {
+            callState.makingOffer = true;
+            await pc.setLocalDescription();
+            sendSignal({ description: pc.localDescription });
+        } catch (e) {
+            console.error(e);
+        } finally {
+            callState.makingOffer = false;
+        }
+    };
+
+    pc.onicecandidate = ({ candidate }) => { if (candidate) sendSignal({ candidate }); };
+
+    pc.ontrack = (event) => {
+        const isScreen = event.track.label === "screen";
+        requestAnimationFrame(() => {
+            const el = document.getElementById(isScreen ? "callTile-screen-remote" : "callTile-cam-remote");
+            if (el && event.track.kind === "video") el.srcObject = event.streams[0] || new MediaStream([event.track]);
+            if (event.track.kind === "audio") {
+                const audioEl = document.getElementById("callRemoteAudio");
+                if (audioEl) {
+                    audioEl.srcObject = event.streams[0] || new MediaStream([event.track]);
+                    if (callSettings.speakerId && audioEl.setSinkId) audioEl.setSinkId(callSettings.speakerId).catch(() => {});
+                }
+            }
+        });
+    };
+
+    pc.onconnectionstatechange = () => {
+        if (pc.connectionState === "failed") toast("Связь со собеседником прервалась.");
+    };
+}
+
+function sendSignal(data) {
+    callState.channel?.send({ type: "broadcast", event: "signal", payload: { to: callState.remoteUserId, from: currentUserId, data } });
+}
+
+async function handleSignal(data) {
+    const pc = callState.pc;
+    if (!pc) return;
+    try {
+        if (data.description) {
+            const offerCollision = data.description.type === "offer" && (callState.makingOffer || pc.signalingState !== "stable");
+            callState.ignoreOffer = !callState.polite && offerCollision;
+            if (callState.ignoreOffer) return;
+
+            let desc = data.description;
+            if ((desc.type === "offer" || desc.type === "answer") && desc.sdp && desc.sdp.includes("m=audio")) {
+                desc = { ...desc, sdp: boostOpusBitrate(desc.sdp) };
+            }
+            await pc.setRemoteDescription(desc);
+            if (data.description.type === "offer") {
+                await pc.setLocalDescription();
+                sendSignal({ description: pc.localDescription });
+            }
+        } else if (data.candidate) {
+            try { await pc.addIceCandidate(data.candidate); }
+            catch (e) { if (!callState.ignoreOffer) console.error(e); }
+        }
+    } catch (e) {
+        console.error("Ошибка сигналинга звонка:", e);
+    }
+}
+
+function broadcastMyState() {
+    callState.channel?.send({ type: "broadcast", event: "state", payload: { from: currentUserId, video: callState.camOn, screen: callState.screenOn } });
+}
+
+/* ------------------------------------------------------------
+   ЗАВЕРШЕНИЕ ЗВОНКА
+   ------------------------------------------------------------ */
+
+function hangUpCall() {
+    if (callState.status === "calling") { cancelOutgoingCall(); return; }
+    if (callState.status === "ringing") { declineIncomingCall(); return; }
+    callState.channel?.send({ type: "broadcast", event: "hangup", payload: { from: currentUserId } });
+    endCallLocally();
+}
+
+function endCallLocally(toastMessage) {
+    if (callState.ringTimeout) { clearTimeout(callState.ringTimeout); callState.ringTimeout = null; }
+    stopRingtone();
+    try { closeBubblesModal(); } catch (e) {}
+
+    try { callState.pc?.close(); } catch (e) {}
     stopStream(callState.localStream);
     stopStream(callState.screenStream);
+    if (callState.channel) { try { sb.removeChannel(callState.channel); } catch (e) {} }
 
+    const wasStatus = callState.status;
     callState = {
-        channelId: null,
-        channelName: "",
-        presenceChannel: null,
-        localStream: null,
-        screenStream: null,
-        peers: new Map(),
-        members: new Map(),
-        micOn: true,
-        camOn: false,
-        screenOn: false
+        status: "idle", callId: null, remoteUserId: null, remoteName: "", remoteAvatar: "",
+        channel: null, pc: null, polite: false, makingOffer: false, ignoreOffer: false,
+        localStream: null, screenStream: null, micOn: true, camOn: false, screenOn: false,
+        remoteVideoOn: false, remoteScreenOn: false, ringTimeout: null, stopRingtone: null
     };
 
     renderCallBar();
-    renderCallChannelsList();
+    if (toastMessage && wasStatus !== "idle") toast(toastMessage);
 }
 
 function stopStream(stream) {
@@ -314,7 +356,7 @@ function stopStream(stream) {
 }
 
 /* ------------------------------------------------------------
-   МЕДИА (микрофон / камера / экран) — качество
+   МЕДИА — микрофон / камера / экран, качество
    ------------------------------------------------------------ */
 
 function getMicStream() {
@@ -344,55 +386,46 @@ function getCamStream() {
 }
 
 async function toggleMic() {
-    if (!callState.channelId) return;
+    if (callState.status !== "connected") return;
     callState.micOn = !callState.micOn;
     callState.localStream?.getAudioTracks().forEach(t => t.enabled = callState.micOn);
-    await callState.presenceChannel?.track({ ...currentPresenceMeta(), muted: !callState.micOn });
     renderCallBar();
-    renderCallChannelsList();
 }
 
 async function toggleCam() {
-    if (!callState.channelId) return;
+    if (callState.status !== "connected") return;
     if (callState.camOn) {
         callState.localStream?.getVideoTracks().forEach(t => { t.stop(); callState.localStream.removeTrack(t); });
+        const sender = callState.pc.getSenders().find(s => s.track && s.track.kind === "video" && s.track.label !== "screen");
+        if (sender) callState.pc.removeTrack(sender);
         callState.camOn = false;
-        callState.peers.forEach((peer, userId) => {
-            const sender = peer.pc.getSenders().find(s => s.track && s.track.kind === "video" && s.track.label !== "screen");
-            if (sender) peer.pc.removeTrack(sender);
-        });
     } else {
         try {
             const camStream = await getCamStream();
             const track = camStream.getVideoTracks()[0];
             callState.localStream.addTrack(track);
+            const sender = callState.pc.addTrack(track, callState.localStream);
+            applyEncodingBitrate(sender, CALL_QUALITY_PRESETS[callSettings.quality].videoBitrate);
             callState.camOn = true;
-            callState.peers.forEach((peer) => {
-                const sender = peer.pc.addTrack(track, callState.localStream);
-                applyEncodingBitrate(sender, CALL_QUALITY_PRESETS[callSettings.quality].videoBitrate);
-            });
         } catch (e) {
             console.error(e);
             toast("Не удалось включить камеру. Проверь разрешения браузера.");
             return;
         }
     }
-    await callState.presenceChannel?.track({ ...currentPresenceMeta(), video: callState.camOn });
+    broadcastMyState();
     renderCallBar();
-    renderCallChannelsList();
     renderCallSettingsModalIfOpen();
 }
 
 async function toggleScreenShare() {
-    if (!callState.channelId) return;
+    if (callState.status !== "connected") return;
     if (callState.screenOn) {
         stopStream(callState.screenStream);
         callState.screenStream = null;
+        const sender = callState.pc.getSenders().find(s => s.track && s.track.label === "screen");
+        if (sender) callState.pc.removeTrack(sender);
         callState.screenOn = false;
-        callState.peers.forEach((peer) => {
-            const sender = peer.pc.getSenders().find(s => s.track && s.track.label === "screen");
-            if (sender) peer.pc.removeTrack(sender);
-        });
     } else {
         try {
             const q = CALL_QUALITY_PRESETS[callSettings.quality] || CALL_QUALITY_PRESETS.hd;
@@ -401,34 +434,20 @@ async function toggleScreenShare() {
                 audio: false
             });
             const track = stream.getVideoTracks()[0];
-            Object.defineProperty(track, "label", { value: "screen" }); // упрощает отличать поток экрана от камеры у отправителей
+            Object.defineProperty(track, "label", { value: "screen" });
             track.onended = () => { if (callState.screenOn) toggleScreenShare(); };
             callState.screenStream = stream;
+            const sender = callState.pc.addTrack(track, stream);
+            applyEncodingBitrate(sender, q.screenBitrate);
             callState.screenOn = true;
-            callState.peers.forEach((peer) => {
-                const sender = peer.pc.addTrack(track, stream);
-                applyEncodingBitrate(sender, q.screenBitrate);
-            });
         } catch (e) {
             console.error(e);
             if (e.name !== "NotAllowedError") toast("Не удалось начать показ экрана.");
             return;
         }
     }
-    await callState.presenceChannel?.track({ ...currentPresenceMeta(), screen: callState.screenOn });
+    broadcastMyState();
     renderCallBar();
-}
-
-function currentPresenceMeta() {
-    const me = getUser(currentUserId);
-    return {
-        userId: currentUserId,
-        name: me?.display_name || me?.username || "Без имени",
-        avatar: me?.avatar || "",
-        video: callState.camOn,
-        screen: callState.screenOn,
-        muted: !callState.micOn
-    };
 }
 
 function applyEncodingBitrate(sender, bitrate) {
@@ -439,144 +458,83 @@ function applyEncodingBitrate(sender, bitrate) {
     sender.setParameters(params).catch(() => {});
 }
 
-// Поднимает битрейт Opus в самом SDP — setParameters на аудио-сендере
-// битрейт не регулирует, это делается только через строку fmtp в SDP.
+// setParameters на аудио-сендере битрейт Opus не регулирует — это делается
+// только через строку fmtp в самом SDP.
 function boostOpusBitrate(sdp) {
-    return sdp.replace(/a=fmtp:(\d+) minptime=10;useinbandfec=1/g, (m, pt) => `${m};maxaveragebitrate=${CALL_AUDIO_BITRATE};stereo=1;sprop-stereo=1`)
+    return sdp.replace(/a=fmtp:(\d+) minptime=10;useinbandfec=1/g, (m) => `${m};maxaveragebitrate=${CALL_AUDIO_BITRATE};stereo=1;sprop-stereo=1`)
               .replace(/(m=audio.*\r?\n)/, `$1b=AS:${Math.round(CALL_AUDIO_BITRATE / 1000)}\r\n`);
 }
 
 /* ------------------------------------------------------------
-   WEBRTC — perfect negotiation (устойчиво к гонкам offer/answer)
+   РИНГТОН (простой сигнал через Web Audio, без файлов)
    ------------------------------------------------------------ */
 
-const CALL_ICE_SERVERS = [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:global.stun.twilio.com:3478" }
-];
-
-function ensurePeerConnection(userId) {
-    if (callState.peers.has(userId)) return callState.peers.get(userId);
-
-    const polite = currentUserId > userId; // детерминированная роль по паре id, одинаковая с обеих сторон
-    const pc = new RTCPeerConnection({ iceServers: CALL_ICE_SERVERS });
-    const peer = { pc, polite, makingOffer: false, ignoreOffer: false, videoEl: null, screenEl: null };
-    callState.peers.set(userId, peer);
-
-    callState.localStream?.getTracks().forEach(track => {
-        const sender = pc.addTrack(track, callState.localStream);
-        if (track.kind === "video") applyEncodingBitrate(sender, CALL_QUALITY_PRESETS[callSettings.quality].videoBitrate);
-    });
-    if (callState.screenStream) {
-        const track = callState.screenStream.getVideoTracks()[0];
-        if (track) {
-            const sender = pc.addTrack(track, callState.screenStream);
-            applyEncodingBitrate(sender, CALL_QUALITY_PRESETS[callSettings.quality].screenBitrate);
-        }
-    }
-
-    pc.onnegotiationneeded = async () => {
-        try {
-            peer.makingOffer = true;
-            await pc.setLocalDescription();
-            sendSignal(userId, { description: pc.localDescription });
-        } catch (e) {
-            console.error(e);
-        } finally {
-            peer.makingOffer = false;
-        }
-    };
-
-    pc.onicecandidate = ({ candidate }) => {
-        if (candidate) sendSignal(userId, { candidate });
-    };
-
-    pc.ontrack = (event) => {
-        const isScreen = event.track.label === "screen" || (event.transceiver?.sender?.track?.label === "screen");
-        renderRemoteTrack(userId, event.streams[0] || new MediaStream([event.track]), event.track.kind, isScreen);
-    };
-
-    pc.onconnectionstatechange = () => {
-        if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
-            // не закрываем сразу на "disconnected" — часто восстанавливается само;
-            // окончательно чистим только когда presence подтвердит уход участника.
-        }
-    };
-
-    return peer;
-}
-
-function closePeerConnection(userId) {
-    const peer = callState.peers.get(userId);
-    if (!peer) return;
-    try { peer.pc.close(); } catch (e) {}
-    callState.peers.delete(userId);
-    removeRemoteTiles(userId);
-}
-
-function sendSignal(toUserId, data) {
-    callState.presenceChannel?.send({ type: "broadcast", event: "signal", payload: { to: toUserId, from: currentUserId, data } });
-}
-
-async function handleSignal(fromUserId, data) {
-    const peer = ensurePeerConnection(fromUserId);
-    const { pc } = peer;
-
+function playRingtone() {
     try {
-        if (data.description) {
-            const offerCollision = data.description.type === "offer" && (peer.makingOffer || pc.signalingState !== "stable");
-            peer.ignoreOffer = !peer.polite && offerCollision;
-            if (peer.ignoreOffer) return;
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        let stopped = false;
+        const beep = () => {
+            if (stopped) return;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.frequency.value = 880;
+            gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.15, ctx.currentTime + 0.05);
+            gain.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+            osc.connect(gain).connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.5);
+        };
+        beep();
+        const interval = setInterval(beep, 1500);
+        callState.stopRingtone = () => { stopped = true; clearInterval(interval); ctx.close().catch(() => {}); };
+    } catch (e) { /* Web Audio недоступен — просто без звука */ }
+}
 
-            let desc = data.description;
-            if (desc.type === "offer" || desc.type === "answer") {
-                desc = { ...desc, sdp: desc.sdp && desc.sdp.includes("m=audio") ? boostOpusBitrate(desc.sdp) : desc.sdp };
-            }
-            await pc.setRemoteDescription(desc);
-            if (data.description.type === "offer") {
-                await pc.setLocalDescription();
-                sendSignal(fromUserId, { description: pc.localDescription });
-            }
-        } else if (data.candidate) {
-            try { await pc.addIceCandidate(data.candidate); }
-            catch (e) { if (!peer.ignoreOffer) console.error(e); }
-        }
-    } catch (e) {
-        console.error("Ошибка сигналинга звонка:", e);
-    }
+function stopRingtone() {
+    if (callState.stopRingtone) { callState.stopRingtone(); callState.stopRingtone = null; }
 }
 
 /* ------------------------------------------------------------
-   ПЛАВАЮЩАЯ ПАНЕЛЬ ЗВОНКА + СЕТКА ВИДЕО
+   UI — модалки входящего/исходящего звонка
    ------------------------------------------------------------ */
 
-function renderRemoteTrack(userId, stream, kind, isScreen) {
-    renderCallBar(); // на случай если плитки участника ещё нет
-    requestAnimationFrame(() => {
-        const key = isScreen ? `screen-${userId}` : `cam-${userId}`;
-        const el = document.getElementById(`callTile-${key}`);
-        if (!el) return;
-        if (kind === "video") {
-            el.srcObject = stream;
-        } else if (kind === "audio") {
-            const audioEl = document.getElementById(`callAudio-${userId}`);
-            if (audioEl) {
-                audioEl.srcObject = stream;
-                if (callSettings.speakerId && audioEl.setSinkId) audioEl.setSinkId(callSettings.speakerId).catch(() => {});
-            }
-        }
-    });
+function renderIncomingCallModal() {
+    showBubblesModal(`
+        <div class="call-modal">
+            <img class="call-modal-avatar call-modal-avatar-pulse" src="${callState.remoteAvatar || defaultAvatar()}">
+            <h3>${escapeHtml(callState.remoteName)}</h3>
+            <p class="muted">Входящий звонок…</p>
+            <div class="call-modal-actions">
+                <button class="call-btn call-btn-accept" onclick="acceptIncomingCall()" title="Принять">📞</button>
+                <button class="call-btn call-btn-off" onclick="declineIncomingCall()" title="Отклонить">✕</button>
+            </div>
+        </div>
+    `);
 }
 
-function removeRemoteTiles(userId) {
-    renderCallBar();
+function renderOutgoingCallModal() {
+    showBubblesModal(`
+        <div class="call-modal">
+            <img class="call-modal-avatar call-modal-avatar-pulse" src="${callState.remoteAvatar || defaultAvatar()}">
+            <h3>${escapeHtml(callState.remoteName)}</h3>
+            <p class="muted">Звоним…</p>
+            <div class="call-modal-actions">
+                <button class="call-btn call-btn-off" onclick="cancelOutgoingCall()" title="Отменить">✕</button>
+            </div>
+        </div>
+    `);
 }
+
+/* ------------------------------------------------------------
+   ПАНЕЛЬ АКТИВНОГО ЗВОНКА
+   ------------------------------------------------------------ */
 
 function renderCallBar() {
     const bar = document.getElementById("callBar");
     if (!bar) return;
 
-    if (!callState.channelId) {
+    if (callState.status !== "connected") {
         bar.classList.add("hidden");
         bar.innerHTML = "";
         return;
@@ -585,24 +543,18 @@ function renderCallBar() {
     bar.classList.remove("hidden");
 
     const tiles = [];
-    // моя камера
-    if (callState.camOn) tiles.push(renderLocalTile("cam"));
-    if (callState.screenOn) tiles.push(renderLocalTile("screen"));
-
-    callState.members.forEach((meta, userId) => {
-        if (meta.video) tiles.push(`<div class="call-tile"><video id="callTile-cam-${userId}" autoplay playsinline></video><div class="call-tile-label">${escapeHtml(meta.name || "")}</div></div>`);
-        if (meta.screen) tiles.push(`<div class="call-tile call-tile-screen"><video id="callTile-screen-${userId}" autoplay playsinline></video><div class="call-tile-label">🖥️ ${escapeHtml(meta.name || "")}</div></div>`);
-    });
-
-    const audioEls = Array.from(callState.members.keys()).map(userId => `<audio id="callAudio-${userId}" autoplay></audio>`).join("");
+    if (callState.camOn) tiles.push(`<div class="call-tile"><video id="callTile-cam-me" autoplay playsinline muted></video><div class="call-tile-label">Ты</div></div>`);
+    if (callState.screenOn) tiles.push(`<div class="call-tile call-tile-screen"><video id="callTile-screen-me" autoplay playsinline muted></video><div class="call-tile-label">🖥️ Ты (экран)</div></div>`);
+    if (callState.remoteVideoOn) tiles.push(`<div class="call-tile"><video id="callTile-cam-remote" autoplay playsinline></video><div class="call-tile-label">${escapeHtml(callState.remoteName)}</div></div>`);
+    if (callState.remoteScreenOn) tiles.push(`<div class="call-tile call-tile-screen"><video id="callTile-screen-remote" autoplay playsinline></video><div class="call-tile-label">🖥️ ${escapeHtml(callState.remoteName)}</div></div>`);
 
     bar.innerHTML = `
-        ${audioEls}
+        <audio id="callRemoteAudio" autoplay></audio>
         <div class="call-bar-top">
-            <div class="call-bar-title">🔊 ${escapeHtml(callState.channelName)} · ${callState.members.size + 1}</div>
-            <button class="call-btn call-btn-leave" onclick="leaveCallChannel()" title="Выйти">✕</button>
+            <div class="call-bar-title">📞 ${escapeHtml(callState.remoteName)}</div>
+            <button class="call-btn call-btn-leave" onclick="hangUpCall()" title="Завершить">✕</button>
         </div>
-        ${tiles.length ? `<div class="call-tiles">${tiles.join("")}</div>` : ""}
+        ${tiles.length ? `<div class="call-tiles">${tiles.join("")}</div>` : `<p class="muted call-bar-audio-only">Только голос</p>`}
         <div class="call-bar-controls">
             <button class="call-btn ${callState.micOn ? "" : "call-btn-off"}" onclick="toggleMic()" title="${callState.micOn ? "Выключить микрофон" : "Включить микрофон"}">${callState.micOn ? "🎙️" : "🔇"}</button>
             <button class="call-btn ${callState.camOn ? "call-btn-on" : ""}" onclick="toggleCam()" title="${callState.camOn ? "Выключить камеру" : "Включить камеру"}">🎥</button>
@@ -611,33 +563,19 @@ function renderCallBar() {
         </div>
     `;
 
-    // локальные видео-элементы — присваиваем srcObject после вставки в DOM
     requestAnimationFrame(() => {
-        if (callState.camOn) {
-            const v = document.getElementById("callTile-cam-me");
-            if (v) v.srcObject = callState.localStream;
-        }
-        if (callState.screenOn) {
-            const v = document.getElementById("callTile-screen-me");
-            if (v) v.srcObject = callState.screenStream;
-        }
-        // переустанавливаем удалённые потоки, если элементы только что пересозданы
-        callState.peers.forEach((peer, userId) => {
-            peer.pc.getReceivers().forEach(r => {
-                if (!r.track) return;
-                const isScreen = r.track.label === "screen";
-                renderRemoteTrack(userId, new MediaStream([r.track]), r.track.kind, isScreen);
-            });
+        if (callState.camOn) { const v = document.getElementById("callTile-cam-me"); if (v) v.srcObject = callState.localStream; }
+        if (callState.screenOn) { const v = document.getElementById("callTile-screen-me"); if (v) v.srcObject = callState.screenStream; }
+        // переустанавливаем удалённые потоки, если плитки только что пересозданы
+        callState.pc?.getReceivers().forEach(r => {
+            if (!r.track) return;
+            const isScreen = r.track.label === "screen";
+            const el = document.getElementById(isScreen ? "callTile-screen-remote" : "callTile-cam-remote");
+            if (el && r.track.kind === "video") el.srcObject = new MediaStream([r.track]);
         });
+        const audioEl = document.getElementById("callRemoteAudio");
+        if (audioEl && callSettings.speakerId && audioEl.setSinkId) audioEl.setSinkId(callSettings.speakerId).catch(() => {});
     });
-}
-
-function renderLocalTile(kind) {
-    const isScreen = kind === "screen";
-    return `<div class="call-tile ${isScreen ? "call-tile-screen" : ""}">
-        <video id="callTile-${kind}-me" autoplay playsinline muted></video>
-        <div class="call-tile-label">${isScreen ? "🖥️ Ты (экран)" : "Ты"}</div>
-    </div>`;
 }
 
 /* ------------------------------------------------------------
@@ -650,7 +588,6 @@ async function openCallSettings() {
     callSettingsModalOpen = true;
     let devices = [];
     try {
-        // просим доступ заранее, иначе enumerateDevices не отдаёт понятные labels
         if (!callState.localStream) await getMicStream().then(s => stopStream(s));
         devices = await navigator.mediaDevices.enumerateDevices();
     } catch (e) { console.error(e); }
@@ -704,7 +641,7 @@ function callSettingsModalHtml(mics, cams, speakers) {
             <label><input type="checkbox" id="callSettingAgc" ${callSettings.autoGainControl ? "checked" : ""} onchange="applyCallSettingsFromModal()"> Автогромкость микрофона</label>
         </div>
 
-        <p class="muted" style="margin-top:10px;">Смена микрофона/камеры применится сразу в текущем звонке. Качество видео — при следующем включении камеры или показа экрана.</p>
+        <p class="muted" style="margin-top:10px;">Смена микрофона/камеры применится сразу, если звонок уже идёт. Качество видео — при следующем включении камеры или показа экрана.</p>
     `;
 }
 
@@ -730,9 +667,9 @@ async function applyCallSettingsFromModal() {
     callSettings.autoGainControl = document.getElementById("callSettingAgc")?.checked ?? callSettings.autoGainControl;
     saveCallSettings();
 
-    if (callState.channelId && micChanged) await swapMicDevice();
-    if (callState.channelId && callState.camOn && camChanged) await swapCamDevice();
-    if (callState.channelId) applyOutputDeviceToAudioEls();
+    if (callState.status === "connected" && micChanged) await swapMicDevice();
+    if (callState.status === "connected" && callState.camOn && camChanged) await swapCamDevice();
+    if (callState.status === "connected") applyOutputDeviceToAudioEl();
 }
 
 async function swapMicDevice() {
@@ -743,10 +680,8 @@ async function swapMicDevice() {
         const oldTrack = callState.localStream.getAudioTracks()[0];
         if (oldTrack) { callState.localStream.removeTrack(oldTrack); oldTrack.stop(); }
         callState.localStream.addTrack(newTrack);
-        callState.peers.forEach(peer => {
-            const sender = peer.pc.getSenders().find(s => s.track && s.track.kind === "audio");
-            if (sender) sender.replaceTrack(newTrack);
-        });
+        const sender = callState.pc.getSenders().find(s => s.track && s.track.kind === "audio");
+        if (sender) sender.replaceTrack(newTrack);
     } catch (e) { console.error(e); toast("Не удалось переключить микрофон."); }
 }
 
@@ -757,32 +692,29 @@ async function swapCamDevice() {
         const oldTrack = callState.localStream.getVideoTracks()[0];
         if (oldTrack) { callState.localStream.removeTrack(oldTrack); oldTrack.stop(); }
         callState.localStream.addTrack(newTrack);
-        callState.peers.forEach(peer => {
-            const sender = peer.pc.getSenders().find(s => s.track && s.track.kind === "video" && s.track.label !== "screen");
-            if (sender) { sender.replaceTrack(newTrack); applyEncodingBitrate(sender, CALL_QUALITY_PRESETS[callSettings.quality].videoBitrate); }
-        });
+        const sender = callState.pc.getSenders().find(s => s.track && s.track.kind === "video" && s.track.label !== "screen");
+        if (sender) { sender.replaceTrack(newTrack); applyEncodingBitrate(sender, CALL_QUALITY_PRESETS[callSettings.quality].videoBitrate); }
         const v = document.getElementById("callTile-cam-me");
         if (v) v.srcObject = callState.localStream;
     } catch (e) { console.error(e); toast("Не удалось переключить камеру."); }
 }
 
-function applyOutputDeviceToAudioEls() {
+function applyOutputDeviceToAudioEl() {
     if (!callSettings.speakerId) return;
-    document.querySelectorAll('audio[id^="callAudio-"]').forEach(el => {
-        if (el.setSinkId) el.setSinkId(callSettings.speakerId).catch(() => {});
-    });
+    const el = document.getElementById("callRemoteAudio");
+    if (el && el.setSinkId) el.setSinkId(callSettings.speakerId).catch(() => {});
 }
 
-// закрываем флаг модалки, когда её закрывают обычным способом
+// сбрасываем флаг модалки, когда её закрывают обычным способом
 const _origCloseBubblesModal = closeBubblesModal;
 closeBubblesModal = function () {
     callSettingsModalOpen = false;
     _origCloseBubblesModal();
 };
 
-// на всякий случай — не оставляем открытые устройства/соединения, если вкладку закрывают
+// не оставляем открытые устройства/соединения, если вкладку закрывают
 window.addEventListener("beforeunload", () => {
-    if (callState.channelId) {
+    if (callState.status !== "idle") {
         stopStream(callState.localStream);
         stopStream(callState.screenStream);
     }
