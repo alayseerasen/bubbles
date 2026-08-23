@@ -1201,7 +1201,7 @@ function renderApp(){
                         class="nav-btn"
                         onclick="location.href='https://alayseerasen.github.io/bubbles/games/bubbling.html'"
                     >
-                        🫧 На главную
+                        🫧 Aero World
                     </button>
 
                     <button
