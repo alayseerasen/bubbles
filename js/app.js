@@ -89,6 +89,355 @@ function statusBadgeHtml(user, size = "normal") {
     return `<span class="${cls}" title="${escapeHtml(tier.title)}">${tier.icon} ${escapeHtml(tier.title)}</span>`;
 }
 
+/* ============================================================
+   PETS (Tamagotchi-style companion)
+   ------------------------------------------------------------
+   One companion per account (db.pet, or null before it's adopted).
+   Species/appearance is config here (PET_SPECIES), not a DB table —
+   same reasoning as ACHIEVEMENTS above: it's static content, easy to
+   extend with more characters later, and doesn't need a migration to
+   add one. Cosmetics (recoloring, accessories) are a later layer —
+   colorPrimary/colorSecondary already round-trip through the DB (see
+   rowToPet) but nothing sets them yet, so every pet just renders in
+   its species' base colors for now.
+
+   STATS live 0–100: hunger, energy, happiness, cleanliness, plus a
+   slower-moving `health` meter that only drifts down when the other
+   four have been neglected for a while, and drifts back up on good
+   care — it's the "sick" gate, and it's always recoverable, never
+   fatal. Actions (feed/play/clean/sleep) nudge the four fast stats;
+   nothing acts on health directly.
+
+   TICKING is lazy, like the rest of this app has no server cron:
+   - applyPetDecay() is a pure function of (pet, elapsedMs, rate) —
+     no I/O, easy to reason about and to unit-test by hand.
+   - tickPet() is the only place that actually moves lastTickAt and
+     talks to Supabase. It runs in two situations:
+       1) once right after loadDB(), with awayCatchUp:true — the gap
+          between lastTickAt and now is however long the app was
+          CLOSED for, so it decays at PET_OFFLINE_RATE (slower).
+       2) every 30s via the heartbeat started in startApp(), with
+          awayCatchUp:false — that gap is always ~30s of the app
+          being open, so it decays at the normal full rate.
+     This is what gives the "decays as usual while you're using
+     bubbles, a bit more forgiving while you're away" behavior,
+     without needing to know in real time whether the tab is
+     foregrounded — the heartbeat only runs while the app is open at
+     all, so any large gap found on load could only have happened
+     while it was closed.
+   ============================================================ */
+
+const PET_SPECIES = [
+    {
+        id: "aero_orb",
+        name: "Аэро-пузырёк",
+        description: "Глянцевый пузырь родом из ранних 2000-х — воды и солнечных бликов Frutiger Aero.",
+        colorPrimary: "#8be870",
+        colorSecondary: "#2fa653"
+    }
+    // More characters go here later — creating one is just adding an
+    // entry to this array (id, name, description, two base colors);
+    // renderPetCreature() below draws any of them from those colors.
+];
+
+function getPetSpecies(speciesId) {
+    return PET_SPECIES.find(s => s.id === speciesId) || PET_SPECIES[0];
+}
+
+// Per-hour decay while the app is open and the pet is awake.
+const PET_DECAY_RATES = { hunger: 6, cleanliness: 4, happiness: 4, energy: 3 };
+// Applied instead of PET_DECAY_RATES for whatever time the app was
+// closed — "outside the bubbles" stats still drop, just noticeably
+// slower (roughly a third of the normal rate).
+const PET_OFFLINE_RATE_MULTIPLIER = 0.4;
+// While asleep, the fast stats barely move and energy climbs back up
+// instead of draining.
+const PET_ASLEEP_DECAY_MULTIPLIER = 0.35;
+const PET_ASLEEP_ENERGY_REGEN_PER_HOUR = 14;
+// Health drifts down when the four fast stats average below this,
+// and drifts up when they average at or above this — dead zone in
+// between so it doesn't flicker back and forth.
+const PET_HEALTH_DECAY_THRESHOLD = 30;
+const PET_HEALTH_REGEN_THRESHOLD = 60;
+const PET_HEALTH_DRIFT_PER_HOUR = 4;
+const PET_SICK_HEALTH_THRESHOLD = 30;
+// Age (from createdAt) needed to reach each stage — also gated on
+// health being at least PET_HEALTH_REGEN_THRESHOLD at the moment the
+// age threshold is hit, so sustained neglect delays growth instead
+// of punishing it any other way (it always catches up once cared for).
+const PET_STAGE_HOURS = { juvenile: 24, adult: 4 * 24 };
+
+function clampStat(value) {
+    return Math.max(0, Math.min(100, value));
+}
+
+// Pure function: given a pet snapshot, how far did elapsedMs of decay
+// (at the given hourly rates, before the sleep multiplier) move it?
+// Never touches the DB or `db.pet` — tickPet() below is what commits
+// the result, so this stays easy to reason about on its own.
+function applyPetDecay(pet, elapsedMs, rateMultiplier) {
+    const hours = elapsedMs / 3600000;
+    if (hours <= 0) return pet;
+    const sleepFactor = pet.asleep ? PET_ASLEEP_DECAY_MULTIPLIER : 1;
+    const next = { ...pet };
+    next.hunger = clampStat(pet.hunger - PET_DECAY_RATES.hunger * hours * rateMultiplier * sleepFactor);
+    next.cleanliness = clampStat(pet.cleanliness - PET_DECAY_RATES.cleanliness * hours * rateMultiplier * sleepFactor);
+    next.happiness = clampStat(pet.happiness - PET_DECAY_RATES.happiness * hours * rateMultiplier * sleepFactor);
+    next.energy = clampStat(pet.asleep
+        ? pet.energy + PET_ASLEEP_ENERGY_REGEN_PER_HOUR * hours * rateMultiplier
+        : pet.energy - PET_DECAY_RATES.energy * hours * rateMultiplier);
+
+    const careAverage = (next.hunger + next.cleanliness + next.happiness + next.energy) / 4;
+    if (careAverage < PET_HEALTH_DECAY_THRESHOLD) {
+        next.health = clampStat(pet.health - PET_HEALTH_DRIFT_PER_HOUR * hours * rateMultiplier);
+    } else if (careAverage >= PET_HEALTH_REGEN_THRESHOLD) {
+        next.health = clampStat(pet.health + PET_HEALTH_DRIFT_PER_HOUR * hours * rateMultiplier);
+    } else {
+        next.health = pet.health;
+    }
+
+    const ageHours = (Date.now() - pet.createdAt) / 3600000;
+    if (next.stage === "baby" && ageHours >= PET_STAGE_HOURS.juvenile && next.health >= PET_HEALTH_REGEN_THRESHOLD) {
+        next.stage = "juvenile";
+    } else if (next.stage === "juvenile" && ageHours >= PET_STAGE_HOURS.adult && next.health >= PET_HEALTH_REGEN_THRESHOLD) {
+        next.stage = "adult";
+    }
+
+    return next;
+}
+
+function isPetSick(pet) {
+    return pet.health < PET_SICK_HEALTH_THRESHOLD;
+}
+
+// Recomputes db.pet from however long it's actually been, optionally
+// writes the result back to Supabase, and optionally treats the gap
+// as "away" time (slower rate) vs. "app open" time (normal rate) —
+// see the big comment above PET_SPECIES for when each is used.
+async function tickPet({ persist = false, awayCatchUp = false } = {}) {
+    if (!db.pet) return;
+    const elapsedMs = Date.now() - db.pet.lastTickAt;
+    if (elapsedMs <= 0) return;
+    const rate = awayCatchUp ? PET_OFFLINE_RATE_MULTIPLIER : 1;
+    const evolved = applyPetDecay(db.pet, elapsedMs, rate);
+    evolved.lastTickAt = Date.now();
+    db.pet = evolved;
+    if (persist) await savePetToSupabase();
+}
+
+async function savePetToSupabase() {
+    if (!db.pet || !currentUserId) return;
+    const p = db.pet;
+    const { error } = await sb.from("pets").update({
+        hunger: p.hunger, energy: p.energy, happiness: p.happiness, cleanliness: p.cleanliness,
+        health: p.health, stage: p.stage, asleep: p.asleep, name: p.name,
+        last_tick_at: new Date(p.lastTickAt).toISOString()
+    }).eq("owner_id", currentUserId);
+    if (error) console.error("Не удалось сохранить питомца:", error);
+}
+
+let petHeartbeatTimer = null;
+
+function startPetHeartbeat() {
+    if (petHeartbeatTimer) return;
+    petHeartbeatTimer = setInterval(async () => {
+        if (!db.pet) return;
+        await tickPet({ persist: true, awayCatchUp: false });
+        if (currentPage === "pet") renderPet();
+    }, 30000);
+}
+
+function stopPetHeartbeat() {
+    if (petHeartbeatTimer) {
+        clearInterval(petHeartbeatTimer);
+        petHeartbeatTimer = null;
+    }
+}
+
+async function createPet(speciesId, name) {
+    if (!currentUserId || db.pet) return;
+    const species = getPetSpecies(speciesId);
+    const nowIso = new Date().toISOString();
+    const row = {
+        owner_id: currentUserId,
+        species_id: species.id,
+        name: (name || "").trim().slice(0, 30) || "Пузырёныш",
+        stage: "baby",
+        hunger: 80, energy: 80, happiness: 80, cleanliness: 80, health: 100,
+        asleep: false,
+        last_tick_at: nowIso,
+        created_at: nowIso
+    };
+    const { data, error } = await sb.from("pets").insert(row).select().single();
+    if (error) {
+        console.error(error);
+        toast("Не удалось завести питомца.");
+        return;
+    }
+    db.pet = rowToPet(data);
+    startPetHeartbeat();
+    renderPet();
+}
+
+// Shared by every action button: bumps the given stats (clamped),
+// optionally reduced if the pet is sick — a gentle nudge to nurse it
+// back to full health rather than a hard block — then re-renders
+// immediately and persists in the background, same optimistic-update
+// pattern as toggleLike().
+async function applyPetAction(deltas, { blockIfAsleep = true } = {}) {
+    if (!db.pet) return;
+    if (blockIfAsleep && db.pet.asleep) {
+        toast("Питомец спит — разбуди его сначала 💤");
+        return;
+    }
+    const sickFactor = isPetSick(db.pet) ? 0.7 : 1;
+    const next = { ...db.pet };
+    Object.entries(deltas).forEach(([stat, delta]) => {
+        next[stat] = clampStat(next[stat] + delta * (delta > 0 ? sickFactor : 1));
+    });
+    db.pet = next;
+    renderPet();
+    await savePetToSupabase();
+}
+
+async function feedPet() {
+    await applyPetAction({ hunger: 30, happiness: 3, cleanliness: -4 });
+}
+
+async function playPet() {
+    if (db.pet && db.pet.energy < 10) {
+        toast("Питомец слишком устал играть — дай ему отдохнуть 😴");
+        return;
+    }
+    await applyPetAction({ happiness: 25, energy: -15, hunger: -4, cleanliness: -6 });
+}
+
+async function cleanPet() {
+    await applyPetAction({ cleanliness: 40, happiness: 3 });
+}
+
+async function toggleSleepPet() {
+    if (!db.pet) return;
+    db.pet = { ...db.pet, asleep: !db.pet.asleep };
+    renderPet();
+    await savePetToSupabase();
+}
+
+function petStageLabel(stage) {
+    return stage === "adult" ? "Взрослый" : stage === "juvenile" ? "Подросток" : "Малыш";
+}
+
+function petStatBar(label, icon, value) {
+    const tier = value < 25 ? "low" : value < 55 ? "mid" : "high";
+    return `
+        <div class="pet-stat-row">
+            <span class="pet-stat-label">${icon} ${label}</span>
+            <div class="pet-stat-track">
+                <div class="pet-stat-fill ${tier}" style="width:${Math.round(value)}%"></div>
+            </div>
+        </div>
+    `;
+}
+
+// Builds the creature as inline SVG with CSS custom properties for
+// its two colors, instead of baking hex values into the gradient
+// stops directly — so a future recolor cosmetic only has to set
+// --pet-color-1/--pet-color-2 on this element, no SVG rebuild needed.
+function renderPetCreature(pet) {
+    const species = getPetSpecies(pet.speciesId);
+    const c1 = pet.colorPrimary || species.colorPrimary;
+    const c2 = pet.colorSecondary || species.colorSecondary;
+    const sizeScale = pet.stage === "adult" ? 1 : pet.stage === "juvenile" ? 0.9 : 0.78;
+    const mood = pet.asleep ? "asleep" : isPetSick(pet) ? "sick" : pet.happiness < 30 ? "sad" : "happy";
+    return `
+        <div class="pet-creature-wrap ${mood}" style="--pet-color-1:${c1};--pet-color-2:${c2};--pet-scale:${sizeScale}">
+            <svg viewBox="0 0 220 260" class="pet-creature-svg">
+                <defs>
+                    <radialGradient id="petGloss" cx="38%" cy="28%" r="75%">
+                        <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+                        <stop offset="35%" stop-color="var(--pet-color-1)" stop-opacity="0.9"/>
+                        <stop offset="100%" stop-color="var(--pet-color-2)"/>
+                    </radialGradient>
+                </defs>
+                <ellipse cx="110" cy="245" rx="70" ry="10" fill="rgba(20,60,50,.14)"/>
+                <path d="M40 250 C40 160 45 130 110 130 C175 130 180 160 180 250 Z" fill="url(#petGloss)" stroke="var(--pet-color-2)" stroke-width="4"/>
+                <circle cx="110" cy="78" r="66" fill="url(#petGloss)" stroke="var(--pet-color-2)" stroke-width="4"/>
+                <ellipse cx="85" cy="52" rx="22" ry="15" fill="#fff" opacity="0.55"/>
+                <g class="pet-face">
+                    <circle cx="86" cy="82" r="7" class="pet-eye"/>
+                    <circle cx="134" cy="82" r="7" class="pet-eye"/>
+                    <path class="pet-mouth" d="M92 104 Q110 118 128 104" fill="none" stroke="#1f4d3a" stroke-width="4" stroke-linecap="round"/>
+                </g>
+            </svg>
+        </div>
+    `;
+}
+
+function renderPetCreatePrompt() {
+    const speciesOptions = PET_SPECIES.map(s => `
+        <label class="pet-species-option">
+            <input type="radio" name="petSpeciesChoice" value="${s.id}" ${s === PET_SPECIES[0] ? "checked" : ""}>
+            <div class="pet-species-card" style="--pet-color-1:${s.colorPrimary};--pet-color-2:${s.colorSecondary}">
+                <div class="pet-species-swatch"></div>
+                <div>
+                    <div class="pet-species-name">${escapeHtml(s.name)}</div>
+                    <div class="pet-species-desc">${escapeHtml(s.description)}</div>
+                </div>
+            </div>
+        </label>
+    `).join("");
+    return `
+        <h2 class="section-title">🐣 Питомец</h2>
+        <div class="card pet-create-card">
+            <p>У тебя пока нет питомца. Выбери персонажа и дай ему имя — раскраску и аксессуары можно будет менять позже.</p>
+            <div class="pet-species-list">${speciesOptions}</div>
+            <input id="newPetName" class="pet-name-input" placeholder="Имя питомца" maxlength="30">
+            <button class="primary full" onclick="submitCreatePet()">Завести питомца 🫧</button>
+        </div>
+    `;
+}
+
+function submitCreatePet() {
+    const speciesId = (document.querySelector('input[name="petSpeciesChoice"]:checked') || {}).value || PET_SPECIES[0].id;
+    const name = document.getElementById("newPetName").value;
+    createPet(speciesId, name);
+}
+
+function renderPet() {
+    const page = document.getElementById("page");
+    if (!page) return;
+    if (!db.pet) {
+        page.innerHTML = renderPetCreatePrompt();
+        return;
+    }
+    const pet = db.pet;
+    const sick = isPetSick(pet);
+    page.innerHTML = `
+        <h2 class="section-title">🐣 ${escapeHtml(pet.name)}</h2>
+        <div class="card pet-card">
+            <div class="pet-status-row">
+                <span class="pet-stage-badge">${petStageLabel(pet.stage)}</span>
+                ${pet.asleep ? `<span class="pet-flag asleep">💤 Спит</span>` : ""}
+                ${sick ? `<span class="pet-flag sick">🤒 Приболел</span>` : ""}
+            </div>
+            ${renderPetCreature(pet)}
+            <div class="pet-stats">
+                ${petStatBar("Сытость", "🍎", pet.hunger)}
+                ${petStatBar("Энергия", "⚡", pet.energy)}
+                ${petStatBar("Настроение", "🎈", pet.happiness)}
+                ${petStatBar("Чистота", "🫧", pet.cleanliness)}
+                ${petStatBar("Здоровье", "💚", pet.health)}
+            </div>
+            <div class="pet-actions">
+                <button class="secondary" onclick="feedPet()" ${pet.asleep ? "disabled" : ""}>🍎 Покормить</button>
+                <button class="secondary" onclick="playPet()" ${pet.asleep ? "disabled" : ""}>🎈 Поиграть</button>
+                <button class="secondary" onclick="cleanPet()" ${pet.asleep ? "disabled" : ""}>🫧 Помыть</button>
+                <button class="secondary" onclick="toggleSleepPet()">${pet.asleep ? "☀️ Разбудить" : "💤 Уложить спать"}</button>
+            </div>
+        </div>
+    `;
+}
+
 // Only ever meaningfully accurate for the CURRENTLY LOGGED IN person —
 // see the big comment on ACHIEVEMENTS above. Diffs against what's
 // already saved on their profile so it only writes to the DB (and only
@@ -253,7 +602,8 @@ let db = {
     reports: [],
     blocks: [],
     stories: [],
-    storyViews: []
+    storyViews: [],
+    pet: null // this account's single companion, or null if none created yet
 };
 
 let currentUserId = null;
@@ -1020,12 +1370,13 @@ async function login(event) {
 
 async function logout(){
     stopPresenceHeartbeat();
+    stopPetHeartbeat();
     stopOnlineCountPolling();
     teardownRealtime();
     closeMusicPlayer();
     await sb.auth.signOut();
     currentUserId = null;
-    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],notifications:[],messages:[],music:[],reports:[],blocks:[],stories:[],storyViews:[]};
+    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],notifications:[],messages:[],music:[],reports:[],blocks:[],stories:[],storyViews:[],pet:null};
     showAuth("landing");
 }
 
@@ -1045,6 +1396,7 @@ function startApp(){
         return;
     }
     startPresenceHeartbeat();
+    if (db.pet) startPetHeartbeat();
     setupMessagesRealtime();
     setupFriendRequestsRealtime();
     setupSocialRealtime();
@@ -1189,6 +1541,15 @@ function renderApp(){
 
                 <button
                     class="nav-btn"
+                    data-page="pet"
+                    onclick="navigate('pet')"
+                >
+                    🐣 Питомец
+                    <span id="petNeedsAttentionBadge" class="nav-badge hidden"></span>
+                </button>
+
+                <button
+                    class="nav-btn"
                     data-page="edit"
                     onclick="navigate('edit')"
                 >
@@ -1253,6 +1614,7 @@ function navigate(page, id = null){
         case "friends": renderFriends(); break;
         case "messages": renderMessages(); break;
         case "music": renderMusic(); break;
+        case "pet": renderPet(); break;
         case "edit": renderEditProfile(); break;
         case "search": renderSearchResults((id != null ? id : userSearchQuery).trim().toLowerCase()); break;
         default: renderFeed();
@@ -5266,6 +5628,25 @@ function rowToComment(row) {
     };
 }
 
+function rowToPet(row) {
+    return {
+        ownerId: row.owner_id,
+        speciesId: row.species_id || "aero_orb",
+        name: row.name || "Пузырёныш",
+        stage: row.stage || "baby",
+        hunger: Number(row.hunger),
+        energy: Number(row.energy),
+        happiness: Number(row.happiness),
+        cleanliness: Number(row.cleanliness),
+        health: Number(row.health),
+        asleep: !!row.asleep,
+        colorPrimary: row.color_primary || null,
+        colorSecondary: row.color_secondary || null,
+        lastTickAt: row.last_tick_at ? Date.parse(row.last_tick_at) : Date.now(),
+        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
+    };
+}
+
 function rowToFriend(row) {
     return {
         id: row.id,
@@ -5457,6 +5838,16 @@ function updateNavBadges() {
     // your own profile page (see renderProfile), so this badge on
     // "Профиль" is the only hint an admin gets that reports are waiting.
     setNavBadge("pendingReportsBadge", isAdmin() ? pendingReports().length : 0);
+    setNavBadge("petNeedsAttentionBadge", petNeedsAttention() ? 1 : 0);
+}
+
+// True if any fast stat has dropped low enough that a visit is
+// worthwhile — used only for the little sidebar badge, not for any
+// gameplay effect.
+function petNeedsAttention() {
+    if (!db.pet || db.pet.asleep) return false;
+    const p = db.pet;
+    return p.hunger < 25 || p.cleanliness < 25 || p.happiness < 25 || isPetSick(p);
 }
 
 // Kept as an alias since old inline handlers / other files may still call it.
@@ -5495,7 +5886,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, blocks, stories, storyViews] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, blocks, stories, storyViews, petRow] = await Promise.all([
             sb.from("profiles").select("*").order("created_at", { ascending: true }),
             sb.from("posts").select("*").order("created_at", { ascending: false }),
             sb.from("comments").select("*").order("created_at", { ascending: true }),
@@ -5518,9 +5909,10 @@ async function loadDB() {
             // The select policy already excludes expired rows, so this is
             // just "everyone's currently-active stories".
             sb.from("stories").select("*").order("created_at", { ascending: true }),
-            currentUserId ? sb.from("story_views").select("*") : Promise.resolve({ data: [], error: null })
+            currentUserId ? sb.from("story_views").select("*") : Promise.resolve({ data: [], error: null }),
+            currentUserId ? sb.from("pets").select("*").eq("owner_id", currentUserId).maybeSingle() : Promise.resolve({ data: null, error: null })
         ]);
-        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, blocks, stories, storyViews];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, blocks, stories, storyViews, petRow];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -5536,8 +5928,14 @@ async function loadDB() {
             reports: (reports.data || []).map(rowToReport),
             blocks: (blocks.data || []).map(row => ({ id: row.id, blockerId: row.blocker_id, blockedId: row.blocked_id })),
             stories: (stories.data || []).map(rowToStory),
-            storyViews: (storyViews.data || []).map(row => ({ id: row.id, storyId: row.story_id, viewerId: row.viewer_id }))
+            storyViews: (storyViews.data || []).map(row => ({ id: row.id, storyId: row.story_id, viewerId: row.viewer_id })),
+            pet: petRow.data ? rowToPet(petRow.data) : null
         };
+        // Catches the pet up on however long the app was closed for
+        // (see tickPet's comment for why this — not the 30s heartbeat —
+        // is what applies the slower "away" decay rate), then starts
+        // the heartbeat that ticks it at the normal rate while open.
+        if (db.pet) await tickPet({ persist: true, awayCatchUp: true });
         // Ключ переписки (см. js/crypto.js) подтягивается лениво в
         // rowToMessage/sendMessage — тут больше не нужно ничего готовить
         // заранее и не нужно ничего спрашивать у человека.
@@ -5937,5 +6335,6 @@ Object.assign(window,{
     closeBubblesModal,
     openSharePicker,openShareToProfile,shareToProfile,openShareToChat,shareToChat,focusSharedPost,
     openMusicPicker,selectComposerMusic,removeComposerMusic,
-    openEditPost,renderEditPostModal,handleEditPostImageSelect,removeEditPostImage,removeEditPostMusic,saveEditPost,syncEditPostTextFromDom
+    openEditPost,renderEditPostModal,handleEditPostImageSelect,removeEditPostImage,removeEditPostMusic,saveEditPost,syncEditPostTextFromDom,
+    submitCreatePet,feedPet,playPet,cleanPet,toggleSleepPet
 });
