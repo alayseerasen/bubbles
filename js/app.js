@@ -6,6 +6,7 @@
 const MAX_MUSIC_SIZE = 15 * 1024 * 1024;
 const MAX_COVER_SIZE = 5 * 1024 * 1024;
 const MUSIC_BUCKET = "music";
+const IMAGES_BUCKET = "images";
 const QUICK_REACTIONS = ["❤️", "😂", "👍", "😮", "😢"];
 
 /* ============================================================
@@ -898,12 +899,13 @@ function addStoryPrompt() {
         const file = input.files?.[0];
         input.remove();
         if (!file) return;
+        const storyId = uid("story");
         let image;
-        try { image = await resizeImageFile(file, 1080); }
-        catch (e) { console.error(e); toast("Не удалось обработать фото."); return; }
+        try { image = await uploadImageToStorage(file, `${currentUserId}/story-${storyId}.jpg`, 1080); }
+        catch (e) { console.error(e); toast("Не удалось загрузить фото."); return; }
         const caption = (prompt("Подпись к истории (необязательно):", "") || "").trim();
         const { data, error } = await sb.from("stories")
-            .insert({ id: uid("story"), author_id: currentUserId, image, caption })
+            .insert({ id: storyId, author_id: currentUserId, image, caption })
             .select()
             .single();
         if (error) { console.error(error); toast("Не удалось опубликовать историю."); return; }
@@ -957,6 +959,7 @@ async function deleteCurrentStory() {
     if (!confirm("Удалить эту историю?")) return;
     const { error } = await sb.from("stories").delete().eq("id", story.id);
     if (error) { console.error(error); toast("Не удалось удалить историю."); return; }
+    sb.storage.from(IMAGES_BUCKET).remove([`${story.authorId}/story-${story.id}.jpg`]).catch(() => {});
     db.stories = db.stories.filter(s => s.id !== story.id);
     const remaining = storiesByAuthor(storyViewerState.authorId);
     if (!remaining.length) { closeStoryViewer(); renderApp(); return; }
@@ -1137,6 +1140,29 @@ function resizeImageFile(file, maxDimension, quality = 0.85) {
         img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error("Не удалось обработать изображение.")); };
         img.src = objectUrl;
     });
+}
+
+function dataUrlToBlob(dataUrl) {
+    const [header, base64] = dataUrl.split(",");
+    const mime = header.match(/:(.*?);/)[1];
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+}
+
+// Resizes + uploads a picked file to the images bucket in one go, and
+// returns its public URL — the row then just stores that URL instead of
+// the full base64 image inline. `path` is deterministic (based on the
+// user + post/story id, or just "avatar"/"cover"), so re-uploading the
+// same thing naturally overwrites the old file instead of piling up
+// orphaned ones in Storage.
+async function uploadImageToStorage(file, path, maxDimension) {
+    const dataUrl = await resizeImageFile(file, maxDimension);
+    const blob = dataUrlToBlob(dataUrl);
+    const { error } = await sb.storage.from(IMAGES_BUCKET).upload(path, blob, { contentType: "image/jpeg", upsert: true });
+    if (error) throw error;
+    return sb.storage.from(IMAGES_BUCKET).getPublicUrl(path).data.publicUrl;
 }
 
 function emptyState(icon, title, text) {
@@ -1679,7 +1705,14 @@ function navigate(page, id = null){
 
 function renderFeed(){
     const page = document.getElementById("page");
-    const posts = [...db.posts].sort((a,b) => b.createdAt - a.createdAt);
+    // Pinned posts (max 2, enforced in the DB) always lead the feed,
+    // most-recently-pinned first; everything else follows in normal
+    // newest-first order.
+    const posts = [...db.posts].sort((a,b) => {
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
+        return b.createdAt - a.createdAt;
+    });
 
     page.innerHTML = `
 
@@ -1898,9 +1931,11 @@ function renderPost(post){
     return `
 
         <article
-    class="card post"
+    class="card post ${post.pinned ? "post-pinned" : ""}"
     data-bubbles-post-id="${post.id}"
 >
+
+            ${post.pinned ? `<div class="pinned-badge">📌 Закреплено</div>` : ""}
 
             <div class="post-head">
 
@@ -2011,6 +2046,20 @@ function renderPost(post){
 
 
                 ${
+                    isAdmin()
+                    ? `
+                        <button
+                            class="action-btn"
+                            onclick="togglePinPost('${post.id}')"
+                            title="${post.pinned ? "Открепить" : "Закрепить"}"
+                        >
+                            ${post.pinned ? "📌" : "📍"}
+                        </button>
+                    `
+                    : ""
+                }
+
+                ${
                     post.authorId === currentUserId || isAdmin()
                     ? `
                         <button
@@ -2092,6 +2141,7 @@ async function createPost() {
         toast("Добавь текст, изображение или музыку.");
         return;
     }
+    const postId = uid("post");
     let image = "";
     if (file) {
         if (!file.type.startsWith("image/")) {
@@ -2102,11 +2152,11 @@ async function createPost() {
             toast("Изображение слишком большое. Максимум 20 МБ.");
             return;
         }
-        try { image = await resizeImageFile(file, 1600); }
-        catch (e) { console.error(e); toast("Не удалось обработать изображение."); return; }
+        try { image = await uploadImageToStorage(file, `${currentUserId}/post-${postId}.jpg`, 1600); }
+        catch (e) { console.error(e); toast("Не удалось загрузить изображение."); return; }
     }
     const musicId = selectedComposerMusicId || null;
-    const post = { id: uid("post"), authorId: currentUserId, text, image, musicId, sharedPostId: null, likes: [], createdAt: Date.now() };
+    const post = { id: postId, authorId: currentUserId, text, image, musicId, sharedPostId: null, likes: [], createdAt: Date.now() };
     db.posts.unshift(post);
     const { error } = await sb.from("posts").insert({
         id: post.id, author_id: post.authorId, text: post.text, image: post.image, music_id: post.musicId, likes: [], created_at: new Date(post.createdAt).toISOString()
@@ -2543,7 +2593,7 @@ function removeComposerMusic(){
 function openEditPost(postId){
     const post = db.posts.find(p => p.id === postId);
     if(!post || post.authorId !== currentUserId) return;
-    editPostState = { postId, text: post.text || "", image: post.image || "", musicId: post.musicId || null };
+    editPostState = { postId, text: post.text || "", image: post.image || "", imagePreview: "", imageFile: null, musicId: post.musicId || null };
     renderEditPostModal();
 }
 
@@ -2570,10 +2620,10 @@ function renderEditPostModal(){
         <textarea id="editPostText" maxlength="1000" placeholder="Напиши что-нибудь...">${escapeHtml(editPostState.text)}</textarea>
 
         ${
-            editPostState.image
+            (editPostState.imagePreview || editPostState.image)
             ? `
                 <div class="message-image-preview">
-                    <img src="${editPostState.image}">
+                    <img src="${editPostState.imagePreview || editPostState.image}">
                     <button type="button" class="message-image-remove" onclick="removeEditPostImage()" title="Убрать фото">✕</button>
                 </div>
               `
@@ -2601,8 +2651,14 @@ async function handleEditPostImageSelect(event){
     if(!file.type.startsWith("image/")){ toast("Можно загружать только изображения."); return; }
     if(file.size > 20 * 1024 * 1024){ toast("Изображение слишком большое. Максимум 20 МБ."); return; }
     syncEditPostTextFromDom();
-    try { editPostState.image = await resizeImageFile(file, 1600); }
+    // Only staged here, not uploaded yet — uploading immediately to the
+    // post's (deterministic) storage path would overwrite the live image
+    // right away, so cancelling the edit after picking a new photo would
+    // still leave the old post showing the new one. The actual upload
+    // happens in saveEditPost(), only once they confirm.
+    try { editPostState.imagePreview = await resizeImageFile(file, 1600); }
     catch(e){ console.error(e); toast("Не удалось обработать изображение."); return; }
+    editPostState.imageFile = file;
     renderEditPostModal();
 }
 
@@ -2610,6 +2666,8 @@ function removeEditPostImage(){
     if(!editPostState) return;
     syncEditPostTextFromDom();
     editPostState.image = "";
+    editPostState.imagePreview = "";
+    editPostState.imageFile = null;
     renderEditPostModal();
 }
 
@@ -2626,11 +2684,16 @@ async function saveEditPost(){
     const post = db.posts.find(p => p.id === postId);
     if(!post) return;
     const text = document.getElementById("editPostText")?.value.trim() || "";
-    const image = editPostState.image || "";
     const musicId = editPostState.musicId || null;
-    if(!text && !image && !musicId){
+    if(!text && !editPostState.imageFile && !editPostState.image && !musicId){
         toast("Добавь текст, изображение или музыку.");
         return;
+    }
+
+    let image = editPostState.image || "";
+    if (editPostState.imageFile) {
+        try { image = await uploadImageToStorage(editPostState.imageFile, `${currentUserId}/post-${postId}.jpg`, 1600); }
+        catch (e) { console.error(e); toast("Не удалось загрузить изображение."); return; }
     }
 
     const prev = { text: post.text, image: post.image, musicId: post.musicId };
@@ -2646,6 +2709,11 @@ async function saveEditPost(){
         refreshPostInPlace(postId);
         toast("Не удалось сохранить изменения.");
         return;
+    }
+    // They removed the photo entirely (no new file staged either) — the
+    // old file at this post's deterministic Storage path is now orphaned.
+    if (prev.image && !image && !editPostState.imageFile) {
+        sb.storage.from(IMAGES_BUCKET).remove([`${currentUserId}/post-${postId}.jpg`]).catch(() => {});
     }
     closeBubblesModal();
     toast("Пост обновлён!");
@@ -2665,8 +2733,46 @@ async function deletePost(postId) {
         toast("Не удалось удалить пост.");
         return;
     }
+    // Best-effort cleanup of the image file in Storage — deterministic
+    // path, so this is safe to call even for older posts whose image is
+    // still inline base64 (nothing exists at that path, remove() just
+    // no-ops rather than erroring the whole delete).
+    if (post.image) {
+        sb.storage.from(IMAGES_BUCKET).remove([`${post.authorId}/post-${post.id}.jpg`]).catch(() => {});
+    }
     db.posts = db.posts.filter(p => p.id !== postId);
     db.comments = db.comments.filter(c => c.postId !== postId);
+    renderFeed();
+}
+
+// Admin-only. Max 2 pinned posts at once — checked here for a fast,
+// friendly error message, and enforced for real by a DB trigger (see
+// protect_and_validate_post_pin in supabase.sql) so it can't be beaten
+// by two admins pinning at the same moment.
+async function togglePinPost(postId) {
+    if (!isAdmin()) return;
+    const post = db.posts.find(p => p.id === postId);
+    if (!post) return;
+
+    if (!post.pinned && db.posts.filter(p => p.pinned).length >= 2) {
+        toast("Уже закреплено 2 поста — сначала открепи один из них.");
+        return;
+    }
+
+    const pinned = !post.pinned;
+    const { data, error } = await sb.from("posts")
+        .update({ pinned })
+        .eq("id", postId)
+        .select("pinned,pinned_at")
+        .single();
+    if (error) {
+        console.error(error);
+        toast(error.message?.includes("максимум") ? error.message : "Не удалось изменить закрепление.");
+        return;
+    }
+    post.pinned = !!data.pinned;
+    post.pinnedAt = data.pinned_at ? Date.parse(data.pinned_at) : null;
+    toast(post.pinned ? "Пост закреплён 📌" : "Пост откреплён.");
     renderFeed();
 }
 
@@ -3155,8 +3261,8 @@ async function saveProfile() {
             toast("Аватар слишком большой. Максимум 12 МБ.");
             return;
         }
-        try { user.avatar = await resizeImageFile(avatarFile, 500); }
-        catch (e) { console.error(e); toast("Не удалось обработать аватар."); return; }
+        try { user.avatar = await uploadImageToStorage(avatarFile, `${user.id}/avatar.jpg`, 500); }
+        catch (e) { console.error(e); toast("Не удалось загрузить аватар."); return; }
     }
     if (coverFile) {
         if (!coverFile.type.startsWith("image/")) {
@@ -3167,8 +3273,8 @@ async function saveProfile() {
             toast("Обложка слишком большая. Максимум 12 МБ.");
             return;
         }
-        try { user.cover = await resizeImageFile(coverFile, 1200); }
-        catch (e) { console.error(e); toast("Не удалось обработать обложку."); return; }
+        try { user.cover = await uploadImageToStorage(coverFile, `${user.id}/cover.jpg`, 1200); }
+        catch (e) { console.error(e); toast("Не удалось загрузить обложку."); return; }
     }
     user.username = username;
     user.displayName = displayName;
@@ -5522,6 +5628,7 @@ async function moderateDeleteReportedContent(reportId) {
         return;
 
     if (report.targetType === "post") {
+        const post = db.posts.find(p => p.id === report.targetId);
         const [postResult, commentResult] = await Promise.all([
             sb.from("posts").delete().eq("id", report.targetId),
             sb.from("comments").delete().eq("post_id", report.targetId)
@@ -5529,6 +5636,9 @@ async function moderateDeleteReportedContent(reportId) {
         if (postResult.error || commentResult.error) {
             toast("Не удалось удалить пост.");
             return;
+        }
+        if (post?.image) {
+            sb.storage.from(IMAGES_BUCKET).remove([`${post.authorId}/post-${post.id}.jpg`]).catch(() => {});
         }
         db.posts = db.posts.filter(p => p.id !== report.targetId);
         db.comments = db.comments.filter(c => c.postId !== report.targetId);
@@ -5659,6 +5769,8 @@ function rowToPost(row) {
         musicId: row.music_id || null,
         sharedPostId: row.shared_post_id || null,
         likes: Array.isArray(row.likes) ? row.likes : [],
+        pinned: !!row.pinned,
+        pinnedAt: row.pinned_at ? Date.parse(row.pinned_at) : null,
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
@@ -6375,7 +6487,7 @@ Object.assign(window,{
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
     toggleProfileMusicExpanded,toggleProfileFriendsExpanded,toggleProfileAchievementsExpanded,
-    setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,backfillAchievementsForAllUsers,
+    setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,backfillAchievementsForAllUsers,togglePinPost,
     reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent,
     toggleBlockUser,
     addStoryPrompt,openStoryViewer,closeStoryViewer,storyViewerAdvance,deleteCurrentStory,
