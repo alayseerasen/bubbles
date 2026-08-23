@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mini Games Page</title>
+    <link rel="stylesheet" href="aero-account.css">
+    <style>
+        /* ОСНОВНОЙ ФОН В СТИЛЕ VISTA/WIN7 */
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            overflow: hidden;
+            background: linear-gradient(135deg, #0072ff 0%, #00c6ff 50%, #78ffd6 100%);
+        }
+
+        /* КОНТЕЙНЕР ДЛЯ ПУЗЫРЬКОВ */
+        #bubble-container {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        .bubble {
+            position: absolute;
+            bottom: -150px;
+            background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.1));
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            border-radius: 50%;
+            box-shadow: inset 0 0 20px rgba(255, 255, 255, 0.3);
+            animation: floatUp 12s infinite linear;
+        }
+
+        @keyframes floatUp {
+            0% { transform: translateY(0) rotate(0deg); opacity: 0; }
+            10% { opacity: 0.8; }
+            100% { transform: translateY(-120vh) rotate(360deg); opacity: 0; }
+        }
+
+        /* ГЛАВНАЯ СТЕКЛЯННАЯ ПАНЕЛЬ */
+        .glass-panel {
+            position: relative;
+            z-index: 10;
+            width: 90%;
+            max-width: 1000px;
+            margin: 5vh auto;
+            background: rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            border-radius: 30px;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.2);
+            padding: 40px;
+            height: 75vh;
+            color: white;
+            overflow-y: auto;
+        }
+
+        /* НАВИГАЦИЯ */
+        nav { display: flex; gap: 15px; margin-bottom: 30px; flex-wrap: wrap; }
+        .nav-btn {
+            padding: 10px 25px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.4), rgba(255,255,255,0.1));
+            border: 1px solid rgba(255,255,255,0.5);
+            border-radius: 50px;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        .nav-btn:hover { background: rgba(255,255,255,0.5); transform: translateY(-2px); }
+        .nav-btn.active { background: rgba(255,255,255,0.55); }
+
+        a.nav-btn {
+            display: inline-block;
+            text-decoration: none;
+            box-sizing: border-box;
+        }
+
+        /* СТРАНИЦЫ */
+        .page { display: none; animation: fadeIn 0.5s ease; }
+        .page.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+        .play-btn {
+            display: inline-block;
+            margin-top: 16px;
+            padding: 12px 28px;
+            background: linear-gradient(180deg, #fff, #d9f8ff);
+            color: #08739a;
+            font-weight: 800;
+            text-decoration: none;
+            border-radius: 50px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.2);
+        }
+    </style>
+</head>
+<body>
+
+<div id="bubble-container"></div>
+
+    <div class="glass-panel">
+        <nav>
+            <button class="nav-btn active" data-page="AeroBubblePop" onclick="showPage('AeroBubblePop', this)">Aero Bubble Pop Plus</button>
+            <button class="nav-btn" data-page="AeroShell" onclick="showPage('AeroShell', this)">Aero Shell</button>
+            <button class="nav-btn" data-page="AeroGarden" onclick="showPage('AeroGarden', this)">Aero Garden</button>
+            <button class="nav-btn" data-page="AeroWasteland" onclick="showPage('AeroWasteland', this)">Aero Wasteland</button>
+            <a class="nav-btn" href="bubbling.html">← Aero World</a>
+        </nav>
+
+	<!-- АЭРО БАБЛ ПОП ПЛЮС -->
+       <div id="AeroBubblePop" class="page active">
+    <h1 style="font-size: 2.5rem; margin-bottom: 10px;">Aero Bubble Pop</h1>
+    <p style="font-size: 1.1rem; line-height: 1.4; opacity: 0.9;">
+        <strong>Aero Bubble Pop</strong> — Необходимо поймать всех разноцветных пузырей и остеригаться красных!
+    </p>
+    
+    <div style="background: rgba(255,255,255,0.15); padding: 20px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.3); margin-top: 20px;">
+        <h3 style="margin-top: 0;">Цвета пузырей</h3>
+        <ul style="line-height: 1.8;">
+            <li><strong>Прозрачный</strong> - обычный пузырь, даёт +1 балл, бывает разных диаметров, если пропустить, потеряешь сердце</li>
+            <li><strong>Красный</strong> - тот самый пузырь, которого необходимо бояться, отнимает жизнь, и лучше не нажимать на него</li>
+            <li><strong>Зелёный</strong> - ничем не отличается от прозрачного, просто другой цвет, даёт +1 балл, и пропускать его не надо</li>
+	    <li><strong>Жёлтый</strong> - как прозрачный, ноо, даёт +5 баллов, так что его пропустить будет не очень приятно</li>
+	    <li><strong>Чёрный</strong> - то же самое, как прозрычный, но звук кликания на него, как у красного</li>
+        </ul>
+    </div>
+    <p><a class="play-btn" href="game1new.html">Начать играть!</a></p>
+    <p style="margin-top: 20px; opacity: 0.8;">
+        Приятно провести время!
+    </p>
+</div>
+
+<!-- AERO SHELL -->
+       <div id="AeroShell" class="page">
+    <h1 style="font-size: 2.5rem; margin-bottom: 10px;">Aero Shell</h1>
+    <p style="font-size: 1.1rem; line-height: 1.4; opacity: 0.9;">
+        <strong>Aero Shell</strong> — Двигай курсором и собирай пузыри!
+    </p>
+    
+    <div style="background: rgba(255,255,255,0.15); padding: 20px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.3); margin-top: 20px;">
+        <h3 style="margin-top: 0;">Правила</h3>
+        <p style="line-height: 1.8;">
+            Просто двигай курсор и остеригайся красных пузырей, ведь как только до них дотронешься, то сразу придется начинать сначала!
+        </p>
+    </div>
+    <p><a class="play-btn" href="game2new.html">Начать играть!</a></p>
+    <p style="margin-top: 20px; opacity: 0.8;">
+        Приятно провести время!
+    </p>
+</div>
+
+<!-- AERO GARDEN -->
+       <div id="AeroGarden" class="page">
+    <h1 style="font-size: 2.5rem; margin-bottom: 10px;">🌱 Aero Garden</h1>
+    <p style="font-size: 1.1rem; line-height: 1.4; opacity: 0.9;">
+        <strong>Aero Garden</strong> — маленький цифровой сад прямо посреди старого доброго интернета. Собирай цветы, пока они не исчезли.
+    </p>
+
+    <div style="background: rgba(255,255,255,0.15); padding: 20px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.3); margin-top: 20px;">
+        <h3 style="margin-top: 0;">Как играть</h3>
+        <p style="line-height: 1.8;">
+            Кликай на цветы, пока они не завяли — каждый даёт очки. Чем быстрее реагируешь, тем больше соберёшь.
+        </p>
+    </div>
+    <p><a class="play-btn" href="game3new.html">Начать играть!</a></p>
+    <p style="margin-top: 20px; opacity: 0.8;">
+        Приятно провести время!
+    </p>
+</div>
+
+<!-- AERO WASTELAND -->
+       <div id="AeroWasteland" class="page">
+    <h1 style="font-size: 2.5rem; margin-bottom: 10px;">Aero Wasteland</h1>
+    <p style="font-size: 1.1rem; line-height: 1.4; opacity: 0.9;">
+        <strong>Aero Wasteland</strong> — Улучшай город, с помощью кликов и улучшения!
+    </p>
+    
+    <div style="background: rgba(255,255,255,0.15); padding: 20px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.3); margin-top: 20px;">
+        <h3 style="margin-top: 0;">Улучшения</h3>
+        <ul style="line-height: 1.8;">
+          <li><strong>Свежий ветер</strong> - даёт 0.5 очков</li>
+	  <li><strong>Водяной фильтр</strong> - даёт 3.0 очков</li>
+          <li><strong>Солнечный блик</strong> - даёт 15.0 очков</li>  
+          <li><strong>Стеклянный купол</strong> - даёт * очков (узнайте сами😁)</li>
+        </ul>
+    </div>
+    <p><a class="play-btn" href="game4new.html">Начать играть!</a></p>
+    <p style="margin-top: 20px; opacity: 0.8;">
+        Приятно провести время!
+    </p>
+</div>
+
+    </div>
+
+    <div id="aeroAccountWidget"></div>
+
+    <script>
+        // Переключение страниц
+        function showPage(id, btn) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.getElementById(id).classList.add('active');
+            document.querySelectorAll('.nav-btn[data-page]').forEach(b => b.classList.remove('active'));
+            if (btn) btn.classList.add('active');
+        }
+
+        // Пузырьки
+        function createBubbles() {
+            const container = document.getElementById('bubble-container');
+            for (let i = 0; i < 15; i++) {
+                const b = document.createElement('div');
+                b.className = 'bubble';
+                const size = Math.random() * 40 + 20 + 'px';
+                b.style.width = size; b.style.height = size;
+                b.style.left = Math.random() * 100 + 'vw';
+                b.style.animationDelay = Math.random() * 10 + 's';
+                container.appendChild(b);
+            }
+        }
+
+        window.onload = createBubbles;
+
+        // Эффект пузырьков за мышкой
+        document.addEventListener('mousemove', function(e) {
+            if (Math.random() > 0.8) {
+                const tail = document.createElement('div');
+                tail.className = 'bubble';
+
+                const size = Math.random() * 15 + 5 + 'px';
+                tail.style.width = size;
+                tail.style.height = size;
+
+                tail.style.left = e.pageX + 'px';
+                tail.style.top = e.pageY + 'px';
+
+                tail.style.animation = 'fadeUp 1s forwards';
+                tail.style.bottom = 'auto';
+                tail.style.zIndex = '1000';
+
+                document.body.appendChild(tail);
+
+                setTimeout(() => tail.remove(), 1000);
+            }
+        });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="aero-account.js"></script>
+</body>
+</html>

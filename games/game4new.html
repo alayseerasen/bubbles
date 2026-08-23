@@ -1,0 +1,2534 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+<title>Aero City — EcoWorld</title>
+
+<style>
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+}
+
+body {
+    overflow: hidden;
+    font-family: "Segoe UI", Tahoma, sans-serif;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    color: #17647b;
+    background:
+        linear-gradient(
+            180deg,
+            #24c7ed 0%,
+            #8de8f1 44%,
+            #d5f5d7 70%,
+            #75c98d 100%
+        );
+}
+
+/* =========================
+   SKY
+========================= */
+
+.sky {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    z-index: 0;
+}
+
+.sun {
+    position: absolute;
+    width: 260px;
+    height: 260px;
+    right: -75px;
+    top: -110px;
+    border-radius: 50%;
+
+    background:
+        radial-gradient(
+            circle at 35% 30%,
+            #fff 0 4%,
+            #fffbd1 17%,
+            #ffe45c 48%,
+            #ffc32e 100%
+        );
+
+    box-shadow:
+        0 0 90px rgba(255,236,76,.75);
+}
+
+.cloud {
+    position: absolute;
+    width: 230px;
+    height: 62px;
+
+    border-radius: 100px;
+
+    background: rgba(255,255,255,.65);
+
+    box-shadow:
+        inset 0 -7px 13px rgba(80,170,190,.08),
+        0 12px 25px rgba(0,100,130,.07);
+
+    animation: cloudMove linear infinite;
+}
+
+.cloud::before,
+.cloud::after {
+    content: "";
+    position: absolute;
+    border-radius: 50%;
+    background: inherit;
+}
+
+.cloud::before {
+    width: 100px;
+    height: 100px;
+    left: 30px;
+    bottom: 8px;
+}
+
+.cloud::after {
+    width: 125px;
+    height: 125px;
+    right: 20px;
+    bottom: 0;
+}
+
+.cloud.one {
+    top: 12%;
+    left: -300px;
+    animation-duration: 45s;
+}
+
+.cloud.two {
+    top: 37%;
+    left: -400px;
+    transform: scale(.6);
+    animation-duration: 60s;
+    animation-delay: -22s;
+}
+
+.cloud.three {
+    top: 62%;
+    left: -400px;
+    transform: scale(.42);
+    animation-duration: 70s;
+    animation-delay: -45s;
+}
+
+@keyframes cloudMove {
+    from {
+        margin-left: 0;
+    }
+
+    to {
+        margin-left: calc(100vw + 650px);
+    }
+}
+
+/* =========================
+   OCEAN / HILLS
+========================= */
+
+.water {
+    position: absolute;
+    left: -5%;
+    right: -5%;
+    bottom: -2%;
+    height: 31%;
+
+    background:
+        linear-gradient(
+            180deg,
+            #43d4df 0%,
+            #1daec5 52%,
+            #148da9 100%
+        );
+
+    border-radius: 50% 50% 0 0;
+
+    box-shadow:
+        inset 0 13px 22px rgba(255,255,255,.28);
+}
+
+.hill {
+    position: absolute;
+    bottom: 17%;
+    width: 58%;
+    height: 28%;
+
+    border-radius: 50%;
+
+    background:
+        linear-gradient(
+            180deg,
+            #91dc9d,
+            #48af72
+        );
+
+    box-shadow:
+        inset 0 14px 22px rgba(255,255,255,.25);
+}
+
+.hill.left {
+    left: -16%;
+}
+
+.hill.right {
+    right: -18%;
+    width: 62%;
+    height: 24%;
+    bottom: 19%;
+}
+
+/* =========================
+   CITY
+========================= */
+
+#city {
+    position: fixed;
+    z-index: 4;
+    inset: 0;
+    pointer-events: none;
+}
+
+.city-object {
+    position: absolute;
+    transform-origin: bottom center;
+
+    animation:
+        buildingAppear .45s
+        cubic-bezier(.2,.9,.2,1);
+}
+
+@keyframes buildingAppear {
+    from {
+        opacity: 0;
+        transform:
+            translateY(30px)
+            scale(.7);
+    }
+
+    to {
+        opacity: 1;
+        transform:
+            translateY(0)
+            scale(1);
+    }
+}
+
+.building {
+    position: relative;
+
+    width: 70px;
+    height: 100px;
+
+    border-radius:
+        7px 7px 3px 3px;
+
+    background:
+        linear-gradient(
+            90deg,
+            rgba(255,255,255,.78),
+            rgba(190,238,246,.55),
+            rgba(255,255,255,.82)
+        );
+
+    border:
+        2px solid rgba(255,255,255,.85);
+
+    box-shadow:
+        inset 7px 0 12px rgba(255,255,255,.5),
+        inset -7px 0 12px rgba(0,120,160,.12),
+        0 10px 20px rgba(0,90,120,.16);
+}
+
+.building::before {
+    content: "";
+
+    position: absolute;
+
+    top: 9px;
+    left: 10px;
+    right: 10px;
+
+    height: 6px;
+
+    border-radius: 10px;
+
+    background:
+        linear-gradient(
+            90deg,
+            #58d4e8,
+            #b8f5ef
+        );
+
+    box-shadow:
+        0 16px 0 rgba(78,199,220,.75),
+        0 32px 0 rgba(78,199,220,.7),
+        0 48px 0 rgba(78,199,220,.65);
+}
+
+.building::after {
+    content: "";
+
+    position: absolute;
+
+    left: 50%;
+    bottom: 0;
+
+    width: 18px;
+    height: 32px;
+
+    transform: translateX(-50%);
+
+    border-radius: 8px 8px 0 0;
+
+    background:
+        linear-gradient(
+            90deg,
+            #53b7d0,
+            #b4f2f0
+        );
+
+    border:
+        1px solid rgba(255,255,255,.7);
+}
+
+.building.small {
+    width: 52px;
+    height: 70px;
+}
+
+.building.tall {
+    width: 82px;
+    height: 145px;
+}
+
+.building.round {
+    width: 70px;
+    height: 110px;
+
+    border-radius:
+        35px 35px 5px 5px;
+}
+
+.tree {
+    position: relative;
+
+    width: 70px;
+    height: 95px;
+}
+
+.tree .crown {
+    position: absolute;
+
+    left: 50%;
+    top: 0;
+
+    width: 55px;
+    height: 55px;
+
+    transform: translateX(-50%);
+
+    border-radius: 50%;
+
+    background:
+        radial-gradient(
+            circle at 32% 27%,
+            #d8ffce,
+            #5ecb77 45%,
+            #23965e 100%
+        );
+
+    border:
+        2px solid rgba(255,255,255,.55);
+
+    box-shadow:
+        inset 8px 7px 12px rgba(255,255,255,.35),
+        0 8px 13px rgba(0,90,80,.13);
+}
+
+.tree .trunk {
+    position: absolute;
+
+    left: 50%;
+    bottom: 0;
+
+    width: 12px;
+    height: 46px;
+
+    transform: translateX(-50%);
+
+    border-radius: 6px;
+
+    background:
+        linear-gradient(
+            90deg,
+            #8eaf62,
+            #d0dd91
+        );
+}
+
+.tree.small {
+    transform: scale(.72);
+}
+
+.tree.large {
+    transform: scale(1.2);
+}
+
+.park {
+    position: relative;
+
+    width: 115px;
+    height: 55px;
+
+    border-radius:
+        60% 60% 35% 35%;
+
+    background:
+        linear-gradient(
+            180deg,
+            #8de19c,
+            #43ae6f
+        );
+
+    border:
+        2px solid rgba(255,255,255,.55);
+
+    box-shadow:
+        inset 0 8px 12px rgba(255,255,255,.25);
+}
+
+.park::before {
+    content: "🌳  🌼  🌳";
+
+    position: absolute;
+
+    left: 50%;
+    top: -19px;
+
+    transform:
+        translateX(-50%);
+
+    white-space: nowrap;
+
+    font-size: 25px;
+}
+
+/* =========================
+   ROADS
+========================= */
+
+.road {
+    position: absolute;
+
+    height: 12px;
+
+    border-radius: 20px;
+
+    background:
+        linear-gradient(
+            90deg,
+            #dcecef,
+            #ffffff,
+            #d5e8eb
+        );
+
+    border:
+        1px solid rgba(255,255,255,.9);
+
+    box-shadow:
+        0 5px 12px rgba(0,90,110,.13);
+}
+
+.road.horizontal {
+    width: 65%;
+    left: 18%;
+    bottom: 23%;
+}
+
+.road.vertical {
+    width: 12px;
+    height: 40%;
+    left: 48%;
+    bottom: 18%;
+}
+
+.road::after {
+    content: "";
+
+    position: absolute;
+    inset: 4px 0;
+
+    background:
+        repeating-linear-gradient(
+            90deg,
+            transparent 0 16px,
+            rgba(70,180,195,.35) 16px 24px
+        );
+
+    border-radius: 20px;
+}
+
+/* =========================
+   HUD
+========================= */
+
+#topbar {
+    position: fixed;
+
+    z-index: 100;
+
+    top: 14px;
+    left: 50%;
+
+    transform: translateX(-50%);
+
+    width: min(900px, calc(100% - 28px));
+
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+
+    gap: 10px;
+}
+
+.glass {
+    background:
+        linear-gradient(
+            145deg,
+            rgba(255,255,255,.72),
+            rgba(235,251,255,.38)
+        );
+
+    border:
+        1px solid rgba(255,255,255,.9);
+
+    backdrop-filter: blur(17px);
+    -webkit-backdrop-filter: blur(17px);
+
+    box-shadow:
+        0 10px 25px rgba(0,90,120,.14),
+        inset 0 1px white;
+}
+
+.back {
+    padding: 9px 14px;
+
+    border-radius: 22px;
+
+    color: #27738a;
+    text-decoration: none;
+
+    font-size: 11px;
+    font-weight: 900;
+}
+
+.status {
+    display: flex;
+    align-items: center;
+
+    gap: 14px;
+
+    padding: 7px 13px;
+
+    border-radius: 24px;
+
+    color: #28788b;
+}
+
+.status-item {
+    display: flex;
+    flex-direction: column;
+}
+
+.status-label {
+    font-size: 7px;
+    font-weight: 900;
+    text-transform: uppercase;
+    color: #6b9aa5;
+}
+
+.status-value {
+    font-size: 16px;
+    font-weight: 900;
+    color: #0781a3;
+}
+
+.status-item + .status-item {
+    border-left:
+        1px solid rgba(255,255,255,.7);
+
+    padding-left: 13px;
+}
+
+/* =========================
+   MAIN UI
+========================= */
+
+#game-interface {
+    position: fixed;
+
+    z-index: 80;
+
+    left: 50%;
+    bottom: 17px;
+
+    transform: translateX(-50%);
+
+    width: min(900px, calc(100% - 28px));
+
+    display: grid;
+
+    grid-template-columns:
+        minmax(220px, .8fr)
+        minmax(300px, 1.2fr);
+
+    gap: 12px;
+}
+
+.panel {
+    border-radius: 25px;
+
+    padding: 17px;
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(255,255,255,.67),
+            rgba(235,251,255,.4)
+        );
+
+    border:
+        1px solid rgba(255,255,255,.9);
+
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+
+    box-shadow:
+        0 15px 35px rgba(0,90,120,.15),
+        inset 0 1px white;
+}
+
+/* =========================
+   LEFT PANEL
+========================= */
+
+#rank {
+    margin: 0;
+
+    color: #08779a;
+
+    font-size: 21px;
+    font-weight: 800;
+
+    text-shadow:
+        0 2px white;
+}
+
+.rank-description {
+    margin-top: 3px;
+
+    color: #6c98a2;
+
+    font-size: 9px;
+    font-weight: 800;
+}
+
+#eco-ball {
+    position: relative;
+
+    width: 115px;
+    height: 115px;
+
+    margin: 13px auto 10px;
+
+    display: grid;
+    place-items: center;
+
+    border-radius: 50%;
+
+    cursor: pointer;
+
+    color: white;
+
+    font-size: 17px;
+    font-weight: 900;
+
+    background:
+        radial-gradient(
+            circle at 28% 22%,
+            white 0 5%,
+            rgba(255,255,255,.75) 6% 11%,
+            transparent 12%
+        ),
+        radial-gradient(
+            circle at 40% 40%,
+            #a5f7ed,
+            #38cbe1 45%,
+            #0587bd 100%
+        );
+
+    border:
+        4px solid rgba(255,255,255,.82);
+
+    box-shadow:
+        inset -16px -17px 30px rgba(0,85,135,.2),
+        inset 12px 10px 20px rgba(255,255,255,.55),
+        0 13px 25px rgba(0,100,140,.2);
+
+    transition:
+        transform .08s,
+        filter .2s;
+}
+
+#eco-ball::before {
+    content: "✦";
+
+    position: absolute;
+
+    top: 17px;
+    right: 21px;
+
+    font-size: 15px;
+
+    opacity: .85;
+}
+
+#eco-ball:active {
+    transform: scale(.91);
+}
+
+#eco-ball:hover {
+    filter:
+        brightness(1.06);
+}
+
+.tap-label {
+    text-align: center;
+
+    color: #578a98;
+
+    font-size: 9px;
+    font-weight: 900;
+
+    text-transform: uppercase;
+    letter-spacing: .08em;
+}
+
+#pps {
+    margin-top: 8px;
+
+    text-align: center;
+
+    color: #16849d;
+
+    font-size: 11px;
+    font-weight: 900;
+}
+
+/* =========================
+   SHOP
+========================= */
+
+.shop-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    margin-bottom: 9px;
+}
+
+.shop-title h3 {
+    margin: 0;
+
+    color: #08779a;
+
+    font-size: 15px;
+}
+
+.shop-title span {
+    color: #7aa2aa;
+
+    font-size: 8px;
+    font-weight: 900;
+}
+
+#shop-list {
+    display: grid;
+
+    grid-template-columns:
+        repeat(2, 1fr);
+
+    gap: 8px;
+}
+
+.upgrade-card {
+    position: relative;
+
+    min-height: 67px;
+
+    display: flex;
+    align-items: center;
+    gap: 9px;
+
+    padding: 9px;
+
+    border-radius: 16px;
+
+    cursor: pointer;
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(255,255,255,.66),
+            rgba(220,248,250,.38)
+        );
+
+    border:
+        1px solid rgba(255,255,255,.78);
+
+    box-shadow:
+        inset 0 1px white,
+        0 5px 12px rgba(0,100,130,.06);
+
+    transition:
+        transform .16s,
+        opacity .16s,
+        filter .16s;
+}
+
+.upgrade-card:not(.disabled):hover {
+    transform:
+        translateY(-2px);
+
+    box-shadow:
+        inset 0 1px white,
+        0 8px 17px rgba(0,100,130,.13);
+}
+
+.upgrade-card:not(.disabled):active {
+    transform:
+        scale(.96);
+}
+
+.upgrade-card.disabled {
+    opacity: .48;
+    filter: saturate(.55);
+}
+
+.item-icon {
+    width: 35px;
+    height: 35px;
+
+    flex-shrink: 0;
+
+    display: grid;
+    place-items: center;
+
+    border-radius: 12px;
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(255,255,255,.9),
+            rgba(157,228,236,.5)
+        );
+
+    border:
+        1px solid rgba(255,255,255,.8);
+
+    font-size: 19px;
+
+    box-shadow:
+        inset 0 1px white;
+}
+
+.item-info {
+    min-width: 0;
+    flex: 1;
+}
+
+.item-name {
+    color: #28778b;
+
+    font-size: 10px;
+    font-weight: 900;
+
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.item-cost {
+    margin-top: 3px;
+
+    color: #7198a0;
+
+    font-size: 8px;
+    font-weight: 800;
+}
+
+.item-cost strong {
+    color: #0781a3;
+}
+
+.badge {
+    min-width: 25px;
+    height: 25px;
+
+    display: grid;
+    place-items: center;
+
+    border-radius: 50%;
+
+    color: white;
+
+    background:
+        linear-gradient(
+            145deg,
+            #70ddeb,
+            #0795bf
+        );
+
+    font-size: 9px;
+    font-weight: 900;
+
+    box-shadow:
+        inset 0 1px white;
+}
+
+/* =========================
+   FLOATING +1
+========================= */
+
+.tap-pop {
+    position: fixed;
+
+    z-index: 150;
+
+    pointer-events: none;
+
+    color: white;
+
+    font-size: 15px;
+    font-weight: 900;
+
+    text-shadow:
+        0 1px 3px rgba(0,90,120,.4);
+
+    animation:
+        popUp .8s
+        ease-out forwards;
+}
+
+@keyframes popUp {
+    0% {
+        opacity: 0;
+        transform:
+            translate(-50%, 0)
+            scale(.7);
+    }
+
+    15% {
+        opacity: 1;
+    }
+
+    100% {
+        opacity: 0;
+        transform:
+            translate(-50%, -65px)
+            scale(1.1);
+    }
+}
+
+/* =========================
+   NOTIFICATION
+========================= */
+
+#notice {
+    position: fixed;
+
+    z-index: 200;
+
+    left: 50%;
+    top: 78px;
+
+    transform:
+        translate(-50%, -20px);
+
+    opacity: 0;
+
+    padding: 8px 13px;
+
+    border-radius: 20px;
+
+    color: #26788c;
+
+    font-size: 9px;
+    font-weight: 900;
+
+    pointer-events: none;
+
+    transition:
+        opacity .25s,
+        transform .25s;
+}
+
+#notice.show {
+    opacity: 1;
+
+    transform:
+        translate(-50%, 0);
+}
+
+/* =========================
+   RESPONSIVE
+========================= */
+
+@media (max-width: 700px) {
+
+    body {
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+
+    .sun {
+        width: 190px;
+        height: 190px;
+    }
+
+    #topbar {
+        top: 9px;
+
+        width:
+            calc(100% - 18px);
+    }
+
+    .back {
+        padding: 8px 11px;
+    }
+
+    .status {
+        gap: 9px;
+        padding: 6px 9px;
+    }
+
+    .status-value {
+        font-size: 13px;
+    }
+
+    .status-item + .status-item {
+        padding-left: 9px;
+    }
+
+    #game-interface {
+        bottom: 9px;
+
+        width:
+            calc(100% - 18px);
+
+        grid-template-columns:
+            1fr;
+
+        gap: 8px;
+
+        max-height:
+            calc(100vh - 75px);
+
+        overflow-y: auto;
+
+        padding-bottom: 2px;
+    }
+
+    .panel {
+        padding: 12px;
+
+        border-radius: 21px;
+    }
+
+    #rank {
+        font-size: 17px;
+    }
+
+    #eco-ball {
+        width: 82px;
+        height: 82px;
+
+        margin: 8px auto;
+    }
+
+    #shop-list {
+        grid-template-columns:
+            repeat(2, 1fr);
+    }
+
+    .upgrade-card {
+        min-height: 59px;
+        padding: 7px;
+    }
+
+    .item-icon {
+        width: 31px;
+        height: 31px;
+
+        font-size: 17px;
+    }
+
+    .item-name {
+        font-size: 9px;
+    }
+
+    .item-cost {
+        font-size: 7px;
+    }
+
+    .badge {
+        min-width: 22px;
+        height: 22px;
+    }
+
+    .city-object {
+        transform:
+            scale(.78);
+    }
+
+    .building.tall {
+        transform:
+            scale(.75);
+    }
+}
+
+@media (max-height: 650px) {
+
+    #game-interface {
+        bottom: 5px;
+    }
+
+    #eco-ball {
+        width: 72px;
+        height: 72px;
+        margin: 5px auto;
+    }
+
+    .panel {
+        padding: 9px;
+    }
+}
+</style>
+<link rel="stylesheet" href="aero-account.css">
+</head>
+
+<body>
+
+<div class="sky">
+
+    <div class="sun"></div>
+
+    <div class="cloud one"></div>
+    <div class="cloud two"></div>
+    <div class="cloud three"></div>
+
+    <div class="hill left"></div>
+    <div class="hill right"></div>
+
+    <div class="water"></div>
+
+</div>
+
+
+<div id="city">
+
+    <div class="road horizontal"></div>
+    <div class="road vertical"></div>
+
+</div>
+
+
+<div id="topbar">
+
+    <a
+        href="minigamespage.html"
+        class="back glass"
+    >
+        ← мини-игры
+    </a>
+
+
+    <div class="status glass">
+
+        <div class="status-item">
+
+            <span class="status-label">
+                вода
+            </span>
+
+            <span
+                class="status-value"
+                id="score"
+            >
+                0
+            </span>
+
+        </div>
+
+
+        <div class="status-item">
+
+            <span class="status-label">
+                приток
+            </span>
+
+            <span
+                class="status-value"
+                id="pps"
+            >
+                0/сек
+            </span>
+
+        </div>
+
+    </div>
+
+</div>
+
+
+<div
+    id="notice"
+    class="glass"
+>
+    новое место в городе
+</div>
+
+
+<div id="game-interface">
+
+    <div class="panel">
+
+        <h2 id="rank">
+            Маленький оазис
+        </h2>
+
+        <div class="rank-description">
+            город растёт вместе с тобой
+        </div>
+
+
+        <div
+            id="eco-ball"
+            aria-label="Получить воду"
+        >
+            AERO
+        </div>
+
+
+        <div class="tap-label">
+            нажми на источник воды
+        </div>
+
+
+        <div id="pps">
+            0/сек
+        </div>
+
+    </div>
+
+
+    <div class="panel">
+
+        <div class="shop-title">
+
+            <h3>
+                Развитие города
+            </h3>
+
+            <span>
+                покупки остаются
+            </span>
+
+        </div>
+
+
+        <div id="shop-list"></div>
+
+    </div>
+
+</div>
+
+
+<audio
+    id="bg-music"
+    loop
+    preload="auto"
+>
+    <source
+        src="SABBATH.mp3"
+        type="audio/mpeg"
+    >
+</audio>
+
+
+<script>
+
+/* =========================================
+   ORIGINAL GAME LOGIC
+   Сохранены:
+   - вода
+   - общий счёт
+   - пассивный приток
+   - покупки
+   - растущая цена
+   - уровни города
+   - localStorage
+   - SABBATH.mp3
+========================================= */
+
+let state = {
+
+    score: 0,
+
+    totalScore: 0,
+
+    upgrades: [
+
+        {
+            id: 0,
+            name: "Свежий ветер",
+            cost: 15,
+            power: 0.5,
+            count: 0,
+            icon: "🍃"
+        },
+
+        {
+            id: 1,
+            name: "Водяной фильтр",
+            cost: 100,
+            power: 3,
+            count: 0,
+            icon: "💧"
+        },
+
+        {
+            id: 2,
+            name: "Солнечный блик",
+            cost: 600,
+            power: 15,
+            count: 0,
+            icon: "☀️"
+        },
+
+        {
+            id: 3,
+            name: "Стеклянный купол",
+            cost: 3000,
+            power: 80,
+            count: 0,
+            icon: "💎"
+        }
+
+    ],
+
+    visuals: []
+
+};
+
+
+const music =
+    document.getElementById(
+        "bg-music"
+    );
+
+
+let musicStarted =
+    false;
+
+
+function startMusic() {
+
+    if (
+        !musicStarted
+    ) {
+
+        music
+            .play()
+            .catch(() => {});
+
+        musicStarted =
+            true;
+
+    }
+
+}
+
+
+/* =========================================
+   LOAD SAVE
+========================================= */
+
+const saved =
+    localStorage.getItem(
+        "aero_final_v1"
+    );
+
+
+if (
+    saved
+) {
+
+    try {
+
+        const parsed =
+            JSON.parse(saved);
+
+
+        /*
+            Сохраняем совместимость
+            со старым сохранением.
+        */
+
+        if (
+            parsed &&
+            typeof parsed === "object"
+        ) {
+
+            state =
+                parsed;
+
+        }
+
+    }
+
+    catch {
+        console.log(
+            "Не удалось загрузить сохранение."
+        );
+    }
+
+}
+
+
+/* =========================================
+   SAVE
+========================================= */
+
+function save() {
+
+    localStorage.setItem(
+        "aero_final_v1",
+        JSON.stringify(
+            state
+        )
+    );
+
+}
+
+
+/* =========================================
+   SHOP
+========================================= */
+
+function initShop() {
+
+    const list =
+        document.getElementById(
+            "shop-list"
+        );
+
+
+    list.innerHTML =
+        "";
+
+
+    state.upgrades.forEach(
+        (
+            item,
+            index
+        ) => {
+
+            const card =
+                document.createElement(
+                    "div"
+                );
+
+
+            card.className =
+                "upgrade-card";
+
+
+            card.id =
+                `upg-${index}`;
+
+
+            card.addEventListener(
+                "click",
+                () => {
+
+                    startMusic();
+
+                    buyUpgrade(
+                        index
+                    );
+
+                }
+            );
+
+
+            card.innerHTML = `
+
+                <div class="item-icon">
+                    ${item.icon}
+                </div>
+
+                <div class="item-info">
+
+                    <div class="item-name">
+                        ${item.name}
+                    </div>
+
+                    <div class="item-cost">
+                        цена:
+                        <strong>
+                            <span id="cost-${index}">
+                                ${item.cost}
+                            </span>
+                            💧
+                        </strong>
+                    </div>
+
+                </div>
+
+                <div
+                    class="badge"
+                    id="count-${index}"
+                >
+                    ${item.count}
+                </div>
+
+            `;
+
+
+            list.appendChild(
+                card
+            );
+
+        }
+    );
+
+}
+
+
+/* =========================================
+   BUY
+========================================= */
+
+function buyUpgrade(
+    index
+) {
+
+    const item =
+        state.upgrades[index];
+
+
+    if (
+        state.score <
+        item.cost
+    ) {
+
+        showNotice(
+            "Пока не хватает воды"
+        );
+
+        return;
+
+    }
+
+
+    state.score -=
+        item.cost;
+
+
+    item.count++;
+
+
+    item.cost =
+        Math.ceil(
+            item.cost * 1.3
+        );
+
+
+    addVisual(
+        item.icon,
+        index
+    );
+
+
+    save();
+
+
+    updateDisplay();
+
+
+    showNotice(
+        getPurchaseMessage(
+            index
+        )
+    );
+
+}
+
+
+/* =========================================
+   PURCHASE TEXT
+========================================= */
+
+function getPurchaseMessage(
+    index
+) {
+
+    const messages = [
+
+        "Ветер пришёл в город.",
+
+        "Вода стала чище.",
+
+        "Солнце теперь работает на город.",
+
+        "Стеклянный купол почти готов."
+
+    ];
+
+
+    return (
+        messages[index] ||
+        "Город стал немного лучше."
+    );
+
+}
+
+
+/* =========================================
+   DISPLAY
+========================================= */
+
+function updateDisplay() {
+
+    document
+        .getElementById(
+            "score"
+        )
+        .innerText =
+        Math.floor(
+            state.score
+        );
+
+
+    const pps =
+        state.upgrades.reduce(
+            (
+                sum,
+                upgrade
+            ) =>
+                sum +
+                (
+                    upgrade.count *
+                    upgrade.power
+                ),
+            0
+        );
+
+
+    const ppsText =
+        pps.toFixed(1) +
+        "/сек";
+
+
+    document
+        .getElementById(
+            "pps"
+        )
+        .innerText =
+        ppsText;
+
+
+    document
+        .querySelectorAll(
+            "#pps"
+        )
+        .forEach(
+            element => {
+
+                element.innerText =
+                    "Приток: " +
+                    ppsText;
+
+            }
+        );
+
+
+    state.upgrades.forEach(
+        (
+            item,
+            index
+        ) => {
+
+            const card =
+                document.getElementById(
+                    `upg-${index}`
+                );
+
+
+            if (!card) {
+                return;
+            }
+
+
+            document
+                .getElementById(
+                    `cost-${index}`
+                )
+                .innerText =
+                item.cost;
+
+
+            document
+                .getElementById(
+                    `count-${index}`
+                )
+                .innerText =
+                item.count;
+
+
+            if (
+                state.score >=
+                item.cost
+            ) {
+
+                card.classList.remove(
+                    "disabled"
+                );
+
+            }
+
+            else {
+
+                card.classList.add(
+                    "disabled"
+                );
+
+            }
+
+        }
+    );
+
+
+    updateRank();
+
+}
+
+
+/* =========================================
+   CITY RANK
+========================================= */
+
+function updateRank() {
+
+    let rank =
+        "Маленький оазис";
+
+
+    let description =
+        "город только начинает расти";
+
+
+    if (
+        state.totalScore >= 100
+    ) {
+
+        rank =
+            "Зелёный оазис";
+
+        description =
+            "здесь уже хочется остаться";
+
+    }
+
+
+    if (
+        state.totalScore >= 500
+    ) {
+
+        rank =
+            "Aero Town";
+
+        description =
+            "стекло, вода и немного солнца";
+
+    }
+
+
+    if (
+        state.totalScore >= 1500
+    ) {
+
+        rank =
+            "Aero City";
+
+        description =
+            "маленький город будущего";
+
+    }
+
+
+    if (
+        state.totalScore >= 5000
+    ) {
+
+        rank =
+            "Eco Metropolis";
+
+        description =
+            "кажется, город уже живёт сам";
+
+    }
+
+
+    if (
+        state.totalScore >= 15000
+    ) {
+
+        rank =
+            "Aero Paradise";
+
+        description =
+            "куда ни посмотри — вода и зелень";
+
+    }
+
+
+    document
+        .getElementById(
+            "rank"
+        )
+        .innerText =
+        rank;
+
+
+    document
+        .querySelector(
+            ".rank-description"
+        )
+        .innerText =
+        description;
+
+}
+
+
+/* =========================================
+   CITY VISUALS
+========================================= */
+
+function addVisual(
+    emoji,
+    upgradeIndex
+) {
+
+    const visual = {
+
+        emoji,
+
+        x:
+            10 +
+            Math.random() * 80,
+
+        y:
+            35 +
+            Math.random() * 48,
+
+        type:
+            upgradeIndex
+
+    };
+
+
+    state.visuals =
+        state.visuals || [];
+
+
+    state.visuals.push(
+        visual
+    );
+
+
+    drawSingleVisual(
+        visual
+    );
+
+}
+
+
+/* =========================================
+   DRAW CITY OBJECT
+========================================= */
+
+function drawSingleVisual(
+    visual
+) {
+
+    /*
+        Не используем emoji как
+        основную графику города:
+        здания действительно выглядят
+        как часть одного визуального мира.
+    */
+
+    const wrapper =
+        document.createElement(
+            "div"
+        );
+
+
+    wrapper.className =
+        "city-object";
+
+
+    wrapper.style.left =
+        visual.x + "vw";
+
+
+    wrapper.style.top =
+        visual.y + "vh";
+
+
+    let object;
+
+
+    if (
+        visual.type === 0
+    ) {
+
+        object =
+            createTree();
+
+    }
+
+    else if (
+        visual.type === 1
+    ) {
+
+        object =
+            createBuilding(
+                "small"
+            );
+
+    }
+
+    else if (
+        visual.type === 2
+    ) {
+
+        object =
+            createBuilding(
+                "tall"
+            );
+
+    }
+
+    else {
+
+        object =
+            createBuilding(
+                "round"
+            );
+
+    }
+
+
+    wrapper.appendChild(
+        object
+    );
+
+
+    document
+        .getElementById(
+            "city"
+        )
+        .appendChild(
+            wrapper
+        );
+
+}
+
+
+/* =========================================
+   CREATE TREE
+========================================= */
+
+function createTree() {
+
+    const tree =
+        document.createElement(
+            "div"
+        );
+
+
+    tree.className =
+        "tree";
+
+
+    const crown =
+        document.createElement(
+            "div"
+        );
+
+
+    crown.className =
+        "crown";
+
+
+    const trunk =
+        document.createElement(
+            "div"
+        );
+
+
+    trunk.className =
+        "trunk";
+
+
+    tree.appendChild(
+        crown
+    );
+
+
+    tree.appendChild(
+        trunk
+    );
+
+
+    return tree;
+
+}
+
+
+/* =========================================
+   CREATE BUILDING
+========================================= */
+
+function createBuilding(
+    size
+) {
+
+    const building =
+        document.createElement(
+            "div"
+        );
+
+
+    building.className =
+        "building " +
+        size;
+
+
+    return building;
+
+}
+
+
+/* =========================================
+   RESTORE CITY
+========================================= */
+
+function restoreVisuals() {
+
+    const city =
+        document.getElementById(
+            "city"
+        );
+
+
+    city
+        .querySelectorAll(
+            ".city-object"
+        )
+        .forEach(
+            element =>
+                element.remove()
+        );
+
+
+    if (
+        !Array.isArray(
+            state.visuals
+        )
+    ) {
+
+        state.visuals =
+            [];
+
+    }
+
+
+    /*
+        Старые версии игры сохраняли
+        emoji-визуалы.
+
+        Поэтому восстанавливаем их
+        по типу, если он есть.
+    */
+
+    state.visuals.forEach(
+        visual => {
+
+            if (
+                typeof visual.type !==
+                "number"
+            ) {
+
+                visual.type =
+                    0;
+
+            }
+
+
+            drawSingleVisual(
+                visual
+            );
+
+        }
+    );
+
+}
+
+
+/* =========================================
+   CLICK EFFECT
+========================================= */
+
+function createTapPop(
+    x,
+    y
+) {
+
+    const pop =
+        document.createElement(
+            "div"
+        );
+
+
+    pop.className =
+        "tap-pop";
+
+
+    pop.innerText =
+        "+1 💧";
+
+
+    pop.style.left =
+        x + "px";
+
+
+    pop.style.top =
+        y + "px";
+
+
+    document
+        .body
+        .appendChild(
+            pop
+        );
+
+
+    setTimeout(
+        () => {
+
+            pop.remove();
+
+        },
+        800
+    );
+
+}
+
+
+/* =========================================
+   NOTICE
+========================================= */
+
+let noticeTimeout;
+
+
+function showNotice(
+    text
+) {
+
+    const notice =
+        document.getElementById(
+            "notice"
+        );
+
+
+    notice.innerText =
+        text;
+
+
+    notice.classList.add(
+        "show"
+    );
+
+
+    clearTimeout(
+        noticeTimeout
+    );
+
+
+    noticeTimeout =
+        setTimeout(
+            () => {
+
+                notice.classList.remove(
+                    "show"
+                );
+
+            },
+            1700
+        );
+
+}
+
+
+/* =========================================
+   MAIN CLICK
+========================================= */
+
+document
+    .getElementById(
+        "eco-ball"
+    )
+    .addEventListener(
+        "click",
+        event => {
+
+            startMusic();
+
+
+            state.score +=
+                1;
+
+
+            state.totalScore +=
+                1;
+
+
+            createTapPop(
+                event.clientX,
+                event.clientY
+            );
+
+
+            updateDisplay();
+
+
+            save();
+
+        }
+    );
+
+
+/* =========================================
+   TOUCH
+========================================= */
+
+document
+    .getElementById(
+        "eco-ball"
+    )
+    .addEventListener(
+        "touchstart",
+        event => {
+
+            event.preventDefault();
+
+        },
+        {
+            passive: false
+        }
+    );
+
+
+/* =========================================
+   PASSIVE INCOME
+========================================= */
+
+let lastTime =
+    performance.now();
+
+
+function passiveLoop(
+    now
+) {
+
+    const delta =
+        Math.min(
+            (
+                now -
+                lastTime
+            ) / 1000,
+            1
+        );
+
+
+    lastTime =
+        now;
+
+
+    const pps =
+        state.upgrades.reduce(
+            (
+                sum,
+                upgrade
+            ) =>
+                sum +
+                (
+                    upgrade.count *
+                    upgrade.power
+                ),
+            0
+        );
+
+
+    if (
+        pps > 0
+    ) {
+
+        state.score +=
+            pps * delta;
+
+
+        /*
+            Не сохраняем localStorage
+            каждую миллисекунду.
+        */
+
+    }
+
+
+    updateDisplay();
+
+
+    requestAnimationFrame(
+        passiveLoop
+    );
+
+}
+
+
+requestAnimationFrame(
+    passiveLoop
+);
+
+
+/* =========================================
+   PERIODIC SAVE
+========================================= */
+
+setInterval(
+    () => {
+
+        save();
+
+    },
+    5000
+);
+
+
+/* =========================================
+   CITY DECORATION
+========================================= */
+
+function createInitialDecoration() {
+
+    const city =
+        document.getElementById(
+            "city"
+        );
+
+
+    /*
+        Несколько декоративных деревьев
+        существуют с самого начала,
+        чтобы город не выглядел пустым.
+    */
+
+    const decorations = [
+
+        {
+            x: 8,
+            y: 68,
+            scale: .75
+        },
+
+        {
+            x: 83,
+            y: 65,
+            scale: .85
+        },
+
+        {
+            x: 23,
+            y: 76,
+            scale: .55
+        },
+
+        {
+            x: 70,
+            y: 74,
+            scale: .65
+        }
+
+    ];
+
+
+    decorations.forEach(
+        data => {
+
+            const wrapper =
+                document.createElement(
+                    "div"
+                );
+
+
+            wrapper.className =
+                "city-object";
+
+
+            wrapper.style.left =
+                data.x + "vw";
+
+
+            wrapper.style.top =
+                data.y + "vh";
+
+
+            wrapper.style.opacity =
+                ".85";
+
+
+            const tree =
+                createTree();
+
+
+            tree.style.transform =
+                `scale(${data.scale})`;
+
+
+            wrapper.appendChild(
+                tree
+            );
+
+
+            city.appendChild(
+                wrapper
+            );
+
+        }
+    );
+
+}
+
+
+/* =========================================
+   INIT
+========================================= */
+
+initShop();
+
+createInitialDecoration();
+
+restoreVisuals();
+
+updateDisplay();
+
+
+/*
+    Если уже есть сохранённый город,
+    показываем небольшое сообщение.
+*/
+
+if (
+    state.totalScore > 0
+) {
+
+    setTimeout(
+        () => {
+
+            showNotice(
+                "С возвращением в твой город"
+            );
+
+        },
+        500
+    );
+
+}
+
+
+/* =========================================
+   KEYBOARD
+========================================= */
+
+document.addEventListener(
+    "keydown",
+    event => {
+
+        if (
+            event.code ===
+            "Space"
+        ) {
+
+            event.preventDefault();
+
+            document
+                .getElementById(
+                    "eco-ball"
+                )
+                .click();
+
+        }
+
+    }
+);
+
+
+/* =========================================
+   PREVENT CONTEXT MENU
+========================================= */
+
+document.addEventListener(
+    "contextmenu",
+    event => {
+
+        event.preventDefault();
+
+    }
+);
+
+</script>
+
+<div id="aeroAccountWidget"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="aero-account.js"></script>
+</body>
+</html>
