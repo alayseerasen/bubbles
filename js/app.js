@@ -137,13 +137,77 @@ async function persistAchievements(user, unlockedIds) {
     if (currentPage === "profile" && selectedProfileId === user.id) renderProfile(user.id);
 }
 
+// One-off catch-up for people who joined/posted/friended BEFORE
+// achievements existed — recomputeAchievements() only ever runs for
+// whoever's currently logged in, so everyone else just sits at 0 until
+// they open the app themselves. This runs the same checks for every
+// user using only PUBLIC data (posts/comments/friends/likes/tracks) —
+// the private ones (your own message count, saved music) are guarded
+// with `id === currentUserId` in ACHIEVEMENTS on purpose, so this can
+// never grant those to someone else; only the person themselves can,
+// by logging in normally.
+async function backfillAchievementsForAllUsers() {
+    if (!isAdmin()) return;
+    if (!confirm(
+        `Пересчитать достижения для всех ${db.users.length} пользователей на основе постов/друзей/лайков/треков?\n\n` +
+        `Личные достижения (сообщения, сохранённая музыка) так не считаются — их видно только когда человек сам заходит в приложение.`
+    )) return;
+
+    toast("Пересчитываю достижения для всех…", 4000);
+    let updatedCount = 0;
+    for (const user of db.users) {
+        const computedIds = ACHIEVEMENTS
+            .filter(a => a.check)
+            .filter(a => { try { return a.check(user.id); } catch (e) { console.error(e); return false; } })
+            .map(a => a.id);
+        const newSet = new Set([...user.unlockedAchievements, ...computedIds]);
+        if (newSet.size === user.unlockedAchievements.length) continue; // nothing new for this person
+        const newList = [...newSet];
+        const { error } = await sb.from("profiles")
+            .update({ unlocked_achievements: newList, achievement_level: newList.length })
+            .eq("id", user.id);
+        if (error) { console.error(error); continue; }
+        user.unlockedAchievements = newList;
+        user.achievementLevel = newList.length;
+        updatedCount++;
+    }
+    toast(`Готово! Обновлено пользователей: ${updatedCount} из ${db.users.length}.`, 6000);
+    renderApp();
+}
+
+function renderAchievementsBackfillCard() {
+    return `
+        <div class="card" style="margin-top:14px;">
+            <h3 style="margin-top:0;">🏆 Достижения задним числом</h3>
+            <div style="opacity:.7;font-size:14px;margin-bottom:10px;">
+                Разово досчитывает достижения всем, кто зарегистрировался
+                до того, как эта фича появилась (по постам, друзьям,
+                лайкам и трекам). Можно жать сколько угодно раз — лишнего
+                не насчитает.
+            </div>
+            <button class="secondary" onclick="backfillAchievementsForAllUsers()">🔁 Пересчитать всем</button>
+        </div>
+    `;
+}
+
+const ACHIEVEMENTS_PREVIEW_COUNT = 6;
+
 function renderAchievementsGrid(user) {
+    const expanded = profileAchievementsExpanded;
+    // Collapsed view leads with whatever's actually unlocked (more fun to
+    // look at + more relevant than just "the first N in config order"),
+    // then fills the rest of the preview with locked ones.
+    const ordered = expanded ? ACHIEVEMENTS : [
+        ...ACHIEVEMENTS.filter(a => user.unlockedAchievements.includes(a.id)),
+        ...ACHIEVEMENTS.filter(a => !user.unlockedAchievements.includes(a.id))
+    ];
+    const shown = expanded ? ordered : ordered.slice(0, ACHIEVEMENTS_PREVIEW_COUNT);
     return `
         <h2 class="section-title">
             🏆 Достижения ${statusBadgeHtml(user)}
         </h2>
         <div class="achievements-grid">
-            ${ACHIEVEMENTS.map(a => {
+            ${shown.map(a => {
                 const unlocked = user.unlockedAchievements.includes(a.id);
                 return `
                     <div class="achievement-card ${unlocked ? "unlocked" : "locked"}" title="${escapeHtml(a.description)}">
@@ -154,6 +218,15 @@ function renderAchievementsGrid(user) {
                 `;
             }).join("")}
         </div>
+        ${
+            ACHIEVEMENTS.length > ACHIEVEMENTS_PREVIEW_COUNT
+            ? `
+                <button class="secondary full profile-expand-btn" onclick="toggleProfileAchievementsExpanded()">
+                    ${expanded ? "Свернуть ↑" : `Все ${ACHIEVEMENTS.length} →`}
+                </button>
+            `
+            : ""
+        }
     `;
 }
 
@@ -188,6 +261,7 @@ let currentPage = "feed";
 let selectedProfileId = null;
 let profileMusicExpanded = false;
 let profileFriendsExpanded = false;
+let profileAchievementsExpanded = false;
 let lastProfileRenderId = null;
 let selectedChatId = null;
 let selectedMessageImage = null; // resized data URL staged to send in the current chat, or null
@@ -1793,6 +1867,11 @@ function toggleProfileFriendsExpanded(){
     renderProfile(lastProfileRenderId);
 }
 
+function toggleProfileAchievementsExpanded(){
+    profileAchievementsExpanded = !profileAchievementsExpanded;
+    renderProfile(lastProfileRenderId);
+}
+
 function renderProfile(userId){
     const user = getUser(userId);
     if(!user){ navigate("feed"); return; }
@@ -1802,6 +1881,7 @@ function renderProfile(userId){
         // whatever the person had expanded.
         profileMusicExpanded = false;
         profileFriendsExpanded = false;
+        profileAchievementsExpanded = false;
         lastProfileRenderId = userId;
     }
     const posts = db.posts.filter(p => p.authorId === user.id).sort((a,b) => b.createdAt - a.createdAt);
@@ -1948,7 +2028,7 @@ function renderProfile(userId){
 
         </div>
 
-        ${isMe && isAdmin() ? renderModerationQueue() : adminProfileControls(user)}
+        ${isMe && isAdmin() ? renderModerationQueue() + renderAchievementsBackfillCard() : adminProfileControls(user)}
 
         ${renderAchievementsGrid(user)}
 
@@ -5411,8 +5491,8 @@ Object.assign(window,{
     toggleNotificationsPanel,goToPost,
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
-    toggleProfileMusicExpanded,toggleProfileFriendsExpanded,
-    setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,
+    toggleProfileMusicExpanded,toggleProfileFriendsExpanded,toggleProfileAchievementsExpanded,
+    setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,backfillAchievementsForAllUsers,
     reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent,
     toggleBlockUser,
     addStoryPrompt,openStoryViewer,closeStoryViewer,storyViewerAdvance,deleteCurrentStory
