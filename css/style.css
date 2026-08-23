@@ -3518,9 +3518,11 @@ html::after{
 .pet-creature-wrap{
     width:220px;
     max-width:60%;
-    margin:6px auto 18px;
+    margin:0 auto;
     transform:scale(var(--pet-scale,1));
     transition:transform .3s;
+    position:relative;
+    z-index:2;
 }
 
 .pet-creature-svg{
@@ -3553,8 +3555,141 @@ html::after{
     transform:scaleY(.15);
 }
 
+.pet-mouth{
+    /* nothing here — mood-specific overrides below */
+}
+
 .pet-creature-wrap.sad .pet-mouth{
     d:path("M92 112 Q110 100 128 112");
+}
+
+/* ------------------------------------------------------------
+   MINI ROOM — the pet's little home. Pure CSS/SVG, no image
+   assets, so it's cheap to re-skin later (furniture/wallpaper
+   cosmetics can just add classes/children to .pet-room-stage).
+   ------------------------------------------------------------ */
+
+.pet-room{
+    position:relative;
+    height:280px;
+    margin:6px auto 20px;
+    max-width:420px;
+    border-radius:22px;
+    overflow:hidden;
+    background:linear-gradient(180deg,#dff6ff 0%,#bdeeff 46%,#eafff0 46%,#eafff0 100%);
+    border:3px solid rgba(255,255,255,.85);
+    box-shadow:inset 0 0 0 1px rgba(120,190,210,.25), var(--shadow);
+}
+
+.pet-room-window{
+    position:absolute;
+    top:16px;
+    left:50%;
+    transform:translateX(-50%);
+    width:66%;
+    height:70px;
+    border-radius:16px;
+    background:linear-gradient(180deg,#eafcff,#c8f0ff);
+    border:4px solid rgba(255,255,255,.9);
+    box-shadow:0 4px 10px rgba(70,160,190,.15);
+    overflow:hidden;
+}
+
+.pet-room-cloud{
+    position:absolute;
+    bottom:14px;
+    width:34px;
+    height:14px;
+    border-radius:20px;
+    background:#fff;
+    opacity:.85;
+}
+
+.pet-room-cloud::before,
+.pet-room-cloud::after{
+    content:"";
+    position:absolute;
+    background:#fff;
+    border-radius:50%;
+}
+
+.pet-room-cloud::before{ width:16px; height:16px; top:-8px; left:4px; }
+.pet-room-cloud::after{ width:12px; height:12px; top:-6px; left:18px; }
+
+.pet-room-cloud.c1{ left:10%; animation:pet-cloud-drift 14s linear infinite; }
+.pet-room-cloud.c2{ left:55%; width:26px; animation:pet-cloud-drift 20s linear infinite reverse; }
+
+@keyframes pet-cloud-drift{
+    0%{ transform:translateX(0); }
+    50%{ transform:translateX(18px); }
+    100%{ transform:translateX(0); }
+}
+
+.pet-room-floor{
+    position:absolute;
+    left:0; right:0; bottom:0;
+    height:46%;
+    background:linear-gradient(180deg,#eafff0,#d3f7dd);
+    border-top:2px solid rgba(120,200,150,.35);
+}
+
+.pet-room-rug{
+    position:absolute;
+    left:50%;
+    bottom:14%;
+    transform:translateX(-50%);
+    width:150px;
+    height:34px;
+    border-radius:50%;
+    background:rgba(126,229,109,.28);
+    filter:blur(1px);
+    z-index:1;
+}
+
+.pet-room-stage{
+    position:absolute;
+    left:0; right:0;
+    bottom:8%;
+    display:flex;
+    justify-content:center;
+    z-index:2;
+}
+
+.pet-room-bubble{
+    position:absolute;
+    left:var(--left);
+    bottom:-20px;
+    width:var(--size);
+    height:var(--size);
+    border-radius:50%;
+    background:
+        radial-gradient(circle at 30% 28%,rgba(255,255,255,.95) 0 20%,rgba(255,255,255,.3) 40%,transparent 55%),
+        radial-gradient(circle at 55% 60%,rgba(190,245,255,.5),rgba(79,201,245,.4));
+    box-shadow:inset 0 0 6px rgba(255,255,255,.5);
+    animation:pet-room-bubble-rise 9s ease-in infinite;
+    animation-delay:var(--delay);
+    opacity:0;
+}
+
+@keyframes pet-room-bubble-rise{
+    0%{ transform:translateY(0); opacity:0; }
+    10%{ opacity:.8; }
+    90%{ opacity:.5; }
+    100%{ transform:translateY(-230px); opacity:0; }
+}
+
+[data-theme="dark"] .pet-room{
+    background:linear-gradient(180deg,#16222c 0%,#132a30 46%,#152621 46%,#152621 100%);
+    border-color:rgba(255,255,255,.16);
+}
+
+[data-theme="dark"] .pet-room-window{
+    background:linear-gradient(180deg,#1c2e38,#173038);
+    border-color:rgba(255,255,255,.16);
+}
+
+[data-theme="dark"] .pet-room-floor{
+    background:linear-gradient(180deg,#152621,#102019);
 }
 
 .pet-stats{
