@@ -3815,3 +3815,36 @@ html::after{
     background:rgba(255,255,255,.05);
     border-color:rgba(255,255,255,.14);
 }
+
+/* ============================================================
+   PINNED POSTS
+   ============================================================ */
+
+.post-pinned{
+    border: 2px solid #ffd166;
+    background: linear-gradient(160deg, rgba(255,214,102,.14), rgba(255,255,255,.6));
+}
+
+.pinned-badge{
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 800;
+    color: #a06a00;
+    background: rgba(255,214,102,.35);
+    border-radius: 999px;
+    padding: 3px 10px;
+    margin-bottom: 8px;
+    width: fit-content;
+}
+
+[data-theme="dark"] .post-pinned{
+    border-color: #cf9a2b;
+    background: linear-gradient(160deg, rgba(207,154,43,.14), rgba(30,42,50,.6));
+}
+
+[data-theme="dark"] .pinned-badge{
+    color: #ffd166;
+    background: rgba(207,154,43,.22);
+}
