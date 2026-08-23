@@ -3109,3 +3109,84 @@ html::after{
 [data-theme="dark"] .story-ring.empty{
     background:#33454f;
 }
+
+/* ============================================================
+   ACHIEVEMENTS & STATUS
+   ============================================================ */
+
+.status-badge{
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    padding:4px 12px;
+    border-radius:999px;
+    font-size:13px;
+    font-weight:700;
+    background:linear-gradient(135deg,#ff8fd6,#7ee0f7);
+    color:#3a1846;
+    margin:4px 0;
+    box-shadow:0 2px 8px rgba(150,80,200,.25);
+}
+
+.status-badge.small{
+    padding:1px 9px;
+    font-size:11px;
+    margin:0 0 0 4px;
+    vertical-align:middle;
+}
+
+.achievements-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(120px,1fr));
+    gap:10px;
+    margin-bottom:22px;
+}
+
+.achievement-card{
+    border-radius:16px;
+    padding:12px 8px;
+    text-align:center;
+    background:#f2fbfd;
+    border:1.5px solid #d5eef3;
+    transition:transform .15s ease;
+}
+
+.achievement-card.unlocked{
+    background:linear-gradient(160deg,#fff7fb,#eafcff);
+    border-color:#ffb3e6;
+    box-shadow:0 3px 10px rgba(255,140,220,.18);
+}
+
+.achievement-card.locked{ opacity:.55; }
+
+.achievement-card:active{ transform:scale(.96); }
+
+.achievement-icon{ font-size:26px; margin-bottom:4px; }
+
+.achievement-title{
+    font-size:12.5px;
+    font-weight:700;
+    line-height:1.25;
+}
+
+.achievement-desc{
+    font-size:11px;
+    opacity:.7;
+    margin-top:2px;
+    line-height:1.25;
+}
+
+[data-theme="dark"] .status-badge{
+    background:linear-gradient(135deg,#a24fb0,#3fa8c9);
+    color:#fff2fb;
+}
+
+[data-theme="dark"] .achievement-card{
+    background:#1c2a33;
+    border-color:#2c3f4a;
+}
+
+[data-theme="dark"] .achievement-card.unlocked{
+    background:linear-gradient(160deg,#2a1f30,#17313a);
+    border-color:#a24fb0;
+}
