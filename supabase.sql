@@ -95,6 +95,12 @@ create table if not exists public.posts (
     created_at timestamptz not null default now()
 );
 
+alter table public.posts add column if not exists pinned boolean not null default false;
+alter table public.posts add column if not exists pinned_at timestamptz;
+-- The pin trigger/policy live further down (search "PINNED POSTS"),
+-- after public.is_admin() is defined — this comment is just a marker
+-- so the column definitions stay next to the rest of the posts table.
+
 -- ------------------------------------------------------------
 -- COMMENTS
 -- ------------------------------------------------------------
@@ -426,6 +432,56 @@ $$;
 
 grant execute on function public.is_admin() to authenticated;
 grant execute on function public.is_banned() to authenticated;
+
+-- ------------------------------------------------------------
+-- PINNED POSTS
+-- Only an admin can ever pin/unpin — and never more than 2 at once,
+-- enforced here rather than just in the UI so it holds even if two
+-- admins pin at the same moment. Also locks down actual post content
+-- (text/image/likes) whenever the person updating isn't the author,
+-- so the admin-update policy below can only ever be used to toggle
+-- pin state, not silently edit someone else's post.
+-- ------------------------------------------------------------
+create or replace function public.protect_and_validate_post_pin()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+    if not public.is_admin() then
+        new.pinned := old.pinned;
+        new.pinned_at := old.pinned_at;
+    end if;
+
+    if auth.uid() <> old.author_id then
+        new.text := old.text;
+        new.image := old.image;
+        new.likes := old.likes;
+    end if;
+
+    if new.pinned and not old.pinned then
+        if (select count(*) from public.posts where pinned = true and id <> new.id) >= 2 then
+            raise exception 'Уже закреплено максимум 2 поста — сначала открепи один.';
+        end if;
+        new.pinned_at := now();
+    elsif not new.pinned then
+        new.pinned_at := null;
+    end if;
+
+    return new;
+end;
+$$;
+
+drop trigger if exists protect_and_validate_post_pin on public.posts;
+create trigger protect_and_validate_post_pin
+before update on public.posts
+for each row execute function public.protect_and_validate_post_pin();
+
+ drop policy if exists posts_update_admin on public.posts;
+create policy posts_update_admin on public.posts for update
+using (public.is_admin())
+with check (public.is_admin());
 
 -- ------------------------------------------------------------
 -- PUSH SUBSCRIPTIONS
@@ -936,6 +992,54 @@ on storage.objects for delete
 to authenticated
 using (
     bucket_id = 'music'
+    and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+);
+
+-- ------------------------------------------------------------
+-- STORAGE: public bucket for post/story images + avatars/covers
+-- ------------------------------------------------------------
+-- Same idea as the music bucket above: images used to be stored as
+-- base64 directly in posts/profiles/stories rows, which meant every
+-- query that touched those tables dragged the full image bytes along
+-- for the ride even when nothing on screen needed them. Storage +
+-- a plain URL column fixes that — the row just points at the file.
+insert into storage.buckets (id, name, public)
+values ('images', 'images', true)
+on conflict (id) do update set public = true;
+
+ drop policy if exists images_storage_select on storage.objects;
+create policy images_storage_select
+on storage.objects for select
+using (bucket_id = 'images');
+
+ drop policy if exists images_storage_insert on storage.objects;
+create policy images_storage_insert
+on storage.objects for insert
+to authenticated
+with check (
+    bucket_id = 'images'
+    and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+ drop policy if exists images_storage_update on storage.objects;
+create policy images_storage_update
+on storage.objects for update
+to authenticated
+using (
+    bucket_id = 'images'
+    and (storage.foldername(name))[1] = auth.uid()::text
+)
+with check (
+    bucket_id = 'images'
+    and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+ drop policy if exists images_storage_delete on storage.objects;
+create policy images_storage_delete
+on storage.objects for delete
+to authenticated
+using (
+    bucket_id = 'images'
     and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
 );
 
