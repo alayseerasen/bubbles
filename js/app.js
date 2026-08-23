@@ -1199,7 +1199,7 @@ function renderApp(){
 
                     <button
                         class="nav-btn"
-                        onclick="location.href='https://zeshpr.github.io/frutigeraeropage/bubbling.html'"
+                        onclick="location.href='https://alayseerasen.github.io/bubbles/games/bubbling.html'"
                     >
                         🫧 На главную
                     </button>
