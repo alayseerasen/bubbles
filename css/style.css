@@ -3848,3 +3848,201 @@ html::after{
     color: #ffd166;
     background: rgba(207,154,43,.22);
 }
+
+/* ============================================================
+   ЗВОНКИ — плавающая панель, видео-плитки, список каналов
+   ============================================================ */
+
+.call-bar{
+    position:fixed;
+    left:50%;
+    bottom:18px;
+    transform:translateX(-50%);
+    z-index:9998;
+    width:min(560px,94vw);
+    background:rgba(20,50,65,.92);
+    backdrop-filter:blur(8px);
+    border-radius:20px;
+    padding:12px 14px;
+    box-shadow:0 18px 45px rgba(10,40,55,.4);
+    color:#eafcff;
+}
+
+.call-bar-top{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    margin-bottom:8px;
+}
+
+.call-bar-title{
+    font-weight:700;
+    font-size:.95rem;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+}
+
+.call-tiles{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+    gap:8px;
+    margin-bottom:10px;
+    max-height:260px;
+    overflow-y:auto;
+}
+
+.call-tile{
+    position:relative;
+    background:#0b2531;
+    border-radius:12px;
+    overflow:hidden;
+    aspect-ratio:16/10;
+}
+
+.call-tile.call-tile-screen{
+    grid-column:1 / -1;
+    aspect-ratio:16/9;
+}
+
+.call-tile video{
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    display:block;
+}
+
+.call-tile-label{
+    position:absolute;
+    left:6px;
+    bottom:6px;
+    background:rgba(0,0,0,.5);
+    color:#fff;
+    font-size:.72rem;
+    padding:2px 7px;
+    border-radius:8px;
+}
+
+.call-bar-controls{
+    display:flex;
+    justify-content:center;
+    gap:10px;
+    flex-wrap:wrap;
+}
+
+.call-btn{
+    border:0;
+    background:rgba(255,255,255,.14);
+    color:#eafcff;
+    width:44px;
+    height:44px;
+    border-radius:50%;
+    font-size:1.1rem;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    transition:background .15s ease;
+}
+
+.call-btn:hover{
+    background:rgba(255,255,255,.24);
+}
+
+.call-btn-on{
+    background:var(--blue);
+    color:#06323f;
+}
+
+.call-btn-off{
+    background:rgba(220,70,70,.85);
+}
+
+.call-btn-leave{
+    background:rgba(220,70,70,.85);
+    width:32px;
+    height:32px;
+    font-size:.9rem;
+    flex-shrink:0;
+}
+
+.call-channel-card{
+    margin-bottom:12px;
+}
+
+.call-channel-head{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:10px;
+    flex-wrap:wrap;
+}
+
+.call-channel-actions{
+    display:flex;
+    gap:8px;
+    flex-shrink:0;
+}
+
+.call-channel-members{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+    margin-top:8px;
+}
+
+.call-member-chip{
+    position:relative;
+    width:38px;
+    height:38px;
+}
+
+.call-member-chip img{
+    width:100%;
+    height:100%;
+    border-radius:50%;
+    object-fit:cover;
+    border:2px solid var(--blue);
+}
+
+.call-member-badge{
+    position:absolute;
+    right:-4px;
+    bottom:-4px;
+    font-size:.7rem;
+    background:#fff;
+    border-radius:50%;
+    padding:1px 2px;
+    line-height:1;
+}
+
+.call-member-badge-video{
+    right:auto;
+    left:-4px;
+}
+
+.call-settings-label{
+    display:block;
+    font-weight:700;
+    font-size:.85rem;
+    margin:10px 0 4px;
+}
+
+.call-settings-toggles{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    margin-top:10px;
+    font-size:.9rem;
+}
+
+@media (max-width:640px){
+    .call-bar{
+        bottom:70px;
+        width:96vw;
+        padding:10px;
+    }
+    .call-tiles{
+        max-height:180px;
+    }
+}
