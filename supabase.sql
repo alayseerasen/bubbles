@@ -846,6 +846,57 @@ begin
 end $$;
 
 -- ------------------------------------------------------------
+-- PETS — Tamagotchi-style companion. One per user (owner_id is the
+-- primary key itself, not a separate id column, since "one pet per
+-- user" is a hard rule right now, not just a UI choice).
+--
+-- Species/appearance config (name, base colors, SVG shape) lives in
+-- js/app.js as PET_SPECIES, same as ACHIEVEMENTS already does for
+-- achievements — it's static content, not user data, so it doesn't
+-- need a table of its own. color_primary/color_secondary here are
+-- NULL until a future cosmetics feature lets someone override their
+-- species' default colors; the columns exist now so that feature
+-- won't need another migration later.
+--
+-- Stats are stored as last-known values + last_tick_at, and decay is
+-- computed lazily (in JS) from elapsed time, the same "no server
+-- cron" spirit as the rest of this app — see tickPet() in app.js.
+-- ------------------------------------------------------------
+create table if not exists public.pets (
+    owner_id uuid primary key references public.profiles(id) on delete cascade,
+    species_id text not null default 'aero_orb',
+    name text not null default 'Пузырёныш',
+    stage text not null default 'baby',              -- baby | juvenile | adult
+    hunger real not null default 80,
+    energy real not null default 80,
+    happiness real not null default 80,
+    cleanliness real not null default 80,
+    health real not null default 100,
+    asleep boolean not null default false,
+    color_primary text,
+    color_secondary text,
+    last_tick_at timestamptz not null default now(),
+    created_at timestamptz not null default now()
+);
+alter table public.pets enable row level security;
+
+drop policy if exists pets_select on public.pets;
+create policy pets_select on public.pets for select
+using (auth.uid() = owner_id);
+
+drop policy if exists pets_insert on public.pets;
+create policy pets_insert on public.pets for insert
+with check (auth.uid() = owner_id);
+
+drop policy if exists pets_update on public.pets;
+create policy pets_update on public.pets for update
+using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
+
+drop policy if exists pets_delete on public.pets;
+create policy pets_delete on public.pets for delete
+using (auth.uid() = owner_id);
+
+-- ------------------------------------------------------------
 -- STORAGE: public bucket for MP3 + covers
 -- ------------------------------------------------------------
 insert into storage.buckets (id, name, public)
