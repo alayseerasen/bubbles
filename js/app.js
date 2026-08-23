@@ -1199,7 +1199,7 @@ function renderApp(){
 
                     <button
                         class="nav-btn"
-                        onclick="location.href='https://alayseerasen.github.io/bubbles/games/bubbling.html'"
+                        onclick="location.href='https://alayseerasen.github.io/aeroworld/bubbling.html'"
                     >
                         🫧 Aero World
                     </button>
