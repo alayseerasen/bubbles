@@ -1478,7 +1478,10 @@ function startApp(){
     initCallSignaling();
     renderApp();
     startOnlineCountPolling();
-    subscribeToPush(); // fire-and-forget — a person who ignores/denies the permission prompt should still get a working app
+    // On iPhone/iPad, Web Push permission MUST be requested from a direct
+    // user gesture. If permission was already granted, silently restore the
+    // subscription; otherwise the Settings button will ask at the right time.
+    subscribeToPush({ requestPermission: false });
     recomputeAchievements();
 }
 
@@ -3117,6 +3120,17 @@ function renderEditProfile(){
         </h1>
 
 
+        <div class="card" style="margin-bottom:16px;">
+            <strong>🔔 Уведомления Bubbles</strong>
+            <div id="pushStatus" style="color:#7b9ca9;font-size:13px;margin:8px 0 12px;line-height:1.45;">
+                Проверяем возможность уведомлений…
+            </div>
+            <button id="enablePushButton" class="primary" type="button" onclick="enablePushNotifications()">
+                🔔 Включить уведомления
+            </button>
+        </div>
+
+
         <div class="card">
 
             <div class="edit-preview">
@@ -3221,6 +3235,12 @@ function renderEditProfile(){
         </div>
 
     `;
+    updatePushSettingsUI(false);
+    // If permission was already granted, restore/register the subscription
+    // without opening a permission prompt.
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        subscribeToPush({ requestPermission: false });
+    }
 }
 
 function previewAvatar(input){
@@ -3545,30 +3565,54 @@ function urlBase64ToUint8Array(base64String) {
     return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
 }
 
-async function subscribeToPush() {
-    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return; // unsupported browser — just skip, quietly
-    if (!window.BUBBLES_VAPID_PUBLIC_KEY) return;
-    if (Notification.permission === "denied") return; // they said no once — don't nag every session
+function isIOSDevice() {
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+        (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function isBubblesInstalled() {
+    return window.matchMedia?.("(display-mode: standalone)").matches ||
+        window.navigator.standalone === true;
+}
+
+async function subscribeToPush({ requestPermission = false } = {}) {
+    if (!currentUserId) return false;
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return false;
+    if (!window.BUBBLES_VAPID_PUBLIC_KEY) return false;
+    if (typeof Notification === "undefined") return false;
+
+    // iOS only exposes Web Push to Home Screen web apps, not ordinary Safari tabs.
+    if (isIOSDevice() && !isBubblesInstalled()) return false;
+    if (Notification.permission === "denied") return false;
 
     try {
-        // Already registered up top, at script load — just wait for it to
-        // be active rather than registering (the same URL+scope) again.
         const registration = await navigator.serviceWorker.ready;
-
         let subscription = await registration.pushManager.getSubscription();
-        if (!subscription) {
-            const permission = await Notification.requestPermission();
-            if (permission !== "granted") return;
-            subscription = await registration.pushManager.subscribe({
-                userVisibleOnly: true,
-                applicationServerKey: urlBase64ToUint8Array(window.BUBBLES_VAPID_PUBLIC_KEY)
-            });
+
+        // If Bubbles rotated its VAPID key, the old browser subscription is
+        // no longer valid for the new key. Forget it and create a fresh one.
+        const vapidKey = window.BUBBLES_VAPID_PUBLIC_KEY;
+        const knownVapidKey = localStorage.getItem("bubbles-vapid-public-key");
+        if (subscription && knownVapidKey && knownVapidKey !== vapidKey) {
+            try { await subscription.unsubscribe(); } catch (_) {}
+            subscription = null;
         }
 
+        if (!subscription) {
+            // Permission must be requested from a user gesture on iOS.
+            if (!requestPermission && Notification.permission !== "granted") return false;
+            if (Notification.permission !== "granted") {
+                const permission = await Notification.requestPermission();
+                if (permission !== "granted") return false;
+            }
+            subscription = await registration.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: urlBase64ToUint8Array(vapidKey)
+            });
+        }
+        localStorage.setItem("bubbles-vapid-public-key", vapidKey);
+
         const json = subscription.toJSON();
-        // Upsert on endpoint: the SAME browser subscription re-registering
-        // (e.g. a different person logging in on a shared device) should
-        // just take over the row rather than fail on the unique index.
         const { error } = await sb.from("push_subscriptions").upsert({
             id: uid("push"),
             user_id: currentUserId,
@@ -3576,14 +3620,54 @@ async function subscribeToPush() {
             p256dh: json.keys?.p256dh,
             auth: json.keys?.auth
         }, { onConflict: "endpoint" });
-        if (error) console.error("❌ Не удалось сохранить push-подписку:", error);
+
+        if (error) {
+            console.error("❌ Не удалось сохранить push-подписку:", error);
+            toast("Не удалось включить уведомления. Попробуй ещё раз.");
+            return false;
+        }
+
+        updatePushSettingsUI(true);
+        toast("🔔 Уведомления Bubbles включены!");
+        return true;
     } catch (error) {
-        // Notification permission prompts and service worker registration
-        // can fail for lots of harmless reasons (iOS Safari outside a
-        // installed PWA, permission dismissed, etc.) — never let this
-        // break login.
         console.error("Push subscribe failed:", error);
+        return false;
     }
+}
+
+async function enablePushNotifications() {
+    if (isIOSDevice() && !isBubblesInstalled()) {
+        toast("Сначала добавь Bubbles на экран Домой через Safari → Поделиться → На экран Домой.", 7000);
+        return;
+    }
+    const ok = await subscribeToPush({ requestPermission: true });
+    if (!ok && typeof Notification !== "undefined" && Notification.permission === "denied") {
+        toast("Уведомления запрещены. Включи их в настройках уведомлений Bubbles на iPhone.", 7000);
+    }
+}
+
+function updatePushSettingsUI(enabled = false) {
+    const status = document.getElementById("pushStatus");
+    const button = document.getElementById("enablePushButton");
+    if (!status || !button) return;
+    if (enabled) {
+        status.textContent = "Уведомления включены — сообщения, лайки и заявки будут приходить на устройство.";
+        button.textContent = "🔔 Уведомления включены";
+        button.disabled = true;
+        return;
+    }
+    if (typeof Notification !== "undefined" && Notification.permission === "denied") {
+        status.textContent = "Уведомления запрещены в настройках устройства.";
+        button.textContent = "⚙️ Как включить уведомления";
+        button.disabled = false;
+        return;
+    }
+    status.textContent = isIOSDevice() && !isBubblesInstalled()
+        ? "На iPhone сначала добавь Bubbles на экран Домой, затем включи уведомления здесь."
+        : "Получай сообщения, лайки и заявки, даже когда Bubbles закрыт.";
+    button.textContent = "🔔 Включить уведомления";
+    button.disabled = false;
 }
 
 function unreadNotificationsCount() {

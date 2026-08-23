@@ -9,4 +9,4 @@
   supabase/functions/send-push/README.md.
 */
 window.BUBBLES_VAPID_PUBLIC_KEY =
-    "BD-vS9Hbpm2n-FEcAZXO_sggtDQehgfCn-qWIeuD4KNYbL_CH-iRgY4fZXKN7ddRHV55vbjlK6kKtoFmEYTy46c";
+    "BAoe14FLbChPzijINx8VgAZEoyvIqvOZm6Itx4lDUdgOuLxEJ0l8SbGg_0ynUNHciSE3wkXQT1w2kPHbcBRKkUA";
