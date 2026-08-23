@@ -265,6 +265,23 @@ let profileAchievementsExpanded = false;
 let lastProfileRenderId = null;
 let selectedChatId = null;
 let selectedMessageImage = null; // resized data URL staged to send in the current chat, or null
+let selectedComposerMusicId = null; // track staged to attach to the next post, or null
+let editPostState = null; // { postId, text, image, musicId } while the edit-post modal is open, or null
+
+// Shared posts (in profile reposts and in DM shares) are carried as a
+// control-character-prefixed marker inside the normal message `text`
+// field, so no schema or crypto.js change was needed for the DM case —
+// it round-trips through the existing per-conversation encryption exactly
+// like any other message text.
+const SHARED_POST_MARKER = "\u0001bubbles-shared-post:";
+
+function parseSharedPostMessage(text) {
+    if (!text || !text.startsWith(SHARED_POST_MARKER)) return null;
+    const rest = text.slice(SHARED_POST_MARKER.length);
+    const sep = rest.indexOf("\u0001");
+    if (sep === -1) return null;
+    return { postId: rest.slice(0, sep), caption: rest.slice(sep + 1) };
+}
 let genderValue = "female";
 let currentlyPlayingMusicId = null;
 let heartbeatTimer = null;
@@ -1292,6 +1309,14 @@ function renderFeed(){
                 >
 
                 <button
+                    type="button"
+                    class="secondary"
+                    onclick="openMusicPicker('compose')"
+                >
+                    🎵 Музыка
+                </button>
+
+                <button
                     class="primary"
                     onclick="createPost()"
                 >
@@ -1299,6 +1324,8 @@ function renderFeed(){
                 </button>
 
             </div>
+
+            <div id="composerMusicChip"></div>
 
         </div>
 
@@ -1314,6 +1341,8 @@ function renderFeed(){
         }
 
     `;
+
+    renderComposerMusicChip();
 }
 
 function renderCommentRepliesList(postId, topComment, replies){
@@ -1516,6 +1545,20 @@ function renderPost(post){
             }
 
 
+            ${
+                post.musicId && db.music.find(m => m.id === post.musicId)
+                ? musicProfileCard(db.music.find(m => m.id === post.musicId))
+                : ""
+            }
+
+
+            ${
+                post.sharedPostId
+                ? renderSharedPostCard(post.sharedPostId)
+                : ""
+            }
+
+
             <div class="post-actions">
 
                 <button
@@ -1537,10 +1580,25 @@ function renderPost(post){
 
                 <button
                     class="action-btn"
-                    onclick="sharePost('${post.id}')"
+                    onclick="openSharePicker('${post.id}')"
                 >
                     ↗ Поделиться
                 </button>
+
+
+                ${
+                    post.authorId === currentUserId
+                    ? `
+                        <button
+                            class="action-btn"
+                            onclick="openEditPost('${post.id}')"
+                            title="Редактировать"
+                        >
+                            ✏️
+                        </button>
+                    `
+                    : ""
+                }
 
 
                 ${
@@ -1621,8 +1679,8 @@ function renderPost(post){
 async function createPost() {
     const text = document.getElementById("postText")?.value.trim() || "";
     const file = document.getElementById("postImage")?.files[0];
-    if (!text && !file) {
-        toast("Добавь текст или изображение.");
+    if (!text && !file && !selectedComposerMusicId) {
+        toast("Добавь текст, изображение или музыку.");
         return;
     }
     let image = "";
@@ -1631,17 +1689,18 @@ async function createPost() {
             toast("Можно загружать только изображения.");
             return;
         }
-        if (file.size > 15 * 1024 * 1024) {
-            toast("Изображение слишком большое. Максимум 15 МБ.");
+        if (file.size > 20 * 1024 * 1024) {
+            toast("Изображение слишком большое. Максимум 20 МБ.");
             return;
         }
         try { image = await resizeImageFile(file, 1600); }
         catch (e) { console.error(e); toast("Не удалось обработать изображение."); return; }
     }
-    const post = { id: uid("post"), authorId: currentUserId, text, image, likes: [], createdAt: Date.now() };
+    const musicId = selectedComposerMusicId || null;
+    const post = { id: uid("post"), authorId: currentUserId, text, image, musicId, sharedPostId: null, likes: [], createdAt: Date.now() };
     db.posts.unshift(post);
     const { error } = await sb.from("posts").insert({
-        id: post.id, author_id: post.authorId, text: post.text, image: post.image, likes: [], created_at: new Date(post.createdAt).toISOString()
+        id: post.id, author_id: post.authorId, text: post.text, image: post.image, music_id: post.musicId, likes: [], created_at: new Date(post.createdAt).toISOString()
     });
     if (error) {
         db.posts = db.posts.filter(p => p.id !== post.id);
@@ -1649,6 +1708,7 @@ async function createPost() {
         toast("Не удалось опубликовать пост.");
         return;
     }
+    selectedComposerMusicId = null;
     toast("Пост опубликован!");
     recomputeAchievements();
     renderFeed();
@@ -1817,21 +1877,369 @@ async function deleteComment(postId, commentId) {
     }
 }
 
-async function sharePost(postId){
+/* ------------------------------------------------------------
+   GENERIC MODAL (share picker, edit post, music picker all use this —
+   one overlay singleton appended to <body>, same pattern as the story
+   viewer overlay)
+   ------------------------------------------------------------ */
+
+function showBubblesModal(html) {
+    let overlay = document.getElementById("bubblesModalOverlay");
+    if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.id = "bubblesModalOverlay";
+        overlay.className = "bubbles-modal-overlay";
+        overlay.onclick = (e) => { if (e.target === overlay) closeBubblesModal(); };
+        document.body.appendChild(overlay);
+    }
+    overlay.innerHTML = `<div class="bubbles-modal-card">${html}</div>`;
+}
+
+function closeBubblesModal() {
+    document.getElementById("bubblesModalOverlay")?.remove();
+    editPostState = null;
+}
+
+/* ------------------------------------------------------------
+   SHARE (to your own profile, or to a friend in messages)
+   ------------------------------------------------------------ */
+
+function openSharePicker(postId){
+    const post = db.posts.find(p => p.id === postId);
+    if(!post) return;
+    showBubblesModal(`
+        <div class="modal-header">
+            <h3>Поделиться</h3>
+            <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
+        </div>
+        <div class="share-options">
+            <button class="share-option-btn" onclick="openShareToProfile('${postId}')">
+                <span class="share-option-icon">🫧</span>
+                <span>В профиль</span>
+            </button>
+            <button class="share-option-btn" onclick="openShareToChat('${postId}')">
+                <span class="share-option-icon">✉️</span>
+                <span>В сообщения</span>
+            </button>
+        </div>
+    `);
+}
+
+function renderSharedPostPreview(post, author){
+    return `
+        <div class="shared-post-card">
+            <div class="shared-post-card-head">
+                <img class="mini-avatar small" src="${author?.avatar || defaultAvatar()}">
+                <strong>${escapeHtml(author?.displayName || "Пользователь")}</strong>
+            </div>
+            ${post.text ? `<div class="shared-post-card-text">${escapeHtml(post.text)}</div>` : ""}
+            ${post.image ? `<img class="shared-post-card-image" src="${post.image}">` : ""}
+            ${post.musicId && db.music.find(m => m.id === post.musicId) ? musicProfileCard(db.music.find(m => m.id === post.musicId)) : ""}
+        </div>
+    `;
+}
+
+function openShareToProfile(postId){
     const post = db.posts.find(p => p.id === postId);
     if(!post) return;
     const author = getUser(post.authorId);
-    const text = `Пост ${author?.displayName || ""} в bubbles`;
-    if(navigator.share){
-        try{ await navigator.share({title:"bubbles",text}); }catch{}
-    }else{
-        try{
-            await navigator.clipboard.writeText(location.href);
-            toast("Ссылка скопирована.");
-        }catch{
-            toast("Не удалось скопировать ссылку.");
-        }
+    showBubblesModal(`
+        <div class="modal-header">
+            <button class="modal-close-btn" onclick="openSharePicker('${postId}')" title="Назад" style="margin-right:auto;">←</button>
+            <h3>В профиль</h3>
+            <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
+        </div>
+        <textarea id="shareCaptionInput" maxlength="500" placeholder="Добавь подпись (необязательно)..."></textarea>
+        ${renderSharedPostPreview(post, author)}
+        <button class="primary" style="width:100%;margin-top:12px;" onclick="shareToProfile('${postId}')">Опубликовать</button>
+    `);
+}
+
+async function shareToProfile(postId){
+    const original = db.posts.find(p => p.id === postId);
+    if(!original) return;
+    const caption = document.getElementById("shareCaptionInput")?.value.trim() || "";
+    const post = { id: uid("post"), authorId: currentUserId, text: caption, image: "", musicId: null, sharedPostId: postId, likes: [], createdAt: Date.now() };
+    db.posts.unshift(post);
+    const { error } = await sb.from("posts").insert({
+        id: post.id, author_id: post.authorId, text: post.text, image: "", music_id: null, shared_post_id: postId, likes: [], created_at: new Date(post.createdAt).toISOString()
+    });
+    if(error){
+        console.error(error);
+        db.posts = db.posts.filter(p => p.id !== post.id);
+        toast("Не удалось поделиться постом.");
+        return;
     }
+    closeBubblesModal();
+    toast("Пост опубликован в твоём профиле!");
+    if(currentPage === "feed") renderFeed();
+    else if(currentPage === "profile") renderProfile(selectedProfileId || currentUserId);
+}
+
+function openShareToChat(postId){
+    const friends = db.friends
+        .filter(f => f.user1 === currentUserId || f.user2 === currentUserId)
+        .map(f => getUser(f.user1 === currentUserId ? f.user2 : f.user1))
+        .filter(Boolean);
+
+    showBubblesModal(`
+        <div class="modal-header">
+            <button class="modal-close-btn" onclick="openSharePicker('${postId}')" title="Назад" style="margin-right:auto;">←</button>
+            <h3>Отправить другу</h3>
+            <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
+        </div>
+        ${
+            friends.length
+            ? `
+                <div class="share-friend-list">
+                    ${friends.map(f => `
+                        <button class="share-friend-row" onclick="shareToChat('${postId}','${f.id}')">
+                            <img class="mini-avatar small" src="${f.avatar || defaultAvatar()}">
+                            <span>${escapeHtml(f.displayName)}</span>
+                        </button>
+                    `).join("")}
+                </div>
+              `
+            : `<p style="text-align:center;color:var(--muted);padding:20px 0;">Пока нет друзей, чтобы отправить.</p>`
+        }
+    `);
+}
+
+async function shareToChat(postId, toUserId){
+    const post = db.posts.find(p => p.id === postId);
+    if(!post) return;
+    const text = `${SHARED_POST_MARKER}${postId}\u0001`;
+    const message = { id: uid("message"), from: currentUserId, to: toUserId, text, image: "", createdAt: Date.now(), readAt: null, reactions: [] };
+    db.messages.push(message);
+    appendMessageToChat(message, toUserId);
+
+    const row = await buildEncryptedMessageRow(message.id, toUserId, text, "", new Date(message.createdAt).toISOString());
+    const { error } = await sb.from("messages").insert(row);
+    if(error){
+        console.error(error);
+        db.messages = db.messages.filter(m => m.id !== message.id);
+        toast("Не удалось отправить пост.");
+        const bubble = document.querySelector(`[data-bubbles-message-id="${message.id}"]`);
+        if(bubble) bubble.remove();
+        return;
+    }
+    closeBubblesModal();
+    toast("Пост отправлен!");
+}
+
+// A shared post inside a post card (repost on a profile/feed) or inside a
+// chat bubble both render as this same compact card. Deliberately doesn't
+// look at the original's own sharedPostId — one level deep only, so a
+// chain of reposts can't nest indefinitely.
+function renderSharedPostCard(originalId, { clickable } = { clickable: true }){
+    const original = db.posts.find(p => p.id === originalId);
+    if(!original) return `<div class="shared-post-card unavailable">Пост недоступен</div>`;
+    const author = getUser(original.authorId);
+    if(!author) return `<div class="shared-post-card unavailable">Пост недоступен</div>`;
+    const track = original.musicId ? db.music.find(m => m.id === original.musicId) : null;
+    return `
+        <div class="shared-post-card"${clickable ? ` onclick="navigate('profile','${author.id}')" style="cursor:pointer"` : ""}>
+            <div class="shared-post-card-head">
+                <img class="mini-avatar small" src="${author.avatar || defaultAvatar()}">
+                <strong>${escapeHtml(author.displayName)}</strong>
+                <small>@${escapeHtml(author.username)} · ${timeAgo(original.createdAt)}</small>
+            </div>
+            ${original.text ? `<div class="shared-post-card-text">${escapeHtml(original.text)}</div>` : ""}
+            ${original.image ? `<img class="shared-post-card-image" src="${original.image}">` : ""}
+            ${track ? musicProfileCard(track) : ""}
+        </div>
+    `;
+}
+
+function focusSharedPost(postId){
+    const post = db.posts.find(p => p.id === postId);
+    if(!post){ toast("Пост недоступен."); return; }
+    navigate("profile", post.authorId);
+}
+
+/* ------------------------------------------------------------
+   MUSIC PICKER (attach a track to a new post, or swap it while editing)
+   ------------------------------------------------------------ */
+
+function openMusicPicker(context){
+    const tracks = db.music.filter(m => m.authorId === currentUserId || mySavedMusicIds.has(m.id));
+    showBubblesModal(`
+        <div class="modal-header">
+            <h3>Выбери трек</h3>
+            <button
+                class="modal-close-btn"
+                onclick="${context === "edit" ? "renderEditPostModal()" : "closeBubblesModal()"}"
+            >✕</button>
+        </div>
+        ${
+            tracks.length
+            ? `
+                <div class="music-picker-list">
+                    ${tracks.map(m => `
+                        <button
+                            type="button"
+                            class="music-picker-row"
+                            onclick="selectComposerMusic('${m.id}','${context}')"
+                        >
+                            <img class="music-picker-cover" src="${m.cover || defaultMusicCover()}">
+                            <span class="music-picker-info">
+                                <strong>${escapeHtml(m.title)}</strong>
+                                <small>${escapeHtml(m.artist || "")}</small>
+                            </span>
+                        </button>
+                    `).join("")}
+                </div>
+              `
+            : `<p style="text-align:center;color:var(--muted);padding:20px 0;">У тебя пока нет треков — загрузи их во вкладке «Музыка».</p>`
+        }
+    `);
+}
+
+function selectComposerMusic(musicId, context){
+    if(context === "edit"){
+        if(!editPostState) return;
+        editPostState.musicId = musicId;
+        renderEditPostModal();
+    }else{
+        selectedComposerMusicId = musicId;
+        closeBubblesModal();
+        renderComposerMusicChip();
+    }
+}
+
+function renderComposerMusicChip(){
+    const el = document.getElementById("composerMusicChip");
+    if(!el) return;
+    if(!selectedComposerMusicId){ el.innerHTML = ""; return; }
+    const track = db.music.find(m => m.id === selectedComposerMusicId);
+    if(!track){ selectedComposerMusicId = null; el.innerHTML = ""; return; }
+    el.innerHTML = `
+        <div class="composer-music-chip">
+            🎵 <span>${escapeHtml(track.title)}</span>
+            <button type="button" class="message-image-remove" onclick="removeComposerMusic()" title="Убрать трек">✕</button>
+        </div>
+    `;
+}
+
+function removeComposerMusic(){
+    selectedComposerMusicId = null;
+    renderComposerMusicChip();
+}
+
+/* ------------------------------------------------------------
+   EDIT POST (text, photo, and attached track — all changeable
+   after the fact, not just at the moment of posting)
+   ------------------------------------------------------------ */
+
+function openEditPost(postId){
+    const post = db.posts.find(p => p.id === postId);
+    if(!post || post.authorId !== currentUserId) return;
+    editPostState = { postId, text: post.text || "", image: post.image || "", musicId: post.musicId || null };
+    renderEditPostModal();
+}
+
+// Whenever a side-action (remove photo, remove track, opening the music
+// picker) is about to rebuild the modal's HTML, pull whatever's currently
+// typed in the textarea into editPostState first — otherwise
+// renderEditPostModal() would rebuild the textarea from the stale
+// editPostState.text and silently discard it.
+function syncEditPostTextFromDom(){
+    if(!editPostState) return;
+    const ta = document.getElementById("editPostText");
+    if(ta) editPostState.text = ta.value;
+}
+
+function renderEditPostModal(){
+    if(!editPostState) return;
+    const track = editPostState.musicId ? db.music.find(m => m.id === editPostState.musicId) : null;
+    showBubblesModal(`
+        <div class="modal-header">
+            <h3>Редактировать пост</h3>
+            <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
+        </div>
+
+        <textarea id="editPostText" maxlength="1000" placeholder="Напиши что-нибудь...">${escapeHtml(editPostState.text)}</textarea>
+
+        ${
+            editPostState.image
+            ? `
+                <div class="message-image-preview">
+                    <img src="${editPostState.image}">
+                    <button type="button" class="message-image-remove" onclick="removeEditPostImage()" title="Убрать фото">✕</button>
+                </div>
+              `
+            : `<input type="file" id="editPostImageInput" accept="image/*" onchange="handleEditPostImageSelect(event)">`
+        }
+
+        ${
+            track
+            ? `
+                <div class="composer-music-chip">
+                    🎵 <span>${escapeHtml(track.title)}</span>
+                    <button type="button" class="message-image-remove" onclick="removeEditPostMusic()" title="Убрать трек">✕</button>
+                </div>
+              `
+            : `<button type="button" class="secondary" onclick="syncEditPostTextFromDom();openMusicPicker('edit')" style="margin-top:8px;">🎵 Добавить трек</button>`
+        }
+
+        <button class="primary" style="width:100%;margin-top:12px;" onclick="saveEditPost()">Сохранить</button>
+    `);
+}
+
+async function handleEditPostImageSelect(event){
+    const file = event.target.files[0];
+    if(!file) return;
+    if(!file.type.startsWith("image/")){ toast("Можно загружать только изображения."); return; }
+    if(file.size > 20 * 1024 * 1024){ toast("Изображение слишком большое. Максимум 20 МБ."); return; }
+    syncEditPostTextFromDom();
+    try { editPostState.image = await resizeImageFile(file, 1600); }
+    catch(e){ console.error(e); toast("Не удалось обработать изображение."); return; }
+    renderEditPostModal();
+}
+
+function removeEditPostImage(){
+    if(!editPostState) return;
+    syncEditPostTextFromDom();
+    editPostState.image = "";
+    renderEditPostModal();
+}
+
+function removeEditPostMusic(){
+    if(!editPostState) return;
+    syncEditPostTextFromDom();
+    editPostState.musicId = null;
+    renderEditPostModal();
+}
+
+async function saveEditPost(){
+    if(!editPostState) return;
+    const { postId } = editPostState;
+    const post = db.posts.find(p => p.id === postId);
+    if(!post) return;
+    const text = document.getElementById("editPostText")?.value.trim() || "";
+    const image = editPostState.image || "";
+    const musicId = editPostState.musicId || null;
+    if(!text && !image && !musicId){
+        toast("Добавь текст, изображение или музыку.");
+        return;
+    }
+
+    const prev = { text: post.text, image: post.image, musicId: post.musicId };
+    post.text = text;
+    post.image = image;
+    post.musicId = musicId;
+    refreshPostInPlace(postId);
+
+    const { error } = await sb.from("posts").update({ text, image, music_id: musicId }).eq("id", postId);
+    if(error){
+        console.error(error);
+        Object.assign(post, prev);
+        refreshPostInPlace(postId);
+        toast("Не удалось сохранить изменения.");
+        return;
+    }
+    closeBubblesModal();
+    toast("Пост обновлён!");
 }
 
 async function deletePost(postId) {
@@ -3082,10 +3490,7 @@ function renderConversation(user) {
                 <small>
                     ${
                         lastMessage
-                            ? escapeHtml(
-                                lastMessage.text ||
-                                (lastMessage.image ? "📷 Фото" : "")
-                            )
+                            ? escapeHtml(messagePreviewText(lastMessage))
                             : "Нет сообщений"
                     }
                 </small>
@@ -3207,6 +3612,17 @@ function renderChat(userId){
     `;
 }
 
+// One-line preview of a message for places that can't show a full bubble
+// (conversation list, the "new message" popup) — handles the shared-post
+// marker and photo messages specially instead of dumping raw text.
+function messagePreviewText(message){
+    const shared = parseSharedPostMessage(message.text);
+    if(shared) return shared.caption ? `🫧 ${shared.caption}` : "🫧 Поделился постом";
+    if(message.text) return message.text;
+    if(message.image) return "📷 Фото";
+    return "";
+}
+
 function messageBubble(message){
     const mine = message.from === currentUserId;
 
@@ -3220,13 +3636,24 @@ function messageBubble(message){
         grouped.get(r.emoji).push(r.userId);
     });
 
+    const sharedPost = parseSharedPostMessage(message.text);
+
     return `
 
         <div class="message ${mine ? "me" : "them"}${message.image ? " has-image" : ""}" data-bubbles-message-id="${message.id}">
 
             ${message.image ? `<img class="message-image" src="${message.image}" onclick="viewChatImage(this.src)">` : ""}
 
-            ${message.text ? escapeHtml(message.text) : ""}
+            ${
+                sharedPost
+                ? `
+                    <div onclick="focusSharedPost('${sharedPost.postId}')" style="cursor:pointer">
+                        ${renderSharedPostCard(sharedPost.postId, { clickable: false })}
+                    </div>
+                    ${sharedPost.caption ? `<div class="shared-post-caption">${escapeHtml(sharedPost.caption)}</div>` : ""}
+                  `
+                : (message.text ? escapeHtml(message.text) : "")
+            }
 
             <small>
                 ${new Date(message.createdAt)
@@ -3687,8 +4114,8 @@ function showNewMessagePopup(message) {
      */
 
     let messageText =
-        message.text ||
-        (message.image ? "📷 Фото" : "Новое сообщение");
+        messagePreviewText(message) ||
+        "Новое сообщение";
 
 
     if (
@@ -3994,36 +4421,22 @@ function refreshConversationPreview(partnerId) {
     row.replaceWith(wrapper.firstElementChild);
 }
 
-async function sendMessage(event, userId) {
-    event.preventDefault();
-    stopTyping();
-    const input = document.getElementById("messageInput");
-    const text = input.value.trim();
-    const image = selectedMessageImage || "";
-    if (!text && !image)
-        return;
-    input.value = "";
-    removeMessageImage();
-    // Shown locally right away in plaintext — we already know the plaintext,
-    // no need to round-trip through decryption for our own optimistic bubble.
-    const message = { id: uid("message"), from: currentUserId, to: userId, text, image, createdAt: Date.now(), readAt: null, reactions: [] };
-    db.messages.push(message);
-    appendMessageToChat(message, userId);
-
+// Builds an encrypted (or, if the key can't be fetched right now,
+// plaintext-fallback) row ready to insert into `messages`. Shared by
+// sendMessage (the chat composer) and shareToChat (sharing a post into a
+// conversation that might not even be open) so both go through the exact
+// same encryption path rather than two copies that could drift apart.
+async function buildEncryptedMessageRow(id, toUserId, text, image, createdAtIso){
     const row = {
-        id: message.id,
-        sender_id: message.from,
-        receiver_id: message.to,
-        created_at: new Date(message.createdAt).toISOString()
+        id,
+        sender_id: currentUserId,
+        receiver_id: toUserId,
+        created_at: createdAtIso
     };
 
-    // Any message we send is encrypted with our shared conversation key
-    // whenever we can reach the database to fetch/create it. If that call
-    // fails (offline, RLS hiccup, etc.) we fall back to plaintext rather
-    // than ever blocking the send — see js/crypto.js for the tradeoff.
     let sharedKey = null;
     try {
-        sharedKey = await BubblesCrypto.getConversationKey(currentUserId, userId);
+        sharedKey = await BubblesCrypto.getConversationKey(currentUserId, toUserId);
     } catch (e) {
         console.error(e);
     }
@@ -4051,6 +4464,27 @@ async function sendMessage(event, userId) {
         row.text = text;
         row.image = image;
     }
+
+    return row;
+}
+
+async function sendMessage(event, userId) {
+    event.preventDefault();
+    stopTyping();
+    const input = document.getElementById("messageInput");
+    const text = input.value.trim();
+    const image = selectedMessageImage || "";
+    if (!text && !image)
+        return;
+    input.value = "";
+    removeMessageImage();
+    // Shown locally right away in plaintext — we already know the plaintext,
+    // no need to round-trip through decryption for our own optimistic bubble.
+    const message = { id: uid("message"), from: currentUserId, to: userId, text, image, createdAt: Date.now(), readAt: null, reactions: [] };
+    db.messages.push(message);
+    appendMessageToChat(message, userId);
+
+    const row = await buildEncryptedMessageRow(message.id, userId, text, image, new Date(message.createdAt).toISOString());
 
     const { error } = await sb.from("messages").insert(row);
     if (error) {
@@ -4813,6 +5247,8 @@ function rowToPost(row) {
         authorId: row.author_id,
         text: row.text || "",
         image: row.image || "",
+        musicId: row.music_id || null,
+        sharedPostId: row.shared_post_id || null,
         likes: Array.isArray(row.likes) ? row.likes : [],
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
@@ -5156,6 +5592,8 @@ async function saveDB() {
             author_id: p.authorId,
             text: p.text || "",
             image: p.image || "",
+            music_id: p.musicId || null,
+            shared_post_id: p.sharedPostId || null,
             likes: p.likes || [],
             created_at: new Date(p.createdAt || Date.now()).toISOString()
         }));
@@ -5485,7 +5923,7 @@ sb.auth.onAuthStateChange(async (_event,session)=>{
 Object.assign(window,{
     showAuth,loginForm,registerForm,selectGender,register,login,logout,
     navigate,renderFeed,renderProfile,renderFriends,renderMessages,renderMusic,renderEditProfile,
-    searchUsers,createPost,toggleLike,toggleCommentLike,addComment,deleteComment,focusComment,openReplyBox,closeReplyBox,sharePost,deletePost,
+    searchUsers,createPost,toggleLike,toggleCommentLike,addComment,deleteComment,focusComment,openReplyBox,closeReplyBox,deletePost,
     saveProfile,previewAvatar,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
     toggleMessageReaction,toggleReactionPicker,
     toggleNotificationsPanel,goToPost,
@@ -5495,5 +5933,9 @@ Object.assign(window,{
     setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,backfillAchievementsForAllUsers,
     reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent,
     toggleBlockUser,
-    addStoryPrompt,openStoryViewer,closeStoryViewer,storyViewerAdvance,deleteCurrentStory
+    addStoryPrompt,openStoryViewer,closeStoryViewer,storyViewerAdvance,deleteCurrentStory,
+    closeBubblesModal,
+    openSharePicker,openShareToProfile,shareToProfile,openShareToChat,shareToChat,focusSharedPost,
+    openMusicPicker,selectComposerMusic,removeComposerMusic,
+    openEditPost,renderEditPostModal,handleEditPostImageSelect,removeEditPostImage,removeEditPostMusic,saveEditPost,syncEditPostTextFromDom
 });
