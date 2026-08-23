@@ -1614,6 +1614,14 @@ function renderApp(){
 
                 <button
                     class="nav-btn"
+                    data-page="calls"
+                    onclick="navigate('calls')"
+                >
+                    📞 Звонки
+                </button>
+
+                <button
+                    class="nav-btn"
                     data-page="pet"
                     onclick="navigate('pet')"
                 >
@@ -1689,9 +1697,14 @@ function navigate(page, id = null){
         case "music": renderMusic(); break;
         case "pet": renderPet(); break;
         case "edit": renderEditProfile(); break;
+        case "calls": renderCallsPage(); break;
         case "search": renderSearchResults((id != null ? id : userSearchQuery).trim().toLowerCase()); break;
         default: renderFeed();
     }
+
+    // "Лобби"-подписки на странице "Звонки" (нужны только чтобы видеть, кто
+    // сейчас в каналах, не заходя в них) живут только пока страница открыта.
+    if (page !== "calls") teardownAllLobbySubs();
 
     stopWatchingChatPartnerPresence();
     if (page === "messages" && selectedChatId) watchChatPartnerPresence(selectedChatId);
