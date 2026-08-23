@@ -3472,3 +3472,211 @@ html::after{
     background:linear-gradient(160deg,#2a1f30,#17313a);
     border-color:#a24fb0;
 }
+
+/* ============================================================
+   PETS (Tamagotchi-style companion)
+   ============================================================ */
+
+.pet-card{
+    text-align:center;
+}
+
+.pet-status-row{
+    display:flex;
+    justify-content:center;
+    gap:8px;
+    margin-bottom:8px;
+    flex-wrap:wrap;
+}
+
+.pet-stage-badge{
+    background:rgba(111,218,245,.25);
+    color:var(--blue2);
+    font-weight:900;
+    font-size:12px;
+    padding:4px 12px;
+    border-radius:20px;
+}
+
+.pet-flag{
+    font-weight:900;
+    font-size:12px;
+    padding:4px 12px;
+    border-radius:20px;
+}
+
+.pet-flag.asleep{
+    background:rgba(140,150,255,.22);
+    color:#5a5fd6;
+}
+
+.pet-flag.sick{
+    background:rgba(255,150,150,.25);
+    color:#c0405a;
+}
+
+.pet-creature-wrap{
+    width:220px;
+    max-width:60%;
+    margin:6px auto 18px;
+    transform:scale(var(--pet-scale,1));
+    transition:transform .3s;
+}
+
+.pet-creature-svg{
+    width:100%;
+    height:auto;
+    filter:drop-shadow(0 14px 20px rgba(30,120,90,.28));
+    animation:pet-bob 3.2s ease-in-out infinite;
+}
+
+@keyframes pet-bob{
+    0%,100%{ transform:translateY(0); }
+    50%{ transform:translateY(-6px); }
+}
+
+.pet-creature-wrap.asleep .pet-creature-svg{
+    animation:none;
+    opacity:.75;
+}
+
+.pet-creature-wrap.sad .pet-creature-svg{
+    animation:none;
+}
+
+.pet-eye{
+    fill:#1f4d3a;
+}
+
+.pet-creature-wrap.asleep .pet-eye{
+    transform-origin:center;
+    transform:scaleY(.15);
+}
+
+.pet-creature-wrap.sad .pet-mouth{
+    d:path("M92 112 Q110 100 128 112");
+}
+
+.pet-stats{
+    text-align:left;
+    max-width:420px;
+    margin:0 auto 16px;
+}
+
+.pet-stat-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-bottom:9px;
+}
+
+.pet-stat-label{
+    width:130px;
+    flex-shrink:0;
+    font-size:13px;
+    font-weight:700;
+    color:var(--muted);
+}
+
+.pet-stat-track{
+    flex:1;
+    height:12px;
+    border-radius:8px;
+    background:rgba(120,150,160,.18);
+    overflow:hidden;
+}
+
+.pet-stat-fill{
+    height:100%;
+    border-radius:8px;
+    transition:width .4s ease;
+}
+
+.pet-stat-fill.high{ background:linear-gradient(90deg,#9cf38b,#42bd62); }
+.pet-stat-fill.mid{ background:linear-gradient(90deg,#ffe08a,#f5b942); }
+.pet-stat-fill.low{ background:linear-gradient(90deg,#ff9caa,#e45870); }
+
+.pet-actions{
+    display:flex;
+    flex-wrap:wrap;
+    justify-content:center;
+    gap:10px;
+}
+
+.pet-actions button:disabled{
+    opacity:.45;
+    cursor:not-allowed;
+    filter:none;
+    transform:none;
+}
+
+.pet-create-card p{
+    color:var(--muted);
+    margin-top:0;
+}
+
+.pet-species-list{
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    margin:14px 0;
+}
+
+.pet-species-option{
+    display:block;
+    cursor:pointer;
+}
+
+.pet-species-option input{
+    position:absolute;
+    opacity:0;
+    pointer-events:none;
+}
+
+.pet-species-card{
+    display:flex;
+    align-items:center;
+    gap:14px;
+    border:2px solid rgba(255,255,255,.7);
+    border-radius:18px;
+    padding:12px 14px;
+    background:rgba(255,255,255,.6);
+    transition:.15s;
+}
+
+.pet-species-option input:checked + .pet-species-card{
+    border-color:var(--pet-color-2);
+    background:rgba(126,229,109,.14);
+}
+
+.pet-species-swatch{
+    width:44px;
+    height:44px;
+    border-radius:50%;
+    flex-shrink:0;
+    background:radial-gradient(circle at 35% 30%, #fff, var(--pet-color-1) 40%, var(--pet-color-2) 100%);
+    box-shadow:0 4px 10px rgba(30,120,90,.25);
+}
+
+.pet-species-name{
+    font-weight:900;
+}
+
+.pet-species-desc{
+    font-size:12px;
+    color:var(--muted);
+}
+
+.pet-name-input{
+    width:100%;
+    margin-bottom:12px;
+}
+
+[data-theme="dark"] .pet-stage-badge{
+    background:rgba(79,201,245,.18);
+}
+
+[data-theme="dark"] .pet-species-card{
+    background:rgba(255,255,255,.05);
+    border-color:rgba(255,255,255,.14);
+}
