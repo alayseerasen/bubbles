@@ -130,10 +130,10 @@ function statusBadgeHtml(user, size = "normal") {
 const PET_SPECIES = [
     {
         id: "aero_orb",
-        name: "Аэро-пузырёк",
-        description: "Глянцевый пузырь родом из ранних 2000-х — воды и солнечных бликов Frutiger Aero.",
-        colorPrimary: "#8be870",
-        colorSecondary: "#2fa653"
+        name: "Баблу",
+        description: "Глянцевый желейный человечек — как стеклянная игрушка, только живой.",
+        colorPrimary: "#b9ff9b",
+        colorSecondary: "#149a3c"
     }
     // More characters go here later — creating one is just adding an
     // entry to this array (id, name, description, two base colors);
@@ -343,6 +343,11 @@ function petStatBar(label, icon, value) {
 // its two colors, instead of baking hex values into the gradient
 // stops directly — so a future recolor cosmetic only has to set
 // --pet-color-1/--pet-color-2 on this element, no SVG rebuild needed.
+// Shape/gloss is modeled on a glassy jelly figurine (round head, side
+// arm lobes, a seam ring at the neck, several separate specular
+// highlights) — the face stays on top of that for mood feedback
+// (happy/sad/sick/asleep), since a virtual pet needs to be able to
+// visibly react even though the reference figurine itself is blank.
 function renderPetCreature(pet) {
     const species = getPetSpecies(pet.speciesId);
     const c1 = pet.colorPrimary || species.colorPrimary;
@@ -351,24 +356,66 @@ function renderPetCreature(pet) {
     const mood = pet.asleep ? "asleep" : isPetSick(pet) ? "sick" : pet.happiness < 30 ? "sad" : "happy";
     return `
         <div class="pet-creature-wrap ${mood}" style="--pet-color-1:${c1};--pet-color-2:${c2};--pet-scale:${sizeScale}">
-            <svg viewBox="0 0 220 260" class="pet-creature-svg">
+            <svg viewBox="0 0 220 280" class="pet-creature-svg">
                 <defs>
-                    <radialGradient id="petGloss" cx="38%" cy="28%" r="75%">
-                        <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
-                        <stop offset="35%" stop-color="var(--pet-color-1)" stop-opacity="0.9"/>
+                    <radialGradient id="petGloss" cx="35%" cy="25%" r="80%">
+                        <stop offset="0%" stop-color="#ffffff" stop-opacity=".98"/>
+                        <stop offset="28%" stop-color="var(--pet-color-1)" stop-opacity=".95"/>
+                        <stop offset="100%" stop-color="var(--pet-color-2)"/>
+                    </radialGradient>
+                    <radialGradient id="petGlossDark" cx="40%" cy="20%" r="85%">
+                        <stop offset="0%" stop-color="var(--pet-color-1)" stop-opacity=".85"/>
                         <stop offset="100%" stop-color="var(--pet-color-2)"/>
                     </radialGradient>
                 </defs>
-                <ellipse cx="110" cy="245" rx="70" ry="10" fill="rgba(20,60,50,.14)"/>
-                <path d="M40 250 C40 160 45 130 110 130 C175 130 180 160 180 250 Z" fill="url(#petGloss)" stroke="var(--pet-color-2)" stroke-width="4"/>
-                <circle cx="110" cy="78" r="66" fill="url(#petGloss)" stroke="var(--pet-color-2)" stroke-width="4"/>
-                <ellipse cx="85" cy="52" rx="22" ry="15" fill="#fff" opacity="0.55"/>
+                <ellipse cx="110" cy="265" rx="66" ry="10" fill="rgba(15,60,35,.16)"/>
+
+                <!-- arms: two rounded lobes attached to the torso -->
+                <ellipse cx="46" cy="200" rx="26" ry="34" fill="url(#petGlossDark)" stroke="var(--pet-color-2)" stroke-width="3.5"/>
+                <ellipse cx="174" cy="200" rx="26" ry="34" fill="url(#petGlossDark)" stroke="var(--pet-color-2)" stroke-width="3.5"/>
+
+                <!-- torso -->
+                <path d="M56 260 C48 190 52 148 110 148 C168 148 172 190 164 260 Z" fill="url(#petGloss)" stroke="var(--pet-color-2)" stroke-width="4"/>
+
+                <!-- head -->
+                <circle cx="110" cy="80" r="64" fill="url(#petGloss)" stroke="var(--pet-color-2)" stroke-width="4"/>
+                <!-- seam ring where the head meets the body, like the figurine's neck rim -->
+                <ellipse cx="110" cy="146" rx="30" ry="8" fill="none" stroke="var(--pet-color-2)" stroke-width="3" opacity=".55"/>
+
+                <!-- multiple glossy highlights, like light catching curved glass -->
+                <ellipse cx="82" cy="48" rx="24" ry="16" fill="#fff" opacity=".8" transform="rotate(-18 82 48)"/>
+                <ellipse cx="145" cy="70" rx="7" ry="10" fill="#fff" opacity=".55"/>
+                <ellipse cx="90" cy="185" rx="16" ry="22" fill="#fff" opacity=".35"/>
+                <ellipse cx="150" cy="215" rx="6" ry="9" fill="#fff" opacity=".4"/>
+
                 <g class="pet-face">
                     <circle cx="86" cy="82" r="7" class="pet-eye"/>
                     <circle cx="134" cy="82" r="7" class="pet-eye"/>
-                    <path class="pet-mouth" d="M92 104 Q110 118 128 104" fill="none" stroke="#1f4d3a" stroke-width="4" stroke-linecap="round"/>
+                    <path class="pet-mouth" d="M92 104 Q110 118 128 104" fill="none" stroke="#0f3d24" stroke-width="4" stroke-linecap="round"/>
                 </g>
             </svg>
+        </div>
+    `;
+}
+
+// A small ambient scene the pet "lives in" — window, floor, a couple
+// of drifting bubbles — purely decorative for now (CSS/SVG only, no
+// image assets), and a natural place to hang furniture/room cosmetics
+// off of later without touching the pet-rendering code at all.
+function renderPetRoom(innerHtml) {
+    const bubbles = [18, 42, 68, 85].map((left, i) => `
+        <span class="pet-room-bubble" style="--left:${left}%;--delay:${i * 1.8}s;--size:${14 + (i % 3) * 8}px"></span>
+    `).join("");
+    return `
+        <div class="pet-room">
+            <div class="pet-room-window">
+                <span class="pet-room-cloud c1"></span>
+                <span class="pet-room-cloud c2"></span>
+            </div>
+            ${bubbles}
+            <div class="pet-room-floor"></div>
+            <div class="pet-room-rug"></div>
+            <div class="pet-room-stage">${innerHtml}</div>
         </div>
     `;
 }
@@ -420,7 +467,7 @@ function renderPet() {
                 ${pet.asleep ? `<span class="pet-flag asleep">💤 Спит</span>` : ""}
                 ${sick ? `<span class="pet-flag sick">🤒 Приболел</span>` : ""}
             </div>
-            ${renderPetCreature(pet)}
+            ${renderPetRoom(renderPetCreature(pet))}
             <div class="pet-stats">
                 ${petStatBar("Сытость", "🍎", pet.hunger)}
                 ${petStatBar("Энергия", "⚡", pet.energy)}
