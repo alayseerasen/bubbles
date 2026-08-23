@@ -8,6 +8,155 @@ const MAX_COVER_SIZE = 5 * 1024 * 1024;
 const MUSIC_BUCKET = "music";
 const QUICK_REACTIONS = ["❤️", "😂", "👍", "😮", "😢"];
 
+/* ============================================================
+   ACHIEVEMENTS & STATUS
+   ------------------------------------------------------------
+   Edit this list to add/change achievements — each just needs an id,
+   how it's shown, and a check(userId) using whatever's already loaded
+   in `db`. "Manual" ones (no check fn) aren't auto-detected; they're
+   granted directly from wherever the moment happens (search
+   grantAchievement( in this file) — first_story works this way,
+   because expired stories vanish from `db.stories` so there's nothing
+   left to check against later.
+
+   Checks that need private data (your own message count, say) guard
+   themselves with `id === currentUserId` — they're only ever actually
+   RUN for the logged-in person anyway (see recomputeAchievements()),
+   this is just so the intent is obvious reading the list.
+
+   Status tiers are just a lookup on HOW MANY are unlocked — no need
+   to hand-assign a title per achievement combo. Add achievements
+   freely; the tier thresholds below are out of ACHIEVEMENTS.length,
+   so they'll naturally need revisiting if the list grows a lot.
+   ============================================================ */
+const ACHIEVEMENTS = [
+    { id: "first_post", icon: "🫧", title: "Первый пузырь", description: "Опубликуй свой первый пост",
+        check: (id) => db.posts.some(p => p.authorId === id) },
+    { id: "posts_10", icon: "📝", title: "Разговорчивый", description: "Опубликуй 10 постов",
+        check: (id) => db.posts.filter(p => p.authorId === id).length >= 10 },
+    { id: "posts_50", icon: "🌊", title: "Фонтан контента", description: "Опубликуй 50 постов",
+        check: (id) => db.posts.filter(p => p.authorId === id).length >= 50 },
+    { id: "likes_50", icon: "❤️", title: "Инфлюенсер", description: "Получи 50 лайков суммарно",
+        check: (id) => db.posts.filter(p => p.authorId === id).reduce((sum, p) => sum + p.likes.length, 0) >= 50 },
+    { id: "viral_post", icon: "🔥", title: "Вирусный пузырь", description: "Один пост набрал 20+ лайков",
+        check: (id) => db.posts.some(p => p.authorId === id && p.likes.length >= 20) },
+    { id: "first_friend", icon: "🤝", title: "Не одинок(а)", description: "Найди первого друга",
+        check: (id) => db.friends.some(f => f.user1 === id || f.user2 === id) },
+    { id: "friends_10", icon: "🎉", title: "Душа компании", description: "10 друзей",
+        check: (id) => db.friends.filter(f => f.user1 === id || f.user2 === id).length >= 10 },
+    { id: "friends_25", icon: "👑", title: "Легенда тусовки", description: "25 друзей",
+        check: (id) => db.friends.filter(f => f.user1 === id || f.user2 === id).length >= 25 },
+    { id: "first_message", icon: "💬", title: "Ледокол", description: "Отправь первое сообщение",
+        check: (id) => id === currentUserId && db.messages.some(m => m.from === id) },
+    { id: "messages_100", icon: "🗨️", title: "Болтушка", description: "Отправь 100 сообщений",
+        check: (id) => id === currentUserId && db.messages.filter(m => m.from === id).length >= 100 },
+    { id: "first_save", icon: "🎧", title: "Меломан", description: "Сохрани трек в библиотеку",
+        check: (id) => id === currentUserId && mySavedMusicIds.size >= 1 },
+    { id: "dj", icon: "🎚️", title: "Диджей", description: "Загрузи свой первый трек",
+        check: (id) => db.music.some(m => m.authorId === id) },
+    { id: "first_story", icon: "📸", title: "На виду", description: "Опубликуй первую историю" }, // manual — see grantAchievement( calls
+    { id: "veteran_30", icon: "🕰️", title: "Ветеран", description: "Аккаунту 30 дней",
+        check: (id) => { const u = getUser(id); return !!u && (Date.now() - u.createdAt) >= 30 * 86400000; } },
+    { id: "veteran_180", icon: "🏛️", title: "Старожил", description: "Аккаунту 180 дней",
+        check: (id) => { const u = getUser(id); return !!u && (Date.now() - u.createdAt) >= 180 * 86400000; } }
+];
+
+// Ordered low → high; whichever's the LAST one your unlocked count
+// still clears wins. Nothing at 0 on purpose — no badge until you've
+// actually done something.
+const STATUS_TIERS = [
+    { min: 1, icon: "🫧", title: "Бабблер" },
+    { min: 3, icon: "✨", title: "Супер Бабблер" },
+    { min: 6, icon: "💫", title: "Гуру Пузырей" },
+    { min: 10, icon: "👑", title: (gender) => gender === "male" ? "Король Пузырей" : "Королева Пузырей" },
+    { min: 13, icon: "🌟", title: "Легенда Bubbles" }
+];
+
+function getStatusTier(user) {
+    if (!user) return null;
+    if (user.customStatusTitle) return { icon: user.customStatusIcon || "🌟", title: user.customStatusTitle };
+    const count = user.achievementLevel || 0;
+    let tier = null;
+    for (const t of STATUS_TIERS) if (count >= t.min) tier = t;
+    if (!tier) return null;
+    return { icon: tier.icon, title: typeof tier.title === "function" ? tier.title(user.gender) : tier.title };
+}
+
+function statusBadgeHtml(user, size = "normal") {
+    const tier = getStatusTier(user);
+    if (!tier) return "";
+    const cls = size === "small" ? "status-badge small" : "status-badge";
+    return `<span class="${cls}" title="${escapeHtml(tier.title)}">${tier.icon} ${escapeHtml(tier.title)}</span>`;
+}
+
+// Only ever meaningfully accurate for the CURRENTLY LOGGED IN person —
+// see the big comment on ACHIEVEMENTS above. Diffs against what's
+// already saved on their profile so it only writes to the DB (and only
+// congratulates them) when something actually changed.
+async function recomputeAchievements() {
+    if (!currentUserId) return;
+    const me = getUser(currentUserId);
+    if (!me) return;
+    const computedIds = ACHIEVEMENTS.filter(a => a.check && a.check(currentUserId)).map(a => a.id);
+    const newSet = new Set([...me.unlockedAchievements, ...computedIds]); // union: never revoke a manually-granted one just because check() doesn't cover it
+    const newlyUnlocked = [...newSet].filter(id => !me.unlockedAchievements.includes(id));
+    if (!newlyUnlocked.length) return;
+    await persistAchievements(me, [...newSet]);
+    newlyUnlocked.forEach(id => {
+        const a = ACHIEVEMENTS.find(x => x.id === id);
+        if (a) toast(`🏆 Новое достижение: ${a.icon} ${a.title}!`, 5000);
+    });
+}
+
+// For achievements that can't be re-derived later (see first_story) —
+// call this right at the moment the thing happens.
+async function grantAchievement(userId, achievementId) {
+    if (userId !== currentUserId) return;
+    const me = getUser(currentUserId);
+    if (!me || me.unlockedAchievements.includes(achievementId)) return;
+    const newList = [...me.unlockedAchievements, achievementId];
+    await persistAchievements(me, newList);
+    const a = ACHIEVEMENTS.find(x => x.id === achievementId);
+    if (a) toast(`🏆 Новое достижение: ${a.icon} ${a.title}!`, 5000);
+}
+
+async function persistAchievements(user, unlockedIds) {
+    const oldLevel = user.achievementLevel || 0;
+    user.unlockedAchievements = unlockedIds;
+    user.achievementLevel = unlockedIds.length;
+    const { error } = await sb.from("profiles")
+        .update({ unlocked_achievements: unlockedIds, achievement_level: unlockedIds.length })
+        .eq("id", user.id);
+    if (error) { console.error("❌ Не удалось сохранить достижения:", error); return; }
+    const oldTierCount = STATUS_TIERS.filter(t => oldLevel >= t.min).length;
+    const newTierCount = STATUS_TIERS.filter(t => unlockedIds.length >= t.min).length;
+    if (newTierCount > oldTierCount) {
+        const tier = getStatusTier(user);
+        if (tier) toast(`${tier.icon} Новый статус: ${tier.title}!`, 6000);
+    }
+    if (currentPage === "profile" && selectedProfileId === user.id) renderProfile(user.id);
+}
+
+function renderAchievementsGrid(user) {
+    return `
+        <h2 class="section-title">
+            🏆 Достижения ${statusBadgeHtml(user)}
+        </h2>
+        <div class="achievements-grid">
+            ${ACHIEVEMENTS.map(a => {
+                const unlocked = user.unlockedAchievements.includes(a.id);
+                return `
+                    <div class="achievement-card ${unlocked ? "unlocked" : "locked"}" title="${escapeHtml(a.description)}">
+                        <div class="achievement-icon">${unlocked ? a.icon : "🔒"}</div>
+                        <div class="achievement-title">${escapeHtml(a.title)}</div>
+                        <div class="achievement-desc">${escapeHtml(a.description)}</div>
+                    </div>
+                `;
+            }).join("")}
+        </div>
+    `;
+}
+
 const sb = window.bubblesSupabase;
 
 // Registered immediately (not gated behind login) purely so the browser
@@ -272,6 +421,7 @@ function addStoryPrompt() {
         if (error) { console.error(error); toast("Не удалось опубликовать историю."); return; }
         db.stories.push(rowToStory(data));
         toast("История опубликована! Пропадёт через 24 часа.");
+        grantAchievement(currentUserId, "first_story");
         renderApp();
     };
     document.body.appendChild(input);
@@ -811,6 +961,7 @@ function startApp(){
     renderApp();
     startOnlineCountPolling();
     subscribeToPush(); // fire-and-forget — a person who ignores/denies the permission prompt should still get a working app
+    recomputeAchievements();
 }
 
 function renderApp(){
@@ -1259,6 +1410,8 @@ function renderPost(post){
                         ${escapeHtml(author.displayName)}
                     </strong>
 
+                    ${statusBadgeHtml(author, "small")}
+
                     <small>
                         @${escapeHtml(author.username)}
                         · ${timeAgo(post.createdAt)}
@@ -1423,6 +1576,7 @@ async function createPost() {
         return;
     }
     toast("Пост опубликован!");
+    recomputeAchievements();
     renderFeed();
 }
 
@@ -1694,6 +1848,9 @@ function renderProfile(userId){
                         <div class="username">
                             @${escapeHtml(user.username)}
                         </div>
+
+                        ${statusBadgeHtml(user)}
+
                         ${isUserOnline(user.lastSeen) ? `<div class="online-status">🟢 Онлайн</div>` : `<div class="offline-status">⚪ Оффлайн</div>`}
 
                         ${user.currentTrack ? `<div class="now-listening">🎧 Сейчас слушает: ${escapeHtml(user.currentTrack)}${user.currentArtist ? " — " + escapeHtml(user.currentArtist) : ""}</div>` : ""}
@@ -1792,6 +1949,8 @@ function renderProfile(userId){
         </div>
 
         ${isMe && isAdmin() ? renderModerationQueue() : adminProfileControls(user)}
+
+        ${renderAchievementsGrid(user)}
 
 
         <h2 class="section-title">
@@ -2323,6 +2482,7 @@ async function acceptFriendRequest(requestId, otherUserId) {
     db.friendRequests = db.friendRequests.filter(r => r.id !== requestId);
     toast("Теперь вы друзья 🎉");
     createNotification({ userId: otherUserId, type: "friend_accept" });
+    recomputeAchievements();
     navigate(currentPage, selectedProfileId);
     updateNavBadges();
 }
@@ -3821,6 +3981,7 @@ async function sendMessage(event, userId) {
         if (bubble) bubble.remove();
         return;
     }
+    recomputeAchievements();
 }
 
 /* ============================================================
@@ -3960,6 +4121,8 @@ async function toggleMusicSave(musicId) {
         if (wasSaved) mySavedMusicIds.add(musicId); else mySavedMusicIds.delete(musicId);
         toast("Не удалось обновить мою музыку.");
         if (currentPage === "music") renderMusic();
+    } else if (!wasSaved) {
+        recomputeAchievements();
     }
 }
 
@@ -4023,6 +4186,7 @@ async function uploadMusic() {
         document.getElementById("musicFile").value = "";
         document.getElementById("musicCover").value = "";
         toast("Трек опубликован 🎵");
+        recomputeAchievements();
         renderMusic();
     }
     catch (error) {
@@ -4158,6 +4322,7 @@ function adminProfileControls(user){
             <div style="opacity:.7;font-size:14px;margin-bottom:10px;">
                 ${user.role === "admin" ? "🛡️ Администратор" : "Обычный пользователь"}
                 ${user.banned ? ` · 🚫 забанен${user.banReason ? ": " + escapeHtml(user.banReason) : ""}` : ""}
+                ${user.customStatusTitle ? ` · статус: ${escapeHtml(user.customStatusIcon || "🌟")} ${escapeHtml(user.customStatusTitle)}` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
                 ${
@@ -4170,9 +4335,50 @@ function adminProfileControls(user){
                     ? `<button class="secondary" onclick="setUserBanned('${user.id}',false)">Разбанить</button>`
                     : `<button class="danger" onclick="setUserBanned('${user.id}',true)">Забанить</button>`
                 }
+                <button class="secondary" onclick="setCustomStatus('${user.id}')">
+                    ${user.customStatusTitle ? "✏️ Изменить статус" : "🌟 Назначить статус"}
+                </button>
+                ${
+                    user.customStatusTitle
+                    ? `<button class="secondary" onclick="clearCustomStatus('${user.id}')">Сбросить статус</button>`
+                    : ""
+                }
             </div>
         </div>
     `;
+}
+
+// Overrides the auto-computed achievement tier outright — only an admin
+// can call this (checked here AND enforced again at the DB level by the
+// protect_profile_role_columns trigger, in case this ever gets called
+// from somewhere that skips the UI check). An empty title clears it,
+// same as clearCustomStatus below.
+async function setCustomStatus(userId) {
+    if (!isAdmin()) return;
+    const user = getUser(userId);
+    if (!user) return;
+    const title = (prompt(`Статус для ${user.displayName} (например «Королева пузырей»):`, user.customStatusTitle || "") || "").trim();
+    if (!title) return;
+    const icon = (prompt("Эмодзи для статуса (необязательно):", user.customStatusIcon || "🌟") || "🌟").trim();
+    const { error } = await sb.from("profiles").update({ custom_status_title: title, custom_status_icon: icon }).eq("id", userId);
+    if (error) { console.error(error); toast("Не удалось назначить статус."); return; }
+    user.customStatusTitle = title;
+    user.customStatusIcon = icon;
+    toast(`Статус «${icon} ${title}» назначен ${user.displayName}.`);
+    renderApp();
+}
+
+async function clearCustomStatus(userId) {
+    if (!isAdmin()) return;
+    const user = getUser(userId);
+    if (!user) return;
+    if (!confirm(`Сбросить статус у ${user.displayName} и вернуть автоматический?`)) return;
+    const { error } = await sb.from("profiles").update({ custom_status_title: null, custom_status_icon: null }).eq("id", userId);
+    if (error) { console.error(error); toast("Не удалось сбросить статус."); return; }
+    user.customStatusTitle = "";
+    user.customStatusIcon = "";
+    toast("Статус сброшен.");
+    renderApp();
 }
 
 async function setUserRole(userId, makeAdmin) {
@@ -4513,6 +4719,10 @@ function rowToUser(row){
         banned: !!row.banned,
         banReason: row.ban_reason || "",
         publicKey: row.public_key || "",
+        unlockedAchievements: Array.isArray(row.unlocked_achievements) ? row.unlocked_achievements : [],
+        achievementLevel: row.achievement_level || 0,
+        customStatusTitle: row.custom_status_title || "",
+        customStatusIcon: row.custom_status_icon || "",
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
@@ -5202,7 +5412,7 @@ Object.assign(window,{
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
     toggleProfileMusicExpanded,toggleProfileFriendsExpanded,
-    setUserRole,setUserBanned,
+    setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,
     reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent,
     toggleBlockUser,
     addStoryPrompt,openStoryViewer,closeStoryViewer,storyViewerAdvance,deleteCurrentStory
