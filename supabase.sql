@@ -1044,6 +1044,45 @@ using (
 );
 
 -- ============================================================
+-- ЗВОНКИ (голосовые/видео каналы, как в TeamSpeak)
+-- Сам звонок (аудио/видео/показ экрана) идёт напрямую между
+-- браузерами через WebRTC и Supabase Realtime (Presence + Broadcast)
+-- — это всё эфемерное, в базе не хранится. Здесь хранится только
+-- список постоянных каналов.
+-- ============================================================
+
+create table if not exists public.call_channels (
+    id uuid primary key default gen_random_uuid(),
+    name text not null,
+    created_by uuid references public.profiles(id) on delete set null,
+    created_at timestamptz not null default now()
+);
+
+alter table public.call_channels enable row level security;
+
+drop policy if exists call_channels_select on public.call_channels;
+create policy call_channels_select
+on public.call_channels for select
+to authenticated
+using (true);
+
+drop policy if exists call_channels_insert on public.call_channels;
+create policy call_channels_insert
+on public.call_channels for insert
+to authenticated
+with check (auth.uid() = created_by);
+
+drop policy if exists call_channels_delete on public.call_channels;
+create policy call_channels_delete
+on public.call_channels for delete
+to authenticated
+using (auth.uid() = created_by or public.is_admin());
+
+insert into public.call_channels (name, created_by)
+select 'Общий', null
+where not exists (select 1 from public.call_channels);
+
+-- ============================================================
 -- ONE-TIME: make yourself the first admin.
 -- Nobody is an admin by default. After running the rest of this
 -- file, replace 'your_username' below with your bubbles username,
