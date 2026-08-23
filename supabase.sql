@@ -369,6 +369,28 @@ alter table public.profiles add column if not exists role text not null default 
 alter table public.profiles add column if not exists banned boolean not null default false;
 alter table public.profiles add column if not exists ban_reason text not null default '';
 
+-- ------------------------------------------------------------
+-- ACHIEVEMENTS / STATUS
+-- ------------------------------------------------------------
+-- The achievement DEFINITIONS (what unlocks each one) live entirely in
+-- js/app.js, not the database — this is deliberately just a cache of
+-- the RESULT. The client computes a person's own unlocked achievements
+-- from data it already has loaded (their post/comment/friend/message
+-- counts etc, some of which — like message count — only THEY can read
+-- under RLS) and writes the outcome here. Everyone else's client then
+-- just reads this column directly to show a badge next to their name,
+-- without ever needing access to the private numbers behind it.
+-- ------------------------------------------------------------
+alter table public.profiles add column if not exists unlocked_achievements text[] not null default '{}';
+alter table public.profiles add column if not exists achievement_level integer not null default 0;
+-- Admin-assigned status, overriding the auto-computed achievement tier
+-- when set (see getStatusTier() in js/app.js). NULL means "just use the
+-- normal computed tier" — this is for the rare case an admin wants to
+-- hand someone a custom title outright.
+alter table public.profiles add column if not exists custom_status_title text;
+alter table public.profiles add column if not exists custom_status_icon text;
+
+
 -- security definer so these can be read inside RLS policies without
 -- recursively re-triggering RLS on profiles.
 create or replace function public.is_admin()
@@ -456,10 +478,11 @@ using (
 drop policy if exists story_views_insert on public.story_views;
 create policy story_views_insert on public.story_views for insert with check (auth.uid() = viewer_id);
 
--- Stops a non-admin from granting themselves (or anyone) admin, or
--- un-banning themselves, by editing their own profile row — no matter
--- which update policy let the row through, role/banned/ban_reason only
--- ever actually change when the person running the update is an admin.
+-- Stops a non-admin from granting themselves (or anyone) admin,
+-- un-banning themselves, or handing themselves a custom status, by
+-- editing their own profile row — no matter which update policy let
+-- the row through, role/banned/ban_reason/custom_status_* only ever
+-- actually change when the person running the update is an admin.
 create or replace function public.protect_profile_role_columns()
 returns trigger
 language plpgsql
@@ -477,6 +500,8 @@ begin
         new.role := old.role;
         new.banned := old.banned;
         new.ban_reason := old.ban_reason;
+        new.custom_status_title := old.custom_status_title;
+        new.custom_status_icon := old.custom_status_icon;
     end if;
     return new;
 end;
