@@ -1,3 +1,5 @@
+Bubbles — push notifications updated for iPhone Home Screen PWA.
+
 BUBBLES — Supabase version
 
 НОВОЕ — КОЛОКОЛЬЧИК УВЕДОМЛЕНИЙ (запусти supabase.sql заново)
