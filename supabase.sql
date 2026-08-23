@@ -341,6 +341,17 @@ create table if not exists public.music (
 );
 
 -- ------------------------------------------------------------
+-- POST MUSIC + REPOSTS
+-- Both reference tables (music, posts itself) that only exist by this
+-- point in the script, so these live here rather than next to CREATE
+-- TABLE posts above. on delete set null: if the attached track or the
+-- original post is later deleted, the post itself survives — it just
+-- shows as "unavailable" rather than disappearing.
+-- ------------------------------------------------------------
+alter table public.posts add column if not exists music_id text references public.music(id) on delete set null;
+alter table public.posts add column if not exists shared_post_id text references public.posts(id) on delete set null;
+
+-- ------------------------------------------------------------
 -- PRESENCE / NOW-PLAYING columns used by js/app.js but missing
 -- from earlier versions of this file — safe to add if already there.
 -- ------------------------------------------------------------
