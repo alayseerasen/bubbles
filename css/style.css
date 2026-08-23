@@ -3850,8 +3850,74 @@ html::after{
 }
 
 /* ============================================================
-   ЗВОНКИ — плавающая панель, видео-плитки, список каналов
+   ЗВОНКИ — кнопка вызова в чате, модалки, плавающая панель
    ============================================================ */
+
+.chat-call-btn{
+    margin-left:auto;
+    border:0;
+    background:rgba(126,229,109,.18);
+    color:#2b9e3f;
+    width:36px;
+    height:36px;
+    border-radius:50%;
+    font-size:1.1rem;
+    flex-shrink:0;
+}
+
+.chat-call-btn:hover{
+    background:rgba(126,229,109,.32);
+}
+
+/* Модалка входящего/исходящего звонка (внутри общего .bubbles-modal-card) */
+
+.call-modal{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    text-align:center;
+    padding:10px 4px 4px;
+}
+
+.call-modal-avatar{
+    width:96px;
+    height:96px;
+    border-radius:50%;
+    object-fit:cover;
+    box-shadow:0 8px 25px rgba(35,125,160,.3);
+}
+
+.call-modal-avatar-pulse{
+    animation:call-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes call-pulse{
+    0%,100%{ box-shadow:0 0 0 0 rgba(79,201,245,.45); }
+    50%{ box-shadow:0 0 0 14px rgba(79,201,245,0); }
+}
+
+.call-modal h3{
+    margin:14px 0 2px;
+}
+
+.call-modal-actions{
+    display:flex;
+    gap:18px;
+    margin-top:18px;
+}
+
+.call-modal-actions .call-btn{
+    width:56px;
+    height:56px;
+    font-size:1.4rem;
+}
+
+.call-btn-accept{
+    background:var(--green2);
+    color:#fff;
+}
+
+/* Плавающая панель активного звонка */
 
 .call-bar{
     position:fixed;
@@ -3859,7 +3925,7 @@ html::after{
     bottom:18px;
     transform:translateX(-50%);
     z-index:9998;
-    width:min(560px,94vw);
+    width:min(420px,94vw);
     background:rgba(20,50,65,.92);
     backdrop-filter:blur(8px);
     border-radius:20px;
@@ -3882,6 +3948,12 @@ html::after{
     overflow:hidden;
     text-overflow:ellipsis;
     white-space:nowrap;
+}
+
+.call-bar-audio-only{
+    text-align:center;
+    margin:0 0 10px;
+    color:#bfe4ee;
 }
 
 .call-tiles{
@@ -3964,61 +4036,6 @@ html::after{
     height:32px;
     font-size:.9rem;
     flex-shrink:0;
-}
-
-.call-channel-card{
-    margin-bottom:12px;
-}
-
-.call-channel-head{
-    display:flex;
-    align-items:flex-start;
-    justify-content:space-between;
-    gap:10px;
-    flex-wrap:wrap;
-}
-
-.call-channel-actions{
-    display:flex;
-    gap:8px;
-    flex-shrink:0;
-}
-
-.call-channel-members{
-    display:flex;
-    gap:8px;
-    flex-wrap:wrap;
-    margin-top:8px;
-}
-
-.call-member-chip{
-    position:relative;
-    width:38px;
-    height:38px;
-}
-
-.call-member-chip img{
-    width:100%;
-    height:100%;
-    border-radius:50%;
-    object-fit:cover;
-    border:2px solid var(--blue);
-}
-
-.call-member-badge{
-    position:absolute;
-    right:-4px;
-    bottom:-4px;
-    font-size:.7rem;
-    background:#fff;
-    border-radius:50%;
-    padding:1px 2px;
-    line-height:1;
-}
-
-.call-member-badge-video{
-    right:auto;
-    left:-4px;
 }
 
 .call-settings-label{
