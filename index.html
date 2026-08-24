@@ -17,7 +17,7 @@
     }catch(e){}
 })();
 </script>
-<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/style.css?v=2">
 </head>
 <body>
 
@@ -47,14 +47,23 @@
 
 <div id="toastContainer"></div>
 
+<!--
+  CACHE-BUSTING: every local script/style below carries ?v=N. iOS
+  "Add to Home Screen" apps in particular cache extremely aggressively
+  and often won't pick up new code on a normal reload — bumping this
+  number on every deploy forces the browser to treat the file as new
+  and fetch it fresh, instead of quietly continuing to run old code
+  while looking like nothing changed. BUMP THIS EVERY TIME YOU UPDATE
+  A FILE (css/style.css, any js/*.js, or sw.js).
+-->
 <!-- Supabase JS -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="js/supabase-config.js"></script>
-<script src="js/push-config.js"></script>
-<script src="js/supabase.js"></script>
-<script src="js/theme.js"></script>
-<script src="js/crypto.js"></script>
-<script src="js/app.js"></script>
-<script src="js/calls.js"></script>
+<script src="js/supabase-config.js?v=2"></script>
+<script src="js/push-config.js?v=2"></script>
+<script src="js/supabase.js?v=2"></script>
+<script src="js/theme.js?v=2"></script>
+<script src="js/crypto.js?v=2"></script>
+<script src="js/app.js?v=2"></script>
+<script src="js/calls.js?v=2"></script>
 </body>
 </html>
