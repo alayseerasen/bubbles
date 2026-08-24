@@ -4108,6 +4108,16 @@ html::after{
     padding:16px 18px;
 }
 
+/* #callBarTiles wraps the tiles markup so it can be re-rendered on its
+   own (see js/calls.js) without touching audio/controls — but
+   .call-spotlight's flex:1 sizing only works as a direct flex child of
+   .call-bar.expanded. display:contents takes the wrapper out of the box
+   model entirely so its child still behaves as if it were that direct
+   child, layout-wise. */
+#callBarTiles{
+    display:contents;
+}
+
 .call-spotlight{
     display:flex;
     flex-direction:column;
