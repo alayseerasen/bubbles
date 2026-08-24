@@ -702,6 +702,13 @@ let musicTab = "mine";           // "mine" | "all"
 let musicSearchQuery = "";
 let musicQueue = [];             // ids, in the order currently shown
 let musicAutoplay = true;
+
+// Кроппер (см. js/image-cropper.js) отдаёт уже готовый обрезанный Blob —
+// храним его тут до момента сохранения, вместо того чтобы заново читать
+// исходный файл из <input>.
+let pendingAvatarBlob = null;
+let pendingCoverBlob = null;
+let pendingMusicCoverBlob = null;
 let mySavedMusicIds = new Set(); // tracks (by others) I've added to my library
 let savesByUser = new Map();     // userId -> Set(musicId), for everyone (profile counts)
 
@@ -1172,6 +1179,14 @@ function dataUrlToBlob(dataUrl) {
 async function uploadImageToStorage(file, path, maxDimension) {
     const dataUrl = await resizeImageFile(file, maxDimension);
     const blob = dataUrlToBlob(dataUrl);
+    const { error } = await sb.storage.from(IMAGES_BUCKET).upload(path, blob, { contentType: "image/jpeg", upsert: true });
+    if (error) throw error;
+    return sb.storage.from(IMAGES_BUCKET).getPublicUrl(path).data.publicUrl;
+}
+
+// Для картинок, которые уже прошли через кроппер (js/image-cropper.js) —
+// они уже нужного размера и соотношения сторон, повторный ресайз не нужен.
+async function uploadBlobToStorage(blob, path) {
     const { error } = await sb.storage.from(IMAGES_BUCKET).upload(path, blob, { contentType: "image/jpeg", upsert: true });
     if (error) throw error;
     return sb.storage.from(IMAGES_BUCKET).getPublicUrl(path).data.publicUrl;
@@ -3218,6 +3233,8 @@ function musicProfileCard(music){
 
 function renderEditProfile(){
     const user = getCurrentUser();
+    pendingAvatarBlob = null;
+    pendingCoverBlob = null;
 
     document.getElementById("page").innerHTML = `
 
@@ -3289,7 +3306,7 @@ function renderEditProfile(){
                     id="editAvatar"
                     type="file"
                     accept="image/png,image/jpeg,image/webp"
-                    onchange="previewAvatar(this)"
+                    onchange="onAvatarFileChosen(this)"
                 >
 
             </div>
@@ -3303,7 +3320,12 @@ function renderEditProfile(){
                     id="editCover"
                     type="file"
                     accept="image/png,image/jpeg,image/webp"
+                    onchange="onCoverFileChosen(this)"
                 >
+
+                <img loading="lazy" decoding="async" id="editCoverPreview"
+                    src="${user.cover || ""}"
+                    style="width:100%;border-radius:14px;margin-top:10px;object-fit:cover;aspect-ratio:3;${user.cover ? "" : "display:none;"}">
 
             </div>
 
@@ -3365,7 +3387,7 @@ function renderEditProfile(){
     }
 }
 
-function previewAvatar(input){
+async function onAvatarFileChosen(input){
     const file = input.files[0];
     if(!file) return;
     if(!file.type.startsWith("image/")){
@@ -3373,9 +3395,28 @@ function previewAvatar(input){
         input.value = "";
         return;
     }
-    resizeImageFile(file, 500)
-        .then(dataUrl => { document.getElementById("editAvatarPreview").src = dataUrl; })
-        .catch(() => toast("Не удалось обработать изображение."));
+    const blob = await openImageCropper(file, { aspect: 1, outputSize: 800 });
+    input.value = ""; // файл уже "внутри" blob'а, сам инпут больше не нужен
+    if (!blob) return; // отменили кроп
+    pendingAvatarBlob = blob;
+    document.getElementById("editAvatarPreview").src = URL.createObjectURL(blob);
+}
+
+async function onCoverFileChosen(input){
+    const file = input.files[0];
+    if(!file) return;
+    if(!file.type.startsWith("image/")){
+        toast("Выбери изображение.");
+        input.value = "";
+        return;
+    }
+    const blob = await openImageCropper(file, { aspect: 3, outputSize: 1500 });
+    input.value = "";
+    if (!blob) return;
+    pendingCoverBlob = blob;
+    const preview = document.getElementById("editCoverPreview");
+    preview.src = URL.createObjectURL(blob);
+    preview.style.display = "";
 }
 
 async function saveProfile() {
@@ -3394,30 +3435,12 @@ async function saveProfile() {
         toast("Этот юзернейм уже занят.");
         return;
     }
-    const avatarFile = document.getElementById("editAvatar")?.files[0];
-    const coverFile = document.getElementById("editCover")?.files[0];
-    if (avatarFile) {
-        if (!avatarFile.type.startsWith("image/")) {
-            toast("Выбери изображение.");
-            return;
-        }
-        if (avatarFile.size > 12 * 1024 * 1024) {
-            toast("Аватар слишком большой. Максимум 12 МБ.");
-            return;
-        }
-        try { user.avatar = await uploadImageToStorage(avatarFile, `${user.id}/avatar.jpg`, 500); }
+    if (pendingAvatarBlob) {
+        try { user.avatar = await uploadBlobToStorage(pendingAvatarBlob, `${user.id}/avatar.jpg`); }
         catch (e) { console.error(e); toast("Не удалось загрузить аватар."); return; }
     }
-    if (coverFile) {
-        if (!coverFile.type.startsWith("image/")) {
-            toast("Выбери изображение.");
-            return;
-        }
-        if (coverFile.size > 12 * 1024 * 1024) {
-            toast("Обложка слишком большая. Максимум 12 МБ.");
-            return;
-        }
-        try { user.cover = await uploadImageToStorage(coverFile, `${user.id}/cover.jpg`, 1200); }
+    if (pendingCoverBlob) {
+        try { user.cover = await uploadBlobToStorage(pendingCoverBlob, `${user.id}/cover.jpg`); }
         catch (e) { console.error(e); toast("Не удалось загрузить обложку."); return; }
     }
     user.username = username;
@@ -3429,6 +3452,8 @@ async function saveProfile() {
         toast("Не удалось сохранить профиль.");
         return;
     }
+    pendingAvatarBlob = null;
+    pendingCoverBlob = null;
     toast("Профиль обновлён.");
     renderApp();
 }
@@ -5311,7 +5336,11 @@ function renderMusic() {
                     <h3>Опубликовать музыку</h3>
                     <div class="form-group"><label>Название трека</label><input id="musicTitle" maxlength="80" placeholder="Название"></div>
                     <div class="form-group"><label>Имя артиста</label><input id="musicArtist" maxlength="80" placeholder="Имя Артиста"></div>
-                    <div class="form-group"><label>Обложка</label><input id="musicCover" type="file" accept="image/png,image/jpeg,image/webp"></div>
+                    <div class="form-group">
+                        <label>Обложка</label>
+                        <input id="musicCover" type="file" accept="image/png,image/jpeg,image/webp" onchange="onMusicCoverFileChosen(this)">
+                        <img loading="lazy" decoding="async" id="musicCoverPreview" style="width:120px;height:120px;object-fit:cover;border-radius:12px;margin-top:8px;display:none;">
+                    </div>
                     <div class="form-group"><label>MP3-файл — максимум 15 МБ</label><input id="musicFile" type="file" accept=".mp3,audio/mpeg"></div>
                     <button class="primary" onclick="uploadMusic()">🎵 Опубликовать MP3</button>
                     <p style="color:#7899a7;font-size:12px;margin-bottom:0">MP3 и обложка сохраняются в Supabase Storage. После публикации трек сразу появляется здесь.</p>
@@ -5408,11 +5437,27 @@ async function toggleMusicSave(musicId) {
     }
 }
 
+async function onMusicCoverFileChosen(input){
+    const file = input.files[0];
+    if(!file) return;
+    if(!file.type.startsWith("image/")){
+        toast("Выбери изображение.");
+        input.value = "";
+        return;
+    }
+    const blob = await openImageCropper(file, { aspect: 1, outputSize: 800 });
+    input.value = "";
+    if (!blob) return;
+    pendingMusicCoverBlob = blob;
+    const preview = document.getElementById("musicCoverPreview");
+    preview.src = URL.createObjectURL(blob);
+    preview.style.display = "";
+}
+
 async function uploadMusic() {
     const title = document.getElementById("musicTitle").value.trim();
     const artist = document.getElementById("musicArtist").value.trim();
     const audioFile = document.getElementById("musicFile").files[0];
-    const coverFile = document.getElementById("musicCover").files[0];
     if (!title) {
         toast("Укажи название трека.");
         return;
@@ -5434,17 +5479,9 @@ async function uploadMusic() {
         toast("Можно загружать только MP3.");
         return;
     }
-    if (coverFile && !coverFile.type.startsWith("image/")) {
-        toast("Обложка должна быть изображением.");
-        return;
-    }
-    if (coverFile && coverFile.size > MAX_COVER_SIZE) {
-        toast("Обложка слишком большая. Максимум 5 МБ.");
-        return;
-    }
     const musicId = uid("music");
     const audioPath = `${currentUserId}/${musicId}.mp3`;
-    const coverPath = coverFile ? `${currentUserId}/${musicId}-cover.${(coverFile.name.split(".").pop() || "jpg").toLowerCase()}` : "";
+    const coverPath = pendingMusicCoverBlob ? `${currentUserId}/${musicId}-cover.jpg` : "";
     try {
         toast("Загружаю трек в Supabase…");
         let result = await sb.storage.from(MUSIC_BUCKET).upload(audioPath, audioFile, { contentType: "audio/mpeg", upsert: false });
@@ -5452,8 +5489,8 @@ async function uploadMusic() {
             throw result.error;
         let audioUrl = sb.storage.from(MUSIC_BUCKET).getPublicUrl(audioPath).data.publicUrl;
         let coverUrl = "";
-        if (coverFile) {
-            result = await sb.storage.from(MUSIC_BUCKET).upload(coverPath, coverFile, { contentType: coverFile.type, upsert: false });
+        if (pendingMusicCoverBlob) {
+            result = await sb.storage.from(MUSIC_BUCKET).upload(coverPath, pendingMusicCoverBlob, { contentType: "image/jpeg", upsert: false });
             if (result.error)
                 throw result.error;
             coverUrl = sb.storage.from(MUSIC_BUCKET).getPublicUrl(coverPath).data.publicUrl;
@@ -5467,6 +5504,9 @@ async function uploadMusic() {
         document.getElementById("musicArtist").value = "";
         document.getElementById("musicFile").value = "";
         document.getElementById("musicCover").value = "";
+        pendingMusicCoverBlob = null;
+        const coverPreview = document.getElementById("musicCoverPreview");
+        if (coverPreview) coverPreview.style.display = "none";
         toast("Трек опубликован 🎵");
         recomputeAchievements();
         renderMusic();
