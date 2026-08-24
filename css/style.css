@@ -4077,6 +4077,62 @@ html::after{
     padding:12px 14px;
     box-shadow:0 18px 45px rgba(10,40,55,.4);
     color:#eafcff;
+    transition:width .2s ease, max-height .2s ease;
+}
+
+/* Big spotlight view — this is what actually fixes screen share being
+   a postage stamp: instead of growing the little floating bar, the
+   whole thing becomes a large, centered panel with one big primary
+   tile (screen share takes priority) and everything else as a
+   thumbnail strip underneath. */
+.call-bar.expanded{
+    left:50%;
+    top:50%;
+    bottom:auto;
+    transform:translate(-50%,-50%);
+    width:min(1100px,94vw);
+    max-height:88vh;
+    display:flex;
+    flex-direction:column;
+    padding:16px 18px;
+}
+
+.call-spotlight{
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+    margin-bottom:10px;
+    flex:1;
+    min-height:0;
+}
+
+.call-spotlight-thumbs{
+    display:flex;
+    gap:8px;
+    overflow-x:auto;
+    flex-shrink:0;
+    padding-bottom:2px;
+}
+
+.call-spotlight-thumbs .call-tile{
+    width:160px;
+    flex-shrink:0;
+    aspect-ratio:16/10;
+}
+
+.call-tile-primary,
+.call-spotlight .call-tile.call-tile-primary{
+    flex:1;
+    min-height:0;
+    aspect-ratio:auto;
+}
+
+.call-btn-expand{
+    background:rgba(255,255,255,.14);
+    width:32px;
+    height:32px;
+    font-size:.95rem;
+    flex-shrink:0;
 }
 
 .call-bar-top{
@@ -4093,6 +4149,8 @@ html::after{
     overflow:hidden;
     text-overflow:ellipsis;
     white-space:nowrap;
+    flex:1;
+    min-width:0;
 }
 
 .call-bar-audio-only{
@@ -4198,6 +4256,47 @@ html::after{
     font-size:.9rem;
 }
 
+.call-settings-test-row{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    margin-top:14px;
+}
+
+.call-mic-meter-wrap{
+    margin-top:10px;
+    display:flex;
+    align-items:center;
+    gap:10px;
+}
+
+.call-mic-meter{
+    flex:1;
+    height:10px;
+    border-radius:6px;
+    background:rgba(120,150,165,.25);
+    overflow:hidden;
+}
+
+.call-mic-meter-fill{
+    height:100%;
+    width:0%;
+    background:linear-gradient(90deg,var(--green2),var(--blue));
+    border-radius:6px;
+    transition:width .08s linear;
+}
+
+.call-cam-preview{
+    display:block;
+    width:100%;
+    max-width:320px;
+    aspect-ratio:16/10;
+    object-fit:cover;
+    border-radius:14px;
+    margin-top:12px;
+    background:#0b2531;
+}
+
 @media (max-width:640px){
     .call-bar{
         bottom:calc(70px + env(safe-area-inset-bottom));
@@ -4206,6 +4305,14 @@ html::after{
     }
     .call-tiles{
         max-height:180px;
+    }
+    .call-bar.expanded{
+        width:96vw;
+        max-height:80vh;
+        padding:12px;
+    }
+    .call-spotlight-thumbs .call-tile{
+        width:110px;
     }
 }
 
