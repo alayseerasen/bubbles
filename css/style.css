@@ -4208,3 +4208,45 @@ html::after{
         max-height:180px;
     }
 }
+
+/* ============================================================
+   КРОППЕР — выбор области для аватара/обложки трека/обложки профиля
+   ============================================================ */
+
+.cropper-viewport{
+    width:100%;
+    max-width:360px;
+    margin:0 auto;
+    border-radius:16px;
+    overflow:hidden;
+    position:relative;
+    background:#0b2531;
+    touch-action:none;
+    cursor:grab;
+}
+
+.cropper-viewport:active{
+    cursor:grabbing;
+}
+
+.cropper-viewport img{
+    position:absolute;
+    top:0;
+    left:0;
+    max-width:none;
+    user-select:none;
+    -webkit-user-drag:none;
+    pointer-events:none;
+}
+
+.cropper-controls{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-top:14px;
+    padding:0 4px;
+}
+
+.cropper-controls input[type="range"]{
+    flex:1;
+}
