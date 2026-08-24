@@ -180,6 +180,12 @@ select{
     padding:12px 14px;
     outline:none;
     transition:.2s;
+    /* Explicit 16px — anything smaller makes iOS Safari zoom the whole
+       page in on focus (and it doesn't reliably zoom back out). This
+       was unset before, falling back to the browser's smaller default
+       form-control size, so every text field on the site triggered it. */
+    font-size:16px;
+    font-family:inherit;
 }
 
 input[type="checkbox"],
@@ -1793,39 +1799,24 @@ select:focus{
 
 /* RESPONSIVE */
 
+/* ============================================================
+   BOTTOM NAV (mobile) — hidden by default, shown at <=850px below.
+   Reuses the same visual language (pill shapes, blue accent) as the
+   desktop .nav-btn without sharing its class, since the two need
+   different internal layouts (icon-over-label vs icon-beside-label).
+   ============================================================ */
+.bottom-nav{
+    display:none;
+}
+
+.more-sheet-overlay{
+    display:none;
+}
+
 @media(max-width:850px){
 
     .layout{
         grid-template-columns:1fr;
-    }
-
-    .sidebar{
-        position:sticky;
-        top:72px;
-        z-index:500;
-        display:flex;
-        gap:5px;
-        overflow-x:auto;
-        -webkit-overflow-scrolling:touch;
-        touch-action:pan-x;
-        padding:7px;
-    }
-
-    .nav-btn{
-        width:auto;
-        flex:0 0 auto;
-        white-space:nowrap;
-        margin:0;
-        padding:8px 11px;
-        font-size:14px;
-        border-radius:12px;
-    }
-
-    .back-button{
-        margin:0;
-        padding:0;
-        border:0;
-        display:contents;
     }
 
     .search{
@@ -1859,7 +1850,166 @@ select:focus{
         flex-direction:column;
         align-items:flex-start;
     }
+
+    .bottom-nav{
+        display:flex;
+        position:fixed;
+        left:0;
+        right:0;
+        bottom:0;
+        z-index:5000;
+        padding:6px 4px calc(6px + env(safe-area-inset-bottom));
+        background:rgba(255,255,255,.88);
+        backdrop-filter:blur(18px);
+        -webkit-backdrop-filter:blur(18px);
+        border-top:2px solid rgba(255,255,255,.9);
+        box-shadow:0 -8px 24px rgba(20,90,130,.12);
+    }
+
+    .bottom-nav-btn{
+        flex:1;
+        display:flex;
+        flex-direction:column;
+        align-items:center;
+        justify-content:center;
+        gap:2px;
+        position:relative;
+        border:0;
+        background:none;
+        padding:6px 2px;
+        border-radius:14px;
+        color:#5590a0;
+        font-weight:700;
+        min-height:48px;
+    }
+
+    .bottom-nav-btn.active{
+        color:#168fd0;
+        background:rgba(98,201,235,.15);
+    }
+
+    .bottom-nav-icon{
+        font-size:20px;
+        line-height:1;
+    }
+
+    .bottom-nav-label{
+        font-size:10.5px;
+        line-height:1;
+    }
+
+    .bottom-nav-badge{
+        position:absolute;
+        top:2px;
+        right:calc(50% - 22px);
+        min-width:16px;
+        height:16px;
+        padding:0 4px;
+        font-size:10px;
+    }
+
+    .bottom-nav-dot{
+        position:absolute;
+        top:6px;
+        right:calc(50% - 20px);
+        width:9px;
+        height:9px;
+        border-radius:50%;
+        background:#ff6b81;
+        border:2px solid #fff;
+    }
+
+    .bottom-nav-dot.hidden{ display:none; }
+
+    /* "Ещё" slide-up sheet for the less-frequent destinations */
+    .more-sheet-overlay{
+        display:flex;
+        align-items:flex-end;
+        position:fixed;
+        inset:0;
+        background:rgba(10,30,40,.45);
+        z-index:5001;
+    }
+
+    .more-sheet-overlay.hidden{ display:none; }
+
+    .more-sheet{
+        width:100%;
+        background:#fff;
+        border-radius:24px 24px 0 0;
+        padding:10px 14px calc(14px + env(safe-area-inset-bottom));
+        box-shadow:0 -10px 40px rgba(20,90,130,.25);
+        animation:moreSheetUp .18s ease;
+    }
+
+    @keyframes moreSheetUp{
+        from{ transform:translateY(24px); opacity:.4; }
+        to{ transform:translateY(0); opacity:1; }
+    }
+
+    .more-sheet-handle{
+        width:40px;
+        height:5px;
+        border-radius:3px;
+        background:#d5eef3;
+        margin:2px auto 12px;
+    }
+
+    .more-sheet-item{
+        width:100%;
+        display:flex;
+        align-items:center;
+        gap:10px;
+        border:0;
+        background:none;
+        text-align:left;
+        padding:14px 8px;
+        font-size:16px;
+        font-weight:700;
+        color:var(--text);
+        border-bottom:1px solid #eef8fa;
+        position:relative;
+    }
+
+    .more-sheet-item:last-child{ border-bottom:0; }
+
+    .more-sheet-item .nav-badge{
+        margin-left:auto;
+    }
+
+    .more-sheet-danger{ color:#e45870; }
+
+    /* Old sidebar nav no longer used for navigation on mobile — the
+       bottom bar + sheet above replace it entirely. */
+    .sidebar{
+        display:none;
+    }
+
+    /* Reserve room so page content (and the "compose a post" card,
+       chat input, etc.) never end up hidden behind the fixed bar. */
+    .layout{
+        margin-bottom:calc(70px + env(safe-area-inset-bottom));
+    }
+
+    .global-player{
+        bottom:calc(64px + env(safe-area-inset-bottom));
+    }
+
+    .call-bar{
+        bottom:calc(64px + env(safe-area-inset-bottom));
+    }
+
+    #toastContainer{
+        bottom:calc(64px + env(safe-area-inset-bottom));
+    }
+
 }
+
+@media(prefers-reduced-motion: reduce){
+    .more-sheet{ animation:none; }
+}
+
+
 
 @media(max-width:600px){
 
@@ -1899,24 +2049,19 @@ select:focus{
         display:none;
     }
 
-    .global-player{
-        bottom:8px;
+    .topbar-online-badge{
+        display:none;
     }
+
+    /* NOTE: bottom-nav clearance (bottom: calc(64px + safe-area)) is set
+       in the 850px query above and must win here too — this rule used
+       to hardcode bottom:8px, which since THIS block comes later in the
+       cascade silently undid that fix for every phone narrower than
+       600px (i.e. most phones). Dropped the override entirely so the
+       850px rule keeps applying. */
 
     .friend-grid{
         grid-template-columns:repeat(2,minmax(0,1fr));
-    }
-
-    .sidebar{
-        gap:4px;
-        padding:6px;
-    }
-
-    .nav-btn{
-        padding:6px 9px;
-        font-size:12.5px;
-        gap:4px;
-        border-radius:10px;
     }
 
     .nav-badge{
@@ -4055,7 +4200,7 @@ html::after{
 
 @media (max-width:640px){
     .call-bar{
-        bottom:70px;
+        bottom:calc(70px + env(safe-area-inset-bottom));
         width:96vw;
         padding:10px;
     }
