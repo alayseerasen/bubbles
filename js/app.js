@@ -643,7 +643,10 @@ const sb = window.bubblesSupabase;
 // breaking "Enable notifications" for everyone, including on the real
 // deployed site, not just when testing this zip locally.
 if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js", { scope: "./" })
+    // ?v=2 forces the browser to treat this as a fresh fetch instead of
+    // reusing a cached sw.js — bump this alongside the ?v= in index.html
+    // whenever sw.js itself changes.
+    navigator.serviceWorker.register("./sw.js?v=2", { scope: "./" })
         .catch(err => console.error("Service worker registration failed:", err));
 }
 
