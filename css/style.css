@@ -2853,6 +2853,11 @@ html::after{
         radial-gradient(circle at 15% 15%,rgba(79,201,245,.07) 0 5%,transparent 18%),
         radial-gradient(circle at 85% 20%,rgba(126,229,109,.05) 0 4%,transparent 16%),
         linear-gradient(180deg,#0a141c 0%,#0d1a24 42%,#0a1a1c 100%);
+    /* Same shorthand-reset trap as .cover below: the base body{} rule
+       adds background-attachment:fixed *after* its background shorthand,
+       so without repeating it here, dark mode silently falls back to
+       background-attachment:scroll. */
+    background-attachment:fixed;
 }
 
 [data-theme="dark"] body:before,
@@ -3041,6 +3046,12 @@ html::after{
     background:
         linear-gradient(135deg,rgba(0,130,180,.5),rgba(60,180,110,.32)),
         #112b36;
+    /* The shorthand above resets background-size/-position to their
+       defaults (auto / 0% 0%) unless re-stated — which is exactly why
+       a user's cover photo was cropped/positioned differently in dark
+       mode than in light mode. Match the base .cover rule's values. */
+    background-size:cover;
+    background-position:center;
 }
 
 [data-theme="dark"] .profile-avatar{
