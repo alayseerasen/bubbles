@@ -3603,15 +3603,21 @@ async function subscribeToPush({ requestPermission = false } = {}) {
     if (isIOSDevice() && !isBubblesInstalled()) return false;
     if (Notification.permission === "denied") return false;
 
+    // Each step below is wrapped separately and throws a short, specific
+    // tag (registration-timeout / permission / subscribe / save) instead
+    // of letting everything collapse into one opaque "something broke".
+    // The outer catch turns that tag into copy the person can actually
+    // act on — this is the difference between "try again" (useless) and
+    // "the service worker never became ready — check that sw.js is at
+    // the site root" (something they, or I, can actually fix).
+    let step = "registration";
     try {
-        // navigator.serviceWorker.ready never resolves if registration
-        // failed for any reason (wrong scope, network hiccup, etc.) — a
-        // bare `await` on it used to just hang forever with no feedback.
-        // Racing it against a timeout turns that into a clear error instead.
         const registration = await Promise.race([
             navigator.serviceWorker.ready,
-            new Promise((_, reject) => setTimeout(() => reject(new Error("service worker not ready in time")), 8000))
-        ]);
+            new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 8000))
+        ]).catch(err => { throw Object.assign(new Error("registration-timeout"), { cause: err }); });
+
+        step = "getSubscription";
         let subscription = await registration.pushManager.getSubscription();
 
         // If Bubbles rotated its VAPID key, the old browser subscription is
@@ -3627,9 +3633,11 @@ async function subscribeToPush({ requestPermission = false } = {}) {
             // Permission must be requested from a user gesture on iOS.
             if (!requestPermission && Notification.permission !== "granted") return false;
             if (Notification.permission !== "granted") {
+                step = "permission";
                 const permission = await Notification.requestPermission();
                 if (permission !== "granted") return false;
             }
+            step = "subscribe";
             subscription = await registration.pushManager.subscribe({
                 userVisibleOnly: true,
                 applicationServerKey: urlBase64ToUint8Array(vapidKey)
@@ -3637,6 +3645,7 @@ async function subscribeToPush({ requestPermission = false } = {}) {
         }
         localStorage.setItem("bubbles-vapid-public-key", vapidKey);
 
+        step = "save";
         const json = subscription.toJSON();
         const { error } = await sb.from("push_subscriptions").upsert({
             id: uid("push"),
@@ -3646,20 +3655,26 @@ async function subscribeToPush({ requestPermission = false } = {}) {
             auth: json.keys?.auth
         }, { onConflict: "endpoint" });
 
-        if (error) {
-            console.error("❌ Не удалось сохранить push-подписку:", error);
-            toast("Не удалось включить уведомления. Попробуй ещё раз.");
-            return false;
-        }
+        if (error) throw Object.assign(new Error("save"), { cause: error });
 
         updatePushSettingsUI(true);
         toast("🔔 Уведомления Bubbles включены!");
         return true;
     } catch (error) {
-        console.error("Push subscribe failed:", error);
+        console.error(`Push subscribe failed at step "${step}":`, error, error?.cause || "");
+        if (requestPermission) {
+            const messages = {
+                "registration-timeout": "Service worker не подключился вовремя. Проверь, что sw.js лежит в корне сайта (рядом с index.html), и полностью перезайди в приложение (закрыть и открыть заново, не просто обновить).",
+                getSubscription: "Не удалось прочитать текущую push-подписку браузера.",
+                subscribe: "Браузер отказался создать push-подписку — обычно это старая/повреждённая подписка. Попробуй удалить Bubbles с экрана Домой и добавить заново.",
+                save: "Подписка создана, но не сохранилась на сервере — проверь, что таблица push_subscriptions существует (supabase.sql) и RLS её не блокирует."
+            };
+            toast(messages[step] || "Не удалось включить уведомления. Попробуй ещё раз через пару секунд.", 8000);
+        }
         return false;
     }
 }
+
 
 async function enablePushNotifications() {
     if (isIOSDevice() && !isBubblesInstalled()) {
@@ -3668,14 +3683,13 @@ async function enablePushNotifications() {
     }
     const ok = await subscribeToPush({ requestPermission: true });
     if (ok) return;
+    // Every other failure path now shows its own specific message from
+    // inside subscribeToPush() itself (see the `step` tagging there) —
+    // this only covers "denied", which subscribeToPush intentionally
+    // returns early on without a toast, since the wording differs
+    // between platforms.
     if (typeof Notification !== "undefined" && Notification.permission === "denied") {
         toast("Уведомления запрещены. Включи их в настройках уведомлений Bubbles на iPhone.", 7000);
-    } else if (location.protocol !== "file:") {
-        // file: already showed its own specific message inside subscribeToPush().
-        // Anything else that fails here (registration hiccup, timeout, etc.)
-        // should still say SOMETHING rather than leaving the button looking
-        // like it silently did nothing.
-        toast("Не удалось включить уведомления. Попробуй ещё раз через пару секунд.", 6000);
     }
 }
 
