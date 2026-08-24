@@ -41,10 +41,11 @@ function loadCallSettings() {
             quality: saved.quality || "hd",
             noiseSuppression: saved.noiseSuppression !== false,
             echoCancellation: saved.echoCancellation !== false,
-            autoGainControl: saved.autoGainControl !== false
+            autoGainControl: saved.autoGainControl !== false,
+            advancedNoiseReduction: saved.advancedNoiseReduction !== false
         };
     } catch (e) {
-        return { micId: "", camId: "", speakerId: "", quality: "hd", noiseSuppression: true, echoCancellation: true, autoGainControl: true };
+        return { micId: "", camId: "", speakerId: "", quality: "hd", noiseSuppression: true, echoCancellation: true, autoGainControl: true, advancedNoiseReduction: true };
     }
 }
 
@@ -74,6 +75,7 @@ let callState = {
     screenOn: false,
     remoteVideoOn: false,
     remoteScreenOn: false,
+    expanded: false, // big spotlight view vs. the compact floating bar
     ringTimeout: null,
     stopRingtone: null
 };
@@ -223,8 +225,12 @@ function joinCallChannel(callId, partnerId) {
         })
         .on("broadcast", { event: "state" }, ({ payload }) => {
             if (payload.from !== callState.remoteUserId) return;
+            const remoteScreenJustStarted = !!payload.screen && !callState.remoteScreenOn;
             callState.remoteVideoOn = !!payload.video;
             callState.remoteScreenOn = !!payload.screen;
+            // Whoever's screen it is, seeing it shouldn't require squinting
+            // at a tiny floating window — auto-expand the moment it starts.
+            if (remoteScreenJustStarted) callState.expanded = true;
             renderCallBar();
         })
         .on("broadcast", { event: "hangup" }, ({ payload }) => {
@@ -340,7 +346,7 @@ function endCallLocally(toastMessage) {
     if (callState.status !== "idle") playSound("callEnd");
 
     try { callState.pc?.close(); } catch (e) {}
-    stopStream(callState.localStream);
+    stopMicStream(callState.localStream);
     stopStream(callState.screenStream);
     if (callState.channel) { try { sb.removeChannel(callState.channel); } catch (e) {} }
 
@@ -349,7 +355,7 @@ function endCallLocally(toastMessage) {
         status: "idle", callId: null, remoteUserId: null, remoteName: "", remoteAvatar: "",
         channel: null, pc: null, polite: false, makingOffer: false, ignoreOffer: false,
         localStream: null, screenStream: null, micOn: true, camOn: false, screenOn: false,
-        remoteVideoOn: false, remoteScreenOn: false, ringTimeout: null, stopRingtone: null
+        remoteVideoOn: false, remoteScreenOn: false, expanded: false, ringTimeout: null, stopRingtone: null
     };
 
     renderCallBar();
@@ -359,6 +365,17 @@ function endCallLocally(toastMessage) {
 function stopStream(stream) {
     if (!stream) return;
     stream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
+}
+
+// Releasing a mic stream returned by getMicStream() needs to release more
+// than just its (possibly Web-Audio-processed) track: also the raw
+// hardware capture feeding it and the AudioContext doing the processing,
+// or the mic indicator light stays on and the AudioContext leaks.
+function stopMicStream(stream) {
+    if (!stream) return;
+    stopStream(stream);
+    if (stream._rawMicStream) stopStream(stream._rawMicStream);
+    if (stream._micAudioContext) { try { stream._micAudioContext.close(); } catch (e) {} }
 }
 
 /* ------------------------------------------------------------
@@ -373,10 +390,83 @@ function getMicStream() {
             noiseSuppression: callSettings.noiseSuppression,
             autoGainControl: callSettings.autoGainControl,
             channelCount: 2,
-            sampleRate: 48000
+            sampleRate: 48000,
+            // Chrome-specific legacy constraints layered on top of the
+            // standard ones above, for extra suppression where the browser
+            // supports it — other browsers silently ignore unknown keys.
+            googEchoCancellation: callSettings.echoCancellation,
+            googNoiseSuppression: callSettings.noiseSuppression,
+            googNoiseSuppression2: callSettings.noiseSuppression,
+            googAutoGainControl: callSettings.autoGainControl,
+            googAutoGainControl2: callSettings.autoGainControl,
+            googHighpassFilter: true,
+            googTypingNoiseDetection: true
         },
         video: false
+    }).then(rawStream => {
+        const processed = callSettings.advancedNoiseReduction ? buildProcessedMicStream(rawStream) : null;
+        if (!processed) return rawStream;
+        // Tag the stream we actually hand back with what it needs for full
+        // cleanup later (see stopMicStream) — the raw hardware capture and
+        // the AudioContext doing the processing don't stop just because
+        // the processed track does.
+        processed.stream._rawMicStream = rawStream;
+        processed.stream._micAudioContext = processed.audioContext;
+        return processed.stream;
     });
+}
+
+// Runs the raw mic capture through a small Web Audio processing chain
+// before it ever reaches WebRTC — a real improvement on top of (not a
+// replacement for) the browser's own echoCancellation/noiseSuppression
+// constraints, which only do so much on their own:
+//   1) a highpass filter removes low-frequency rumble (AC hum, desk
+//      vibration, wind on a mic) well below where speech lives;
+//   2) a narrow peaking cut around 120Hz tames mains-hum bleed that's
+//      common on cheap mics/interfaces;
+//   3) a gentle compressor evens out levels and pulls quiet, steady
+//      background noise further beneath voice peaks, so speech reads
+//      as relatively louder without hard-gating anything.
+// This is standard DSP, not ML-based denoising (e.g. RNNoise) — it won't
+// remove a barking dog, but it measurably cleans up the common cases
+// (hum, rumble, room tone) on top of what the browser already does.
+function buildProcessedMicStream(rawStream) {
+    try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass || !rawStream.getAudioTracks().length) return null;
+
+        const audioContext = new AudioContextClass();
+        const source = audioContext.createMediaStreamSource(rawStream);
+
+        const highpass = audioContext.createBiquadFilter();
+        highpass.type = "highpass";
+        highpass.frequency.value = 90;
+        highpass.Q.value = 0.7;
+
+        const humNotch = audioContext.createBiquadFilter();
+        humNotch.type = "peaking";
+        humNotch.frequency.value = 120;
+        humNotch.Q.value = 6;
+        humNotch.gain.value = -8;
+
+        const compressor = audioContext.createDynamicsCompressor();
+        compressor.threshold.value = -50;
+        compressor.knee.value = 12;
+        compressor.ratio.value = 3;
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.25;
+
+        const destination = audioContext.createMediaStreamDestination();
+        source.connect(highpass);
+        highpass.connect(humNotch);
+        humNotch.connect(compressor);
+        compressor.connect(destination);
+
+        return { stream: destination.stream, audioContext };
+    } catch (e) {
+        console.error("Не удалось включить улучшенное шумоподавление:", e);
+        return null;
+    }
 }
 
 function getCamStream() {
@@ -446,6 +536,9 @@ async function toggleScreenShare() {
             const sender = callState.pc.addTrack(track, stream);
             applyEncodingBitrate(sender, q.screenBitrate);
             callState.screenOn = true;
+            // A shared screen is the whole point — don't make anyone
+            // squint at a 420px floating window to read it.
+            callState.expanded = true;
         } catch (e) {
             console.error(e);
             if (e.name !== "NotAllowedError") toast("Не удалось начать показ экрана.");
@@ -453,6 +546,11 @@ async function toggleScreenShare() {
         }
     }
     broadcastMyState();
+    renderCallBar();
+}
+
+function toggleCallExpanded() {
+    callState.expanded = !callState.expanded;
     renderCallBar();
 }
 
@@ -524,25 +622,57 @@ function renderCallBar() {
 
     if (callState.status !== "connected") {
         bar.classList.add("hidden");
+        bar.classList.remove("expanded");
         bar.innerHTML = "";
         return;
     }
 
     bar.classList.remove("hidden");
 
-    const tiles = [];
-    if (callState.camOn) tiles.push(`<div class="call-tile"><video id="callTile-cam-me" autoplay playsinline muted></video><div class="call-tile-label">Ты</div></div>`);
-    if (callState.screenOn) tiles.push(`<div class="call-tile call-tile-screen"><video id="callTile-screen-me" autoplay playsinline muted></video><div class="call-tile-label">🖥️ Ты (экран)</div></div>`);
-    if (callState.remoteVideoOn) tiles.push(`<div class="call-tile"><video id="callTile-cam-remote" autoplay playsinline></video><div class="call-tile-label">${escapeHtml(callState.remoteName)}</div></div>`);
-    if (callState.remoteScreenOn) tiles.push(`<div class="call-tile call-tile-screen"><video id="callTile-screen-remote" autoplay playsinline></video><div class="call-tile-label">🖥️ ${escapeHtml(callState.remoteName)}</div></div>`);
+    // Build each possible tile's definition once — screen shares first,
+    // since that's almost always what people actually want to look at.
+    // Whichever ends up "primary" (big) vs. a thumbnail is purely a
+    // layout choice below; every tile keeps the same element id either
+    // way, since ontrack/toggle*/render code already knows those ids.
+    const tileDefs = [];
+    if (callState.remoteScreenOn) tileDefs.push({ id: "callTile-screen-remote", label: `🖥️ ${escapeHtml(callState.remoteName)}`, screen: true });
+    if (callState.screenOn) tileDefs.push({ id: "callTile-screen-me", label: "🖥️ Ты (экран)", screen: true, muted: true });
+    if (callState.remoteVideoOn) tileDefs.push({ id: "callTile-cam-remote", label: escapeHtml(callState.remoteName), screen: false });
+    if (callState.camOn) tileDefs.push({ id: "callTile-cam-me", label: "Ты", screen: false, muted: true });
+
+    const expanded = callState.expanded && tileDefs.length > 0;
+    bar.classList.toggle("expanded", expanded);
+
+    const tileHtml = (t, primary) => `
+        <div class="call-tile ${t.screen ? "call-tile-screen" : ""} ${primary ? "call-tile-primary" : ""}">
+            <video id="${t.id}" autoplay playsinline ${t.muted ? "muted" : ""}></video>
+            <div class="call-tile-label">${t.label}</div>
+        </div>
+    `;
+
+    let tilesHtml;
+    if (!tileDefs.length) {
+        tilesHtml = `<p class="muted call-bar-audio-only">Только голос</p>`;
+    } else if (expanded) {
+        const [primary, ...rest] = tileDefs;
+        tilesHtml = `
+            <div class="call-spotlight">
+                ${tileHtml(primary, true)}
+                ${rest.length ? `<div class="call-spotlight-thumbs">${rest.map(t => tileHtml(t, false)).join("")}</div>` : ""}
+            </div>
+        `;
+    } else {
+        tilesHtml = `<div class="call-tiles">${tileDefs.map(t => tileHtml(t, false)).join("")}</div>`;
+    }
 
     bar.innerHTML = `
         <audio id="callRemoteAudio" autoplay></audio>
         <div class="call-bar-top">
             <div class="call-bar-title">📞 ${escapeHtml(callState.remoteName)}</div>
+            ${tileDefs.length ? `<button class="call-btn call-btn-expand" onclick="toggleCallExpanded()" title="${expanded ? "Свернуть" : "Развернуть на весь экран"}">${expanded ? "⤡" : "⤢"}</button>` : ""}
             <button class="call-btn call-btn-leave" onclick="hangUpCall()" title="Завершить">✕</button>
         </div>
-        ${tiles.length ? `<div class="call-tiles">${tiles.join("")}</div>` : `<p class="muted call-bar-audio-only">Только голос</p>`}
+        ${tilesHtml}
         <div class="call-bar-controls">
             <button class="call-btn ${callState.micOn ? "" : "call-btn-off"}" onclick="toggleMic()" title="${callState.micOn ? "Выключить микрофон" : "Включить микрофон"}">${callState.micOn ? "🎙️" : "🔇"}</button>
             <button class="call-btn ${callState.camOn ? "call-btn-on" : ""}" onclick="toggleCam()" title="${callState.camOn ? "Выключить камеру" : "Включить камеру"}">🎥</button>
@@ -576,7 +706,7 @@ async function openCallSettings() {
     callSettingsModalOpen = true;
     let devices = [];
     try {
-        if (!callState.localStream) await getMicStream().then(s => stopStream(s));
+        if (!callState.localStream) await getMicStream().then(s => stopMicStream(s));
         devices = await navigator.mediaDevices.enumerateDevices();
     } catch (e) { console.error(e); }
 
@@ -588,48 +718,60 @@ async function openCallSettings() {
 }
 
 function callSettingsModalHtml(mics, cams, speakers) {
-    const opt = (list, selected, fallbackLabel) => list.map((d, i) =>
-        `<option value="${d.deviceId}" ${d.deviceId === selected ? "selected" : ""}>${escapeHtml(d.label || `${fallbackLabel} ${i + 1}`)}</option>`
-    ).join("");
-
     return `
         <div class="modal-header">
             <h3>Настройки звонка</h3>
             <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
         </div>
 
+        ${callSettingsFieldsHtml(mics, cams, speakers, "callSetting", "applyCallSettingsFromModal()")}
+
+        <p class="muted" style="margin-top:10px;">Смена микрофона/камеры применится сразу, если звонок уже идёт. Качество видео — при следующем включении камеры или показа экрана.</p>
+    `;
+}
+
+// Shared by the in-call settings modal and the standalone "📞 Звонки" card
+// on the main Settings page, so both stay in sync and there's one place
+// that defines what a device/quality/audio-processing picker looks like.
+// idPrefix keeps element ids from colliding if both were ever on screen
+// at once; onChangeCall is the function name to invoke on every change.
+function callSettingsFieldsHtml(mics, cams, speakers, idPrefix, onChangeCall) {
+    const opt = (list, selected, fallbackLabel) => list.map((d, i) =>
+        `<option value="${d.deviceId}" ${d.deviceId === selected ? "selected" : ""}>${escapeHtml(d.label || `${fallbackLabel} ${i + 1}`)}</option>`
+    ).join("");
+
+    return `
         <label class="call-settings-label">Микрофон</label>
-        <select id="callSettingMic" onchange="applyCallSettingsFromModal()">
+        <select id="${idPrefix}Mic" onchange="${onChangeCall}">
             <option value="">По умолчанию</option>
             ${opt(mics, callSettings.micId, "Микрофон")}
         </select>
 
         <label class="call-settings-label">Камера</label>
-        <select id="callSettingCam" onchange="applyCallSettingsFromModal()">
+        <select id="${idPrefix}Cam" onchange="${onChangeCall}">
             <option value="">По умолчанию</option>
             ${opt(cams, callSettings.camId, "Камера")}
         </select>
 
         ${speakers.length ? `
         <label class="call-settings-label">Динамик</label>
-        <select id="callSettingSpeaker" onchange="applyCallSettingsFromModal()">
+        <select id="${idPrefix}Speaker" onchange="${onChangeCall}">
             <option value="">По умолчанию</option>
             ${opt(speakers, callSettings.speakerId, "Динамик")}
         </select>
         ` : ""}
 
         <label class="call-settings-label">Качество видео</label>
-        <select id="callSettingQuality" onchange="applyCallSettingsFromModal()">
+        <select id="${idPrefix}Quality" onchange="${onChangeCall}">
             ${Object.entries(CALL_QUALITY_PRESETS).map(([key, p]) => `<option value="${key}" ${key === callSettings.quality ? "selected" : ""}>${p.label}</option>`).join("")}
         </select>
 
         <div class="call-settings-toggles">
-            <label><input type="checkbox" id="callSettingEcho" ${callSettings.echoCancellation ? "checked" : ""} onchange="applyCallSettingsFromModal()"> Подавление эха</label>
-            <label><input type="checkbox" id="callSettingNoise" ${callSettings.noiseSuppression ? "checked" : ""} onchange="applyCallSettingsFromModal()"> Шумоподавление</label>
-            <label><input type="checkbox" id="callSettingAgc" ${callSettings.autoGainControl ? "checked" : ""} onchange="applyCallSettingsFromModal()"> Автогромкость микрофона</label>
+            <label><input type="checkbox" id="${idPrefix}Echo" ${callSettings.echoCancellation ? "checked" : ""} onchange="${onChangeCall}"> Подавление эха</label>
+            <label><input type="checkbox" id="${idPrefix}Noise" ${callSettings.noiseSuppression ? "checked" : ""} onchange="${onChangeCall}"> Шумоподавление (браузер)</label>
+            <label><input type="checkbox" id="${idPrefix}Agc" ${callSettings.autoGainControl ? "checked" : ""} onchange="${onChangeCall}"> Автогромкость микрофона</label>
+            <label><input type="checkbox" id="${idPrefix}Advanced" ${callSettings.advancedNoiseReduction ? "checked" : ""} onchange="${onChangeCall}"> Улучшенное шумоподавление (фильтр гула + компрессор)</label>
         </div>
-
-        <p class="muted" style="margin-top:10px;">Смена микрофона/камеры применится сразу, если звонок уже идёт. Качество видео — при следующем включении камеры или показа экрана.</p>
     `;
 }
 
@@ -638,26 +780,54 @@ function renderCallSettingsModalIfOpen() {
 }
 
 async function applyCallSettingsFromModal() {
-    const micSel = document.getElementById("callSettingMic");
-    const camSel = document.getElementById("callSettingCam");
-    const spkSel = document.getElementById("callSettingSpeaker");
-    const qSel = document.getElementById("callSettingQuality");
+    await applyCallSettingsFrom("callSetting");
+}
+
+// Reads the fields rendered by callSettingsFieldsHtml() under the given
+// id prefix, saves them, and — if a call is currently connected — hot
+// swaps whatever actually changed (mic/cam device or any audio-processing
+// toggle affecting the mic capture) so changes made from the standalone
+// Settings page apply live too, exactly like the in-call modal.
+async function applyCallSettingsFrom(idPrefix) {
+    const micSel = document.getElementById(idPrefix + "Mic");
+    const camSel = document.getElementById(idPrefix + "Cam");
+    const spkSel = document.getElementById(idPrefix + "Speaker");
+    const qSel = document.getElementById(idPrefix + "Quality");
+    const echoEl = document.getElementById(idPrefix + "Echo");
+    const noiseEl = document.getElementById(idPrefix + "Noise");
+    const agcEl = document.getElementById(idPrefix + "Agc");
+    const advEl = document.getElementById(idPrefix + "Advanced");
 
     const micChanged = micSel && micSel.value !== callSettings.micId;
     const camChanged = camSel && camSel.value !== callSettings.camId;
+    const audioProcessingChanged =
+        (echoEl && echoEl.checked !== callSettings.echoCancellation) ||
+        (noiseEl && noiseEl.checked !== callSettings.noiseSuppression) ||
+        (agcEl && agcEl.checked !== callSettings.autoGainControl) ||
+        (advEl && advEl.checked !== callSettings.advancedNoiseReduction);
 
     callSettings.micId = micSel ? micSel.value : callSettings.micId;
     callSettings.camId = camSel ? camSel.value : callSettings.camId;
     callSettings.speakerId = spkSel ? spkSel.value : callSettings.speakerId;
     callSettings.quality = qSel ? qSel.value : callSettings.quality;
-    callSettings.echoCancellation = document.getElementById("callSettingEcho")?.checked ?? callSettings.echoCancellation;
-    callSettings.noiseSuppression = document.getElementById("callSettingNoise")?.checked ?? callSettings.noiseSuppression;
-    callSettings.autoGainControl = document.getElementById("callSettingAgc")?.checked ?? callSettings.autoGainControl;
+    callSettings.echoCancellation = echoEl?.checked ?? callSettings.echoCancellation;
+    callSettings.noiseSuppression = noiseEl?.checked ?? callSettings.noiseSuppression;
+    callSettings.autoGainControl = agcEl?.checked ?? callSettings.autoGainControl;
+    callSettings.advancedNoiseReduction = advEl?.checked ?? callSettings.advancedNoiseReduction;
     saveCallSettings();
 
-    if (callState.status === "connected" && micChanged) await swapMicDevice();
+    if (callState.status === "connected" && (micChanged || audioProcessingChanged)) await swapMicDevice();
     if (callState.status === "connected" && callState.camOn && camChanged) await swapCamDevice();
     if (callState.status === "connected") applyOutputDeviceToAudioEl();
+
+    // If a mic test was running in the standalone settings page, restart
+    // it (not toggle it off) so the meter reflects whatever just changed.
+    if (callSettingsPreview.micStream) {
+        stopMicMeter();
+        stopMicStream(callSettingsPreview.micStream);
+        callSettingsPreview.micStream = null;
+        await testCallMic();
+    }
 }
 
 async function swapMicDevice() {
@@ -665,9 +835,23 @@ async function swapMicDevice() {
         const newStream = await getMicStream();
         const newTrack = newStream.getAudioTracks()[0];
         newTrack.enabled = callState.micOn;
+
         const oldTrack = callState.localStream.getAudioTracks()[0];
+        const oldRawStream = callState.localStream._rawMicStream;
+        const oldAudioContext = callState.localStream._micAudioContext;
+
         if (oldTrack) { callState.localStream.removeTrack(oldTrack); oldTrack.stop(); }
         callState.localStream.addTrack(newTrack);
+
+        // callState.localStream is the same object for the life of the
+        // call (video tracks get added onto it too) — carry the new
+        // processing chain's cleanup handles onto it, and release the old
+        // chain now that nothing references it anymore.
+        callState.localStream._rawMicStream = newStream._rawMicStream;
+        callState.localStream._micAudioContext = newStream._micAudioContext;
+        if (oldRawStream) stopStream(oldRawStream);
+        if (oldAudioContext) { try { oldAudioContext.close(); } catch (e) {} }
+
         const sender = callState.pc.getSenders().find(s => s.track && s.track.kind === "audio");
         if (sender) sender.replaceTrack(newTrack);
     } catch (e) { console.error(e); toast("Не удалось переключить микрофон."); }
@@ -693,6 +877,169 @@ function applyOutputDeviceToAudioEl() {
     if (el && el.setSinkId) el.setSinkId(callSettings.speakerId).catch(() => {});
 }
 
+/* ------------------------------------------------------------
+   НАСТРОЙКИ ЗВОНКОВ НА СТРАНИЦЕ "⚙️ Настройки" (вне звонка)
+   ------------------------------------------------------------
+   Раньше настройки микрофона/камеры/качества были доступны только
+   изнутри активного звонка — то есть нельзя было ни на что повлиять,
+   пока кому-то не позвонишь. Этот блок встраивается прямо в общую
+   страницу настроек и даёт то же самое в любой момент, плюс
+   живой тест микрофона (шкала уровня) и превью камеры, чтобы
+   реально было видно, что настройки на что-то влияют — камера/микро-
+   фон включаются только по явному нажатию "Проверить", не сами по
+   себе при открытии страницы. */
+
+let callSettingsPreview = { micStream: null, camStream: null, meterRaf: null };
+
+async function renderCallSettingsPageSection() {
+    let devices = [];
+    try { devices = await navigator.mediaDevices.enumerateDevices(); }
+    catch (e) { console.error(e); }
+
+    const mics = devices.filter(d => d.kind === "audioinput");
+    const cams = devices.filter(d => d.kind === "videoinput");
+    const speakers = devices.filter(d => d.kind === "audiooutput");
+    const labelsHidden = mics.length && mics.every(d => !d.label);
+
+    return `
+        <div class="card" style="margin-bottom:16px;">
+            <strong>📞 Звонки</strong>
+            <p class="muted" style="margin:6px 0 10px;">Настрой микрофон, камеру и качество заранее — не обязательно ждать звонка.</p>
+
+            ${labelsHidden ? `
+                <button class="secondary" type="button" onclick="requestCallDeviceAccessAndRefresh()" style="margin-bottom:12px;">
+                    🔓 Разрешить доступ и показать названия устройств
+                </button>
+            ` : ""}
+
+            ${callSettingsFieldsHtml(mics, cams, speakers, "pageCallSetting", "applyCallSettingsFromPage()")}
+
+            <div class="call-settings-test-row">
+                <button id="pageCallMicTestBtn" class="secondary" type="button" onclick="testCallMic()">🎤 Проверить микрофон</button>
+                <button id="pageCallCamTestBtn" class="secondary" type="button" onclick="testCallCam()">🎥 Проверить камеру</button>
+            </div>
+
+            <div id="pageCallMicMeterWrap" class="call-mic-meter-wrap hidden">
+                <div class="call-mic-meter"><div id="pageCallMicMeterFill" class="call-mic-meter-fill"></div></div>
+                <span class="muted" style="font-size:12px;">Говори — полоска должна реагировать на голос и меньше на фон.</span>
+            </div>
+
+            <video id="pageCallCamPreview" class="call-cam-preview hidden" autoplay playsinline muted></video>
+
+            <p class="muted" style="margin-top:10px;">Эти настройки используются во всех звонках. Проверка микрофона/камеры включает их только пока открыта эта страница или пока не нажата "Стоп".</p>
+        </div>
+    `;
+}
+
+async function requestCallDeviceAccessAndRefresh() {
+    try {
+        const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        stopStream(s);
+    } catch (e) {
+        console.error(e);
+        toast("Нет доступа к микрофону/камере — проверь разрешения браузера.");
+    }
+    if (currentPage === "edit") renderEditProfile();
+}
+
+async function applyCallSettingsFromPage() {
+    await applyCallSettingsFrom("pageCallSetting");
+}
+
+async function testCallMic() {
+    stopMicMeter();
+    if (callSettingsPreview.micStream) { stopMicStream(callSettingsPreview.micStream); callSettingsPreview.micStream = null; setMicTestButtonState(false); return; }
+
+    try {
+        const stream = await getMicStream();
+        callSettingsPreview.micStream = stream;
+        setMicTestButtonState(true);
+        startMicMeter(stream);
+    } catch (e) {
+        console.error(e);
+        toast("Не удалось получить доступ к микрофону.");
+    }
+}
+
+function setMicTestButtonState(active) {
+    const btn = document.getElementById("pageCallMicTestBtn");
+    if (btn) btn.textContent = active ? "⏹️ Остановить" : "🎤 Проверить микрофон";
+    const wrap = document.getElementById("pageCallMicMeterWrap");
+    if (wrap) wrap.classList.toggle("hidden", !active);
+}
+
+// A live input-level meter isn't just eye candy here — it's the one way
+// to actually *see* the noise-reduction settings doing something: toggle
+// "Улучшенное шумоподавление" while talking near a fan/AC and the bar
+// should sit lower on background noise, still jump on your voice.
+function startMicMeter(stream) {
+    try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        const audioContext = new AudioContextClass();
+        const source = audioContext.createMediaStreamSource(stream);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.6;
+        source.connect(analyser);
+        const data = new Uint8Array(analyser.frequencyBinCount);
+
+        stream._meterAudioContext = audioContext; // separate from _micAudioContext — this one's just for the meter
+
+        const tick = () => {
+            analyser.getByteTimeDomainData(data);
+            let sumSquares = 0;
+            for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sumSquares += v * v; }
+            const rms = Math.sqrt(sumSquares / data.length);
+            const pct = Math.min(100, Math.round(rms * 350));
+            const fill = document.getElementById("pageCallMicMeterFill");
+            if (fill) fill.style.width = pct + "%";
+            callSettingsPreview.meterRaf = requestAnimationFrame(tick);
+        };
+        tick();
+    } catch (e) { console.error(e); }
+}
+
+function stopMicMeter() {
+    if (callSettingsPreview.meterRaf) { cancelAnimationFrame(callSettingsPreview.meterRaf); callSettingsPreview.meterRaf = null; }
+    if (callSettingsPreview.micStream?._meterAudioContext) { try { callSettingsPreview.micStream._meterAudioContext.close(); } catch (e) {} }
+}
+
+async function testCallCam() {
+    const video = document.getElementById("pageCallCamPreview");
+    if (callSettingsPreview.camStream) {
+        stopStream(callSettingsPreview.camStream);
+        callSettingsPreview.camStream = null;
+        if (video) video.classList.add("hidden");
+        setCamTestButtonState(false);
+        return;
+    }
+    try {
+        const stream = await getCamStream();
+        callSettingsPreview.camStream = stream;
+        setCamTestButtonState(true);
+        if (video) { video.srcObject = stream; video.classList.remove("hidden"); }
+    } catch (e) {
+        console.error(e);
+        toast("Не удалось получить доступ к камере.");
+    }
+}
+
+function setCamTestButtonState(active) {
+    const btn = document.getElementById("pageCallCamTestBtn");
+    if (btn) btn.textContent = active ? "⏹️ Остановить" : "🎥 Проверить камеру";
+}
+
+// Releases any preview mic/camera started from the Settings page. Called
+// on navigating away from it (see navigate() in app.js) and on unload —
+// nothing here should keep the mic/camera indicator lit in the
+// background once you've left the page.
+function stopCallSettingsPreview() {
+    stopMicMeter();
+    if (callSettingsPreview.micStream) stopMicStream(callSettingsPreview.micStream);
+    if (callSettingsPreview.camStream) stopStream(callSettingsPreview.camStream);
+    callSettingsPreview = { micStream: null, camStream: null, meterRaf: null };
+}
+
 // сбрасываем флаг модалки, когда её закрывают обычным способом
 const _origCloseBubblesModal = closeBubblesModal;
 closeBubblesModal = function () {
@@ -703,7 +1050,8 @@ closeBubblesModal = function () {
 // не оставляем открытые устройства/соединения, если вкладку закрывают
 window.addEventListener("beforeunload", () => {
     if (callState.status !== "idle") {
-        stopStream(callState.localStream);
+        stopMicStream(callState.localStream);
         stopStream(callState.screenStream);
     }
+    stopCallSettingsPreview();
 });

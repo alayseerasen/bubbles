@@ -1797,6 +1797,7 @@ function navigate(page, id = null){
     selectedProfileId = id || selectedProfileId;
     closeStoryViewer(); // it's a full-screen modal appended to <body>, outside the normal page — don't leave it floating over the newly navigated-to page
     closeMoreSheet();
+    stopCallSettingsPreview(); // release any mic/camera test started from the Settings page before leaving it
 
     document.querySelectorAll("[data-page]").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.page === page);
@@ -3231,10 +3232,11 @@ function musicProfileCard(music){
    PROFILE EDIT
    ============================================================ */
 
-function renderEditProfile(){
+async function renderEditProfile(){
     const user = getCurrentUser();
     pendingAvatarBlob = null;
     pendingCoverBlob = null;
+    const callSettingsSection = await renderCallSettingsPageSection();
 
     document.getElementById("page").innerHTML = `
 
@@ -3268,6 +3270,9 @@ function renderEditProfile(){
                     style="width:100%;">
             </div>
         </div>
+
+
+        ${callSettingsSection}
 
 
         <div class="card">
