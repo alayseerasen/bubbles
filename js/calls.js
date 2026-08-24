@@ -597,6 +597,10 @@ function renderIncomingCallModal() {
             </div>
         </div>
     `);
+    // Клик мимо модалки по умолчанию просто закрывает её — а звонок при
+    // этом оставался бы "висеть" (рингтон играет, а принять/отклонить
+    // уже нечем, до истечения 45-секундного таймаута). Мимо — тоже отказ.
+    overrideModalBackdropClick(declineIncomingCall);
 }
 
 function renderOutgoingCallModal() {
@@ -610,11 +614,36 @@ function renderOutgoingCallModal() {
             </div>
         </div>
     `);
+    overrideModalBackdropClick(cancelOutgoingCall);
+}
+
+// showBubblesModal's backdrop always just closes the overlay — fine for
+// plain info modals, but wrong for anything with pending async state (a
+// ringing call, a crop-in-progress) where dismissing the overlay without
+// running the matching cancel/decline leaves that state stuck. Swaps the
+// backdrop's click handler to run `fn` (which is expected to close the
+// modal itself as part of cleaning up) instead of the default.
+function overrideModalBackdropClick(fn) {
+    const overlay = document.getElementById("bubblesModalOverlay");
+    if (overlay) overlay.onclick = (e) => { if (e.target === overlay) fn(); };
 }
 
 /* ------------------------------------------------------------
    ПАНЕЛЬ АКТИВНОГО ЗВОНКА
+   ------------------------------------------------------------
+   Раньше вся панель (включая <audio> с потоком собеседника)
+   пересобиралась через innerHTML на КАЖДЫЙ чих — даже просто на
+   mute микрофона. У video/audio-элементов это не косметика: новый
+   <audio> ничего не транслирует, пока туда заново не подставят
+   srcObject, а pc.ontrack стреляет только один раз на трек — то
+   есть звук собеседника мог пропасть насовсем после первого же
+   переключения кнопки во время звонка. Плюс лишнее мигание
+   видео-плиток. Поэтому теперь: аудио-элемент и структура панели
+   создаются один раз и переиспользуются, а плитки с видео
+   перерисовываются только когда реально меняется их состав.
    ------------------------------------------------------------ */
+
+let lastCallTileSignature = null;
 
 function renderCallBar() {
     const bar = document.getElementById("callBar");
@@ -624,16 +653,32 @@ function renderCallBar() {
         bar.classList.add("hidden");
         bar.classList.remove("expanded");
         bar.innerHTML = "";
+        lastCallTileSignature = null;
         return;
     }
 
     bar.classList.remove("hidden");
 
+    let audioEl = document.getElementById("callRemoteAudio");
+    let topEl = document.getElementById("callBarTop");
+    let tilesEl = document.getElementById("callBarTiles");
+    let controlsEl = document.getElementById("callBarControls");
+    if (!audioEl || !topEl || !tilesEl || !controlsEl) {
+        bar.innerHTML = `
+            <audio id="callRemoteAudio" autoplay></audio>
+            <div class="call-bar-top" id="callBarTop"></div>
+            <div id="callBarTiles"></div>
+            <div class="call-bar-controls" id="callBarControls"></div>
+        `;
+        audioEl = document.getElementById("callRemoteAudio");
+        topEl = document.getElementById("callBarTop");
+        tilesEl = document.getElementById("callBarTiles");
+        controlsEl = document.getElementById("callBarControls");
+        lastCallTileSignature = null; // контейнер новый — плитки точно нужно нарисовать
+    }
+
     // Build each possible tile's definition once — screen shares first,
     // since that's almost always what people actually want to look at.
-    // Whichever ends up "primary" (big) vs. a thumbnail is purely a
-    // layout choice below; every tile keeps the same element id either
-    // way, since ontrack/toggle*/render code already knows those ids.
     const tileDefs = [];
     if (callState.remoteScreenOn) tileDefs.push({ id: "callTile-screen-remote", label: `🖥️ ${escapeHtml(callState.remoteName)}`, screen: true });
     if (callState.screenOn) tileDefs.push({ id: "callTile-screen-me", label: "🖥️ Ты (экран)", screen: true, muted: true });
@@ -643,55 +688,69 @@ function renderCallBar() {
     const expanded = callState.expanded && tileDefs.length > 0;
     bar.classList.toggle("expanded", expanded);
 
-    const tileHtml = (t, primary) => `
-        <div class="call-tile ${t.screen ? "call-tile-screen" : ""} ${primary ? "call-tile-primary" : ""}">
-            <video id="${t.id}" autoplay playsinline ${t.muted ? "muted" : ""}></video>
-            <div class="call-tile-label">${t.label}</div>
-        </div>
+    topEl.innerHTML = `
+        <div class="call-bar-title">📞 ${escapeHtml(callState.remoteName)}</div>
+        ${tileDefs.length ? `<button class="call-btn call-btn-expand" onclick="toggleCallExpanded()" title="${expanded ? "Свернуть" : "Развернуть на весь экран"}">${expanded ? "⤡" : "⤢"}</button>` : ""}
+        <button class="call-btn call-btn-leave" onclick="hangUpCall()" title="Завершить">✕</button>
     `;
 
-    let tilesHtml;
-    if (!tileDefs.length) {
-        tilesHtml = `<p class="muted call-bar-audio-only">Только голос</p>`;
-    } else if (expanded) {
-        const [primary, ...rest] = tileDefs;
-        tilesHtml = `
-            <div class="call-spotlight">
-                ${tileHtml(primary, true)}
-                ${rest.length ? `<div class="call-spotlight-thumbs">${rest.map(t => tileHtml(t, false)).join("")}</div>` : ""}
+    controlsEl.innerHTML = `
+        <button class="call-btn ${callState.micOn ? "" : "call-btn-off"}" onclick="toggleMic()" title="${callState.micOn ? "Выключить микрофон" : "Включить микрофон"}">${callState.micOn ? "🎙️" : "🔇"}</button>
+        <button class="call-btn ${callState.camOn ? "call-btn-on" : ""}" onclick="toggleCam()" title="${callState.camOn ? "Выключить камеру" : "Включить камеру"}">🎥</button>
+        <button class="call-btn ${callState.screenOn ? "call-btn-on" : ""}" onclick="toggleScreenShare()" title="${callState.screenOn ? "Остановить показ экрана" : "Показать экран"}">🖥️</button>
+        <button class="call-btn" onclick="openCallSettings()" title="Настройки звонка">⚙️</button>
+    `;
+
+    // Плитки (и их <video>) перерисовываем только когда реально
+    // поменялся их состав/раскладка — иначе трогать их незачем, и
+    // ничего не мигает при простом mute/settings-клике.
+    const signature = JSON.stringify({ ids: tileDefs.map(t => t.id), expanded });
+    const tilesChanged = signature !== lastCallTileSignature;
+    if (tilesChanged) {
+        lastCallTileSignature = signature;
+
+        const tileHtml = (t, primary) => `
+            <div class="call-tile ${t.screen ? "call-tile-screen" : ""} ${primary ? "call-tile-primary" : ""}">
+                <video id="${t.id}" autoplay playsinline ${t.muted ? "muted" : ""}></video>
+                <div class="call-tile-label">${t.label}</div>
             </div>
         `;
-    } else {
-        tilesHtml = `<div class="call-tiles">${tileDefs.map(t => tileHtml(t, false)).join("")}</div>`;
-    }
 
-    bar.innerHTML = `
-        <audio id="callRemoteAudio" autoplay></audio>
-        <div class="call-bar-top">
-            <div class="call-bar-title">📞 ${escapeHtml(callState.remoteName)}</div>
-            ${tileDefs.length ? `<button class="call-btn call-btn-expand" onclick="toggleCallExpanded()" title="${expanded ? "Свернуть" : "Развернуть на весь экран"}">${expanded ? "⤡" : "⤢"}</button>` : ""}
-            <button class="call-btn call-btn-leave" onclick="hangUpCall()" title="Завершить">✕</button>
-        </div>
-        ${tilesHtml}
-        <div class="call-bar-controls">
-            <button class="call-btn ${callState.micOn ? "" : "call-btn-off"}" onclick="toggleMic()" title="${callState.micOn ? "Выключить микрофон" : "Включить микрофон"}">${callState.micOn ? "🎙️" : "🔇"}</button>
-            <button class="call-btn ${callState.camOn ? "call-btn-on" : ""}" onclick="toggleCam()" title="${callState.camOn ? "Выключить камеру" : "Включить камеру"}">🎥</button>
-            <button class="call-btn ${callState.screenOn ? "call-btn-on" : ""}" onclick="toggleScreenShare()" title="${callState.screenOn ? "Остановить показ экрана" : "Показать экран"}">🖥️</button>
-            <button class="call-btn" onclick="openCallSettings()" title="Настройки звонка">⚙️</button>
-        </div>
-    `;
+        if (!tileDefs.length) {
+            tilesEl.innerHTML = `<p class="muted call-bar-audio-only">Только голос</p>`;
+        } else if (expanded) {
+            const [primary, ...rest] = tileDefs;
+            tilesEl.innerHTML = `
+                <div class="call-spotlight">
+                    ${tileHtml(primary, true)}
+                    ${rest.length ? `<div class="call-spotlight-thumbs">${rest.map(t => tileHtml(t, false)).join("")}</div>` : ""}
+                </div>
+            `;
+        } else {
+            tilesEl.innerHTML = `<div class="call-tiles">${tileDefs.map(t => tileHtml(t, false)).join("")}</div>`;
+        }
+    }
 
     requestAnimationFrame(() => {
         if (callState.camOn) { const v = document.getElementById("callTile-cam-me"); if (v) v.srcObject = callState.localStream; }
         if (callState.screenOn) { const v = document.getElementById("callTile-screen-me"); if (v) v.srcObject = callState.screenStream; }
-        // переустанавливаем удалённые потоки, если плитки только что пересозданы
-        callState.pc?.getReceivers().forEach(r => {
-            if (!r.track) return;
-            const isScreen = r.track.label === "screen";
-            const el = document.getElementById(isScreen ? "callTile-screen-remote" : "callTile-cam-remote");
-            if (el && r.track.kind === "video") el.srcObject = new MediaStream([r.track]);
-        });
-        const audioEl = document.getElementById("callRemoteAudio");
+        // Пересвязываем удалённые потоки только если плитки только что
+        // пересозданы — иначе уже подключённые <video>/<audio> трогать не надо.
+        if (tilesChanged) {
+            callState.pc?.getReceivers().forEach(r => {
+                if (!r.track || r.track.kind !== "video") return;
+                const isScreen = r.track.label === "screen";
+                const el = document.getElementById(isScreen ? "callTile-screen-remote" : "callTile-cam-remote");
+                if (el) el.srcObject = new MediaStream([r.track]);
+            });
+        }
+        // Аудио-элемент теперь живёт всю длительность звонка — если он
+        // почему-то ещё пуст (например, поменяли настройки раньше, чем
+        // прилетел трек), подключаем поток из ресивера как подстраховку.
+        if (audioEl && !audioEl.srcObject) {
+            const audioReceiver = callState.pc?.getReceivers().find(r => r.track && r.track.kind === "audio");
+            if (audioReceiver) audioEl.srcObject = new MediaStream([audioReceiver.track]);
+        }
         if (audioEl && callSettings.speakerId && audioEl.setSinkId) audioEl.setSinkId(callSettings.speakerId).catch(() => {});
     });
 }

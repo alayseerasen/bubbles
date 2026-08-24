@@ -36,6 +36,13 @@ function openImageCropper(file, { aspect = 1, outputSize = 800 } = {}) {
                 <button class="primary full" onclick="confirmImageCrop()">✅ Готово</button>
             `);
 
+            // По умолчанию клик мимо модалки просто закрывает её, ничего
+            // не резолвя — тогда await openImageCropper(...) в вызывающем
+            // коде повис бы навсегда, а созданный object URL никогда не
+            // освободился. Клик мимо — это тоже "Отмена".
+            const overlay = document.getElementById("bubblesModalOverlay");
+            if (overlay) overlay.onclick = (e) => { if (e.target === overlay) cancelImageCrop(); };
+
             const viewport = document.getElementById("cropperViewport");
             const imgEl = document.getElementById("cropperImage");
             const viewportW = viewport.clientWidth;
