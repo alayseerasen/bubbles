@@ -881,7 +881,7 @@ function renderStoryRail() {
                     class="story-ring ${storiesByAuthor(currentUserId).length ? "mine" : "empty"}"
                     onclick="${storiesByAuthor(currentUserId).length ? `openStoryViewer('${currentUserId}')` : "addStoryPrompt()"}"
                 >
-                    <img class="story-ring-avatar" src="${me?.avatar || defaultAvatar()}">
+                    <img loading="lazy" decoding="async" class="story-ring-avatar" src="${me?.avatar || defaultAvatar()}">
                     ${!storiesByAuthor(currentUserId).length ? `<span class="story-add-badge">+</span>` : ""}
                 </div>
                 <span class="story-ring-label">Ты</span>
@@ -890,7 +890,7 @@ function renderStoryRail() {
             ${entries.filter(u => u.id !== currentUserId).map(u => `
                 <div class="story-ring-item">
                     <div class="story-ring ${hasUnseenStories(u.id) ? "unseen" : "seen"}" onclick="openStoryViewer('${u.id}')">
-                        <img class="story-ring-avatar" src="${u.avatar || defaultAvatar()}">
+                        <img loading="lazy" decoding="async" class="story-ring-avatar" src="${u.avatar || defaultAvatar()}">
                     </div>
                     <span class="story-ring-label">${escapeHtml(u.displayName.split(" ")[0])}</span>
                 </div>
@@ -1011,7 +1011,7 @@ function renderStoryViewer() {
             </div>
 
             <div class="story-viewer-header">
-                <img class="story-ring-avatar small" src="${author?.avatar || defaultAvatar()}">
+                <img loading="lazy" decoding="async" class="story-ring-avatar small" src="${author?.avatar || defaultAvatar()}">
                 <strong>${escapeHtml(author?.displayName || "")}</strong>
                 <span class="story-time">${timeAgo(story.createdAt)}</span>
                 <div style="flex:1;"></div>
@@ -1674,10 +1674,103 @@ function renderApp(){
 
         </div>
 
+        <!--
+            Bottom tab bar — mobile only (see the max-width:850px rule in
+            css). Same reasoning as #notifPanel above: kept OUTSIDE
+            .layout/.sidebar as a plain sibling so position:fixed is
+            never at risk of getting trapped inside some ancestor's
+            stacking context.
+
+            Reuses [data-page] on purpose — navigate() already toggles
+            .active on every element with that attribute, so these
+            buttons get "which tab is active" highlighting for free
+            without any extra JS.
+        -->
+        <nav class="bottom-nav">
+
+            <button class="bottom-nav-btn" data-page="feed" onclick="navigate('feed')">
+                <span class="bottom-nav-icon">🏠</span>
+                <span class="bottom-nav-label">Лента</span>
+            </button>
+
+            <button class="bottom-nav-btn" data-page="friends" onclick="navigate('friends')">
+                <span class="bottom-nav-icon">🫂</span>
+                <span class="bottom-nav-label">Друзья</span>
+                <span id="friendRequestsBadgeMobile" class="nav-badge bottom-nav-badge hidden"></span>
+            </button>
+
+            <button class="bottom-nav-btn" data-page="messages" onclick="navigate('messages')">
+                <span class="bottom-nav-icon">💬</span>
+                <span class="bottom-nav-label">Чаты</span>
+                <span id="messagesUnreadBadgeMobile" class="nav-badge bottom-nav-badge hidden"></span>
+            </button>
+
+            <button class="bottom-nav-btn" data-page="music" onclick="navigate('music')">
+                <span class="bottom-nav-icon">🎵</span>
+                <span class="bottom-nav-label">Музыка</span>
+            </button>
+
+            <button class="bottom-nav-btn" data-page="profile" onclick="navigate('profile')">
+                <span class="bottom-nav-icon">👤</span>
+                <span class="bottom-nav-label">Профиль</span>
+                <span id="pendingReportsBadgeMobile" class="nav-badge bottom-nav-badge hidden"></span>
+            </button>
+
+            <button class="bottom-nav-btn" onclick="toggleMoreSheet()">
+                <span class="bottom-nav-icon">⋯</span>
+                <span class="bottom-nav-label">Ещё</span>
+                <span id="moreSheetDot" class="bottom-nav-dot hidden"></span>
+            </button>
+
+        </nav>
+
+        <div id="moreSheetOverlay" class="more-sheet-overlay hidden" onclick="if(event.target===this) closeMoreSheet()">
+            <div class="more-sheet">
+
+                <div class="more-sheet-handle"></div>
+
+                <button class="more-sheet-item" data-page="search" onclick="navigate('search'); closeMoreSheet();">
+                    🔎 Поиск
+                </button>
+
+                <button class="more-sheet-item" data-page="pet" onclick="navigate('pet'); closeMoreSheet();">
+                    🐣 Питомец
+                    <span id="petNeedsAttentionBadgeMobile" class="nav-badge hidden"></span>
+                </button>
+
+                <button class="more-sheet-item" data-page="edit" onclick="navigate('edit'); closeMoreSheet();">
+                    ⚙️ Настройки
+                </button>
+
+                <button class="more-sheet-item" onclick="closeMoreSheet(); location.href='https://alayseerasen.github.io/aeroworld/bubbling.html'">
+                    🫧 Aero World
+                </button>
+
+                <button class="more-sheet-item more-sheet-danger" onclick="closeMoreSheet(); logout()">
+                    🚪 Выйти
+                </button>
+
+            </div>
+        </div>
+
     `;
 
     navigate(currentPage);
     updateNavBadges();
+}
+
+function toggleMoreSheet() {
+    const overlay = document.getElementById("moreSheetOverlay");
+    if (!overlay) return;
+    overlay.classList.contains("hidden") ? openMoreSheet() : closeMoreSheet();
+}
+
+function openMoreSheet() {
+    document.getElementById("moreSheetOverlay")?.classList.remove("hidden");
+}
+
+function closeMoreSheet() {
+    document.getElementById("moreSheetOverlay")?.classList.add("hidden");
 }
 
 /* ============================================================
@@ -1688,8 +1781,9 @@ function navigate(page, id = null){
     currentPage = page;
     selectedProfileId = id || selectedProfileId;
     closeStoryViewer(); // it's a full-screen modal appended to <body>, outside the normal page — don't leave it floating over the newly navigated-to page
+    closeMoreSheet();
 
-    document.querySelectorAll(".nav-btn[data-page]").forEach(btn => {
+    document.querySelectorAll("[data-page]").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.page === page);
     });
 
@@ -1824,7 +1918,7 @@ function renderCommentRow(postId, comment, topComment){
     return `
         <div class="comment${isReply ? " comment-reply" : ""}">
 
-            <img
+            <img loading="lazy" decoding="async"
                 class="mini-avatar small comment-avatar"
                 src="${user?.avatar || defaultAvatar()}"
                 ${user ? `onclick="${goToProfile}" style="cursor:pointer"` : ""}
@@ -1956,7 +2050,7 @@ function renderPost(post){
 
             <div class="post-head">
 
-                <img
+                <img loading="lazy" decoding="async"
                     class="mini-avatar"
                     src="${author.avatar || defaultAvatar()}"
                     onclick="navigate('profile','${author.id}')"
@@ -1996,7 +2090,7 @@ function renderPost(post){
             ${
                 post.image
                 ? `
-                    <img
+                    <img loading="lazy" decoding="async"
                         class="post-image"
                         src="${post.image}"
                         alt=""
@@ -2405,11 +2499,11 @@ function renderSharedPostPreview(post, author){
     return `
         <div class="shared-post-card">
             <div class="shared-post-card-head">
-                <img class="mini-avatar small" src="${author?.avatar || defaultAvatar()}">
+                <img loading="lazy" decoding="async" class="mini-avatar small" src="${author?.avatar || defaultAvatar()}">
                 <strong>${escapeHtml(author?.displayName || "Пользователь")}</strong>
             </div>
             ${post.text ? `<div class="shared-post-card-text">${escapeHtml(post.text)}</div>` : ""}
-            ${post.image ? `<img class="shared-post-card-image" src="${post.image}">` : ""}
+            ${post.image ? `<img loading="lazy" decoding="async" class="shared-post-card-image" src="${post.image}">` : ""}
             ${post.musicId && db.music.find(m => m.id === post.musicId) ? musicProfileCard(db.music.find(m => m.id === post.musicId)) : ""}
         </div>
     `;
@@ -2470,7 +2564,7 @@ function openShareToChat(postId){
                 <div class="share-friend-list">
                     ${friends.map(f => `
                         <button class="share-friend-row" onclick="shareToChat('${postId}','${f.id}')">
-                            <img class="mini-avatar small" src="${f.avatar || defaultAvatar()}">
+                            <img loading="lazy" decoding="async" class="mini-avatar small" src="${f.avatar || defaultAvatar()}">
                             <span>${escapeHtml(f.displayName)}</span>
                         </button>
                     `).join("")}
@@ -2516,12 +2610,12 @@ function renderSharedPostCard(originalId, { clickable } = { clickable: true }){
     return `
         <div class="shared-post-card"${clickable ? ` onclick="navigate('profile','${author.id}')" style="cursor:pointer"` : ""}>
             <div class="shared-post-card-head">
-                <img class="mini-avatar small" src="${author.avatar || defaultAvatar()}">
+                <img loading="lazy" decoding="async" class="mini-avatar small" src="${author.avatar || defaultAvatar()}">
                 <strong>${escapeHtml(author.displayName)}</strong>
                 <small>@${escapeHtml(author.username)} · ${timeAgo(original.createdAt)}</small>
             </div>
             ${original.text ? `<div class="shared-post-card-text">${escapeHtml(original.text)}</div>` : ""}
-            ${original.image ? `<img class="shared-post-card-image" src="${original.image}">` : ""}
+            ${original.image ? `<img loading="lazy" decoding="async" class="shared-post-card-image" src="${original.image}">` : ""}
             ${track ? musicProfileCard(track) : ""}
         </div>
     `;
@@ -2557,7 +2651,7 @@ function openMusicPicker(context){
                             class="music-picker-row"
                             onclick="selectComposerMusic('${m.id}','${context}')"
                         >
-                            <img class="music-picker-cover" src="${m.cover || defaultMusicCover()}">
+                            <img loading="lazy" decoding="async" class="music-picker-cover" src="${m.cover || defaultMusicCover()}">
                             <span class="music-picker-info">
                                 <strong>${escapeHtml(m.title)}</strong>
                                 <small>${escapeHtml(m.artist || "")}</small>
@@ -2851,7 +2945,7 @@ function renderProfile(userId){
 
             <div class="profile-main">
 
-                <img
+                <img loading="lazy" decoding="async"
                     class="profile-avatar"
                     src="${user.avatar || defaultAvatar()}"
                 >
@@ -3085,7 +3179,7 @@ function musicProfileCard(music){
 
             <div class="music-row">
 
-                <img
+                <img loading="lazy" decoding="async"
                     class="music-cover"
                     src="${music.cover || defaultMusicCover()}"
                 >
@@ -3147,7 +3241,7 @@ function renderEditProfile(){
 
             <div class="edit-preview">
 
-                <img
+                <img loading="lazy" decoding="async"
                     id="editAvatarPreview"
                     src="${user.avatar || defaultAvatar()}"
                 >
@@ -3346,7 +3440,7 @@ function renderFriends(){
                 <div class="friend-grid">
                     ${incoming.map(({request, user}) => `
                         <div class="friend-card">
-                            <img src="${user.avatar || defaultAvatar()}" onclick="navigate('profile','${user.id}')" style="cursor:pointer">
+                            <img loading="lazy" decoding="async" src="${user.avatar || defaultAvatar()}" onclick="navigate('profile','${user.id}')" style="cursor:pointer">
                             <h4>${escapeHtml(user.displayName)}</h4>
                             <p>@${escapeHtml(user.username)}</p>
                             <div style="display:flex;gap:6px;">
@@ -3367,7 +3461,7 @@ function renderFriends(){
                 <div class="friend-grid">
                     ${outgoing.map(({request, user}) => `
                         <div class="friend-card">
-                            <img src="${user.avatar || defaultAvatar()}" onclick="navigate('profile','${user.id}')" style="cursor:pointer">
+                            <img loading="lazy" decoding="async" src="${user.avatar || defaultAvatar()}" onclick="navigate('profile','${user.id}')" style="cursor:pointer">
                             <h4>${escapeHtml(user.displayName)}</h4>
                             <p>@${escapeHtml(user.username)}</p>
                             <button class="secondary" style="width:100%;" onclick="cancelFriendRequest('${request.id}')">Отменить заявку</button>
@@ -3405,7 +3499,7 @@ function friendCard(user){
 
         <div class="friend-card">
 
-            <img
+            <img loading="lazy" decoding="async"
                 src="${user.avatar || defaultAvatar()}"
                 onclick="navigate('profile','${user.id}')"
                 style="cursor:pointer"
@@ -3756,7 +3850,7 @@ function renderNotificationsPanel() {
                     const actor = getUser(n.actorId);
                     return `
                         <div class="notif-item${n.readAt ? "" : " unread"}" onclick="${onclick};closeNotificationsPanel();">
-                            <img class="mini-avatar" src="${actor?.avatar || defaultAvatar()}">
+                            <img loading="lazy" decoding="async" class="mini-avatar" src="${actor?.avatar || defaultAvatar()}">
                             <div class="notif-item-body">
                                 <span>${text}</span>
                                 <small>${new Date(n.createdAt).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</small>
@@ -4115,7 +4209,7 @@ function renderConversation(user) {
             onclick="openChat('${user.id}')"
         >
 
-            <img
+            <img loading="lazy" decoding="async"
                 class="mini-avatar"
                 src="${
                     user.avatar ||
@@ -4182,7 +4276,7 @@ function renderChat(userId){
 
         <div class="chat-header">
 
-            <img
+            <img loading="lazy" decoding="async"
                 class="mini-avatar"
                 src="${user.avatar || defaultAvatar()}"
                 style="width:30px;height:30px;vertical-align:middle;cursor:pointer;"
@@ -4299,7 +4393,7 @@ function messageBubble(message){
 
         <div class="message ${mine ? "me" : "them"}${message.image ? " has-image" : ""}" data-bubbles-message-id="${message.id}">
 
-            ${message.image ? `<img class="message-image" src="${message.image}" onclick="viewChatImage(this.src)">` : ""}
+            ${message.image ? `<img loading="lazy" decoding="async" class="message-image" src="${message.image}" onclick="viewChatImage(this.src)">` : ""}
 
             ${
                 sharedPost
@@ -4472,7 +4566,7 @@ function viewChatImage(src) {
     const overlay = document.createElement("div");
     overlay.className = "image-viewer-overlay";
     overlay.onclick = () => overlay.remove();
-    overlay.innerHTML = `<img src="${src}">`;
+    overlay.innerHTML = `<img loading="lazy" decoding="async" src="${src}">`;
     document.body.appendChild(overlay);
 }
 
@@ -4808,7 +4902,7 @@ function showNewMessagePopup(message) {
             class="bubbles-popup-avatar"
         >
 
-            <img
+            <img loading="lazy" decoding="async"
                 src="${avatar}"
                 alt=""
             >
@@ -5247,7 +5341,7 @@ function renderMusicCard(music) {
     return `
         <div class="music-card ${isPlaying ? "playing" : ""}" id="music-${music.id}">
             <div class="music-row">
-                <img class="music-cover" src="${music.cover || defaultMusicCover()}">
+                <img loading="lazy" decoding="async" class="music-cover" src="${music.cover || defaultMusicCover()}">
                 <div class="music-info">
                     <div class="music-title">${escapeHtml(music.title)}</div>
                     <div class="music-artist">${escapeHtml(music.artist || "Unknown Artist")}</div>
@@ -5698,7 +5792,7 @@ function reportRow(report) {
         <div class="card" style="display:flex;flex-direction:column;gap:8px;">
 
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-                <img
+                <img loading="lazy" decoding="async"
                     class="mini-avatar"
                     src="${target.avatar || defaultAvatar()}"
                     onclick="navigate('profile','${target.id}')"
@@ -6119,27 +6213,38 @@ function getUnreadMessagesFromUser(
     ).length;
 
 }
-function setNavBadge(id, count) {
-    const badge = document.getElementById(id);
-    if (!badge) return;
-    if (count > 0) {
-        badge.textContent = count > 99 ? "99+" : String(count);
-        badge.classList.remove("hidden");
-    } else {
-        badge.textContent = "";
-        badge.classList.add("hidden");
-    }
+// Accepts one id or an array of ids — badges now exist in two places
+// (the desktop sidebar and the mobile bottom-nav/"Ещё" sheet), so most
+// call sites need to update a pair of elements that show the same count.
+function setNavBadge(ids, count) {
+    (Array.isArray(ids) ? ids : [ids]).forEach(id => {
+        const badge = document.getElementById(id);
+        if (!badge) return;
+        if (count > 0) {
+            badge.textContent = count > 99 ? "99+" : String(count);
+            badge.classList.remove("hidden");
+        } else {
+            badge.textContent = "";
+            badge.classList.add("hidden");
+        }
+    });
 }
 
 function updateNavBadges() {
-    setNavBadge("messagesUnreadBadge", getUnreadMessagesCount());
-    setNavBadge("friendRequestsBadge", myIncomingRequests().length);
+    setNavBadge(["messagesUnreadBadge","messagesUnreadBadgeMobile"], getUnreadMessagesCount());
+    setNavBadge(["friendRequestsBadge","friendRequestsBadgeMobile"], myIncomingRequests().length);
     setNavBadge("notifBadge", unreadNotificationsCount());
     // There's no separate "Admin" nav item any more — moderation lives on
     // your own profile page (see renderProfile), so this badge on
     // "Профиль" is the only hint an admin gets that reports are waiting.
-    setNavBadge("pendingReportsBadge", isAdmin() ? pendingReports().length : 0);
-    setNavBadge("petNeedsAttentionBadge", petNeedsAttention() ? 1 : 0);
+    setNavBadge(["pendingReportsBadge","pendingReportsBadgeMobile"], isAdmin() ? pendingReports().length : 0);
+    const petAttn = petNeedsAttention();
+    setNavBadge(["petNeedsAttentionBadge","petNeedsAttentionBadgeMobile"], petAttn ? 1 : 0);
+    // One combined dot on the "Ещё" bottom-nav button — otherwise a
+    // badge tucked inside the overflow sheet is invisible until you
+    // happen to open it.
+    const moreDot = document.getElementById("moreSheetDot");
+    if (moreDot) moreDot.classList.toggle("hidden", !petAttn);
 }
 
 // True if any fast stat has dropped low enough that a visit is
@@ -6630,6 +6735,7 @@ Object.assign(window,{
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
     toggleProfileMusicExpanded,toggleProfileFriendsExpanded,toggleProfileAchievementsExpanded,
     setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,backfillAchievementsForAllUsers,togglePinPost,
+    toggleMoreSheet,openMoreSheet,closeMoreSheet,
     reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent,
     toggleBlockUser,
     addStoryPrompt,openStoryViewer,closeStoryViewer,storyViewerAdvance,deleteCurrentStory,
