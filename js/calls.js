@@ -277,7 +277,12 @@ function setupPeerConnection() {
         });
     };
 
+    let connectedSoundPlayed = false;
     pc.onconnectionstatechange = () => {
+        if (pc.connectionState === "connected" && !connectedSoundPlayed) {
+            connectedSoundPlayed = true;
+            playSound("callConnect");
+        }
         if (pc.connectionState === "failed") toast("Связь со собеседником прервалась.");
     };
 }
@@ -332,6 +337,7 @@ function endCallLocally(toastMessage) {
     if (callState.ringTimeout) { clearTimeout(callState.ringTimeout); callState.ringTimeout = null; }
     stopRingtone();
     try { closeBubblesModal(); } catch (e) {}
+    if (callState.status !== "idle") playSound("callEnd");
 
     try { callState.pc?.close(); } catch (e) {}
     stopStream(callState.localStream);
@@ -470,25 +476,7 @@ function boostOpusBitrate(sdp) {
    ------------------------------------------------------------ */
 
 function playRingtone() {
-    try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        let stopped = false;
-        const beep = () => {
-            if (stopped) return;
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.frequency.value = 880;
-            gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-            gain.gain.linearRampToValueAtTime(0.15, ctx.currentTime + 0.05);
-            gain.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
-            osc.connect(gain).connect(ctx.destination);
-            osc.start();
-            osc.stop(ctx.currentTime + 0.5);
-        };
-        beep();
-        const interval = setInterval(beep, 1500);
-        callState.stopRingtone = () => { stopped = true; clearInterval(interval); ctx.close().catch(() => {}); };
-    } catch (e) { /* Web Audio недоступен — просто без звука */ }
+    callState.stopRingtone = startSoundLoop("ring", 1500);
 }
 
 function stopRingtone() {

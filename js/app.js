@@ -3237,6 +3237,22 @@ function renderEditProfile(){
         </div>
 
 
+        <div class="card" style="margin-bottom:16px;">
+            <strong>🔊 Звуки</strong>
+            <label class="autoplay-toggle" style="margin-top:10px;">
+                <input type="checkbox" ${soundSettings.enabled ? "checked" : ""} onchange="setSoundsEnabled(this.checked); document.getElementById('soundVolumeRow').style.cssText = this.checked ? '' : 'opacity:.5;pointer-events:none;'; if(this.checked) playSound('notification');">
+                Звуки сообщений, звонков и уведомлений
+            </label>
+            <div style="margin-top:12px;${soundSettings.enabled ? "" : "opacity:.5;pointer-events:none;"}" id="soundVolumeRow">
+                <label style="font-size:13px;color:#7b9ca9;display:block;margin-bottom:6px;">Громкость</label>
+                <input type="range" min="0" max="1" step="0.05" value="${soundSettings.volume}"
+                    oninput="setSoundVolume(parseFloat(this.value))"
+                    onchange="playSound('notification')"
+                    style="width:100%;">
+            </div>
+        </div>
+
+
         <div class="card">
 
             <div class="edit-preview">
@@ -4793,6 +4809,7 @@ function showNewMessagePopup(message) {
         return;
     }
 
+    playSound("message");
 
     /*
      * Удаляем предыдущий popup,
@@ -5501,6 +5518,7 @@ async function playMusic(musicId){
     document.getElementById("globalPlayer").classList.remove("hidden");
     setListening(music.title, music.artist || "Unknown Artist");
     refreshMusicCardPlayState(musicId);
+    updateMediaSessionMetadata(music);
 
     // If this track isn't part of the currently-viewed list (e.g. played
     // from a profile page), fall back to a queue of just this one track.
@@ -5528,6 +5546,10 @@ function closeMusicPlayer(){
     refreshMusicCardPlayState(null);
     document.getElementById("globalPlayer").classList.add("hidden");
     setListening("", "");
+    if ("mediaSession" in navigator) {
+        navigator.mediaSession.metadata = null;
+        navigator.mediaSession.playbackState = "none";
+    }
 }
 
 async function setListening(track, artist){
@@ -6587,6 +6609,8 @@ function setupNotificationsRealtime() {
             if (db.notifications.some(n => n.id === row.id)) return;
             db.notifications.unshift(rowToNotification(row));
             updateNavBadges();
+            // friend_request уже озвучивается своим каналом выше — не дублируем.
+            if (row.type !== "friend_request") playSound("notification");
             // No toast here on purpose — friend requests, friend
             // acceptance, and new messages already announce themselves
             // via their own toast/popup elsewhere. This just keeps the
@@ -6610,6 +6634,7 @@ function setupFriendRequestsRealtime() {
             if (payload.eventType === "INSERT" && row.to_user === currentUserId) {
                 const sender = getUser(row.from_user);
                 toast(`${sender?.displayName || "Кто-то"} отправил(а) заявку в друзья 🫂`);
+                playSound("friendRequest");
             }
             updateNavBadges();
             if (currentPage === "friends") renderFriends();
@@ -6694,6 +6719,74 @@ function teardownRealtime() {
         if (musicAutoplay) playNextTrack();
         else refreshMusicCardPlayState(null);
     });
+})();
+
+/* ------------------------------------------------------------
+   MediaSession — это то, что рисует iOS/Android на экране
+   блокировки и в шторке "сейчас играет": обложка, название,
+   исполнитель, и кнопки play/pause/next/prev управляют плеером
+   прямо оттуда, даже когда сайт свёрнут.
+   ------------------------------------------------------------ */
+
+function updateMediaSessionMetadata(music) {
+    if (!("mediaSession" in navigator)) return;
+
+    const cover = music.cover || defaultMusicCover();
+    navigator.mediaSession.metadata = new MediaMetadata({
+        title: music.title || "Без названия",
+        artist: music.artist || "Unknown Artist",
+        album: "Bubbles",
+        artwork: [
+            { src: cover, sizes: "96x96",   type: "image/png" },
+            { src: cover, sizes: "192x192", type: "image/png" },
+            { src: cover, sizes: "256x256", type: "image/png" },
+            { src: cover, sizes: "384x384", type: "image/png" },
+            { src: cover, sizes: "512x512", type: "image/png" }
+        ]
+    });
+    navigator.mediaSession.playbackState = "playing";
+}
+
+(function setupMediaSession(){
+    if (!("mediaSession" in navigator)) return;
+    const audio = document.getElementById("globalAudio");
+    if (!audio) return;
+
+    navigator.mediaSession.setActionHandler("play", () => { audio.play().catch(() => {}); });
+    navigator.mediaSession.setActionHandler("pause", () => audio.pause());
+    navigator.mediaSession.setActionHandler("previoustrack", () => playPrevTrack());
+    navigator.mediaSession.setActionHandler("nexttrack", () => playNextTrack());
+    navigator.mediaSession.setActionHandler("stop", () => closeMusicPlayer());
+
+    // Те самые "⟲10 / 10⟳" на экране блокировки, как на скрине.
+    try {
+        navigator.mediaSession.setActionHandler("seekbackward", (details) => {
+            audio.currentTime = Math.max(0, audio.currentTime - (details.seekOffset || 10));
+        });
+        navigator.mediaSession.setActionHandler("seekforward", (details) => {
+            audio.currentTime = Math.min(audio.duration || Infinity, audio.currentTime + (details.seekOffset || 10));
+        });
+        navigator.mediaSession.setActionHandler("seekto", (details) => {
+            if (details.seekTime != null) audio.currentTime = details.seekTime;
+        });
+    } catch (e) { /* не все браузеры поддерживают seek-обработчики */ }
+
+    audio.addEventListener("play", () => { navigator.mediaSession.playbackState = "playing"; });
+    audio.addEventListener("pause", () => { navigator.mediaSession.playbackState = "paused"; });
+
+    // Ползунок прогресса на экране блокировки — обновляем при каждой смене трека и по ходу воспроизведения.
+    const updatePosition = () => {
+        if (!isFinite(audio.duration) || audio.duration <= 0) return;
+        try {
+            navigator.mediaSession.setPositionState({
+                duration: audio.duration,
+                playbackRate: audio.playbackRate || 1,
+                position: Math.min(audio.currentTime, audio.duration)
+            });
+        } catch (e) {}
+    };
+    audio.addEventListener("loadedmetadata", updatePosition);
+    audio.addEventListener("timeupdate", updatePosition);
 })();
 
 /* ============================================================
