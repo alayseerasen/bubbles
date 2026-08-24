@@ -707,6 +707,7 @@ let musicAutoplay = true;
 // храним его тут до момента сохранения, вместо того чтобы заново читать
 // исходный файл из <input>.
 let pendingAvatarBlob = null;
+let pendingAvatarExt = "jpg"; // "jpg" (прошёл через кроппер) или "gif" (загружен как есть, без кропа — иначе теряется анимация)
 let pendingCoverBlob = null;
 let pendingMusicCoverBlob = null;
 let mySavedMusicIds = new Set(); // tracks (by others) I've added to my library
@@ -1186,8 +1187,10 @@ async function uploadImageToStorage(file, path, maxDimension) {
 
 // Для картинок, которые уже прошли через кроппер (js/image-cropper.js) —
 // они уже нужного размера и соотношения сторон, повторный ресайз не нужен.
-async function uploadBlobToStorage(blob, path) {
-    const { error } = await sb.storage.from(IMAGES_BUCKET).upload(path, blob, { contentType: "image/jpeg", upsert: true });
+// GIF-аватарки идут сюда же как есть (без кроппера — canvas убивает
+// анимацию), поэтому contentType настраиваемый, а не всегда JPEG.
+async function uploadBlobToStorage(blob, path, contentType = "image/jpeg") {
+    const { error } = await sb.storage.from(IMAGES_BUCKET).upload(path, blob, { contentType, upsert: true });
     if (error) throw error;
     return sb.storage.from(IMAGES_BUCKET).getPublicUrl(path).data.publicUrl;
 }
@@ -3235,6 +3238,7 @@ function musicProfileCard(music){
 async function renderEditProfile(){
     const user = getCurrentUser();
     pendingAvatarBlob = null;
+    pendingAvatarExt = "jpg";
     pendingCoverBlob = null;
     const callSettingsSection = await renderCallSettingsPageSection();
 
@@ -3295,7 +3299,7 @@ async function renderEditProfile(){
                         font-size:12px;
                         margin-top:4px;
                     ">
-                        PNG, JPG или WEBP
+                        PNG, JPG, WEBP или GIF (с анимацией)
                     </div>
 
                 </div>
@@ -3310,9 +3314,11 @@ async function renderEditProfile(){
                 <input
                     id="editAvatar"
                     type="file"
-                    accept="image/png,image/jpeg,image/webp"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
                     onchange="onAvatarFileChosen(this)"
                 >
+
+                <div class="muted" style="font-size:12px;margin-top:6px;">GIF загрузится как есть, с анимацией — без выбора области.</div>
 
             </div>
 
@@ -3392,6 +3398,8 @@ async function renderEditProfile(){
     }
 }
 
+const MAX_AVATAR_GIF_SIZE = 8 * 1024 * 1024;
+
 async function onAvatarFileChosen(input){
     const file = input.files[0];
     if(!file) return;
@@ -3400,10 +3408,28 @@ async function onAvatarFileChosen(input){
         input.value = "";
         return;
     }
+
+    const isGif = file.type === "image/gif" || file.name.toLowerCase().endsWith(".gif");
+    if (isGif) {
+        // Кроппер рисует через canvas, а это всегда один статичный кадр —
+        // для GIF так анимация просто потеряется. Загружаем как есть.
+        if (file.size > MAX_AVATAR_GIF_SIZE) {
+            toast("GIF слишком большой. Максимум 8 МБ.");
+            input.value = "";
+            return;
+        }
+        input.value = "";
+        pendingAvatarBlob = file;
+        pendingAvatarExt = "gif";
+        document.getElementById("editAvatarPreview").src = URL.createObjectURL(file);
+        return;
+    }
+
     const blob = await openImageCropper(file, { aspect: 1, outputSize: 800 });
     input.value = ""; // файл уже "внутри" blob'а, сам инпут больше не нужен
     if (!blob) return; // отменили кроп
     pendingAvatarBlob = blob;
+    pendingAvatarExt = "jpg";
     document.getElementById("editAvatarPreview").src = URL.createObjectURL(blob);
 }
 
@@ -3441,7 +3467,13 @@ async function saveProfile() {
         return;
     }
     if (pendingAvatarBlob) {
-        try { user.avatar = await uploadBlobToStorage(pendingAvatarBlob, `${user.id}/avatar.jpg`); }
+        const contentType = pendingAvatarExt === "gif" ? "image/gif" : "image/jpeg";
+        // Аватар мог раньше быть другого формата (jpg <-> gif) — путь в
+        // Storage теперь меняется вместе с расширением, так что старый
+        // файл сам не перезапишется. Подчищаем его, чтобы не копился мусор.
+        const oldExt = pendingAvatarExt === "gif" ? "jpg" : "gif";
+        sb.storage.from(IMAGES_BUCKET).remove([`${user.id}/avatar.${oldExt}`]).catch(() => {});
+        try { user.avatar = await uploadBlobToStorage(pendingAvatarBlob, `${user.id}/avatar.${pendingAvatarExt}`, contentType); }
         catch (e) { console.error(e); toast("Не удалось загрузить аватар."); return; }
     }
     if (pendingCoverBlob) {
@@ -3458,6 +3490,7 @@ async function saveProfile() {
         return;
     }
     pendingAvatarBlob = null;
+    pendingAvatarExt = "jpg";
     pendingCoverBlob = null;
     toast("Профиль обновлён.");
     renderApp();
