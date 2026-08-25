@@ -12,6 +12,10 @@
 
 *{
     box-sizing:border-box;
+    /* Removes the default grey flash Android/iOS puts on every tapped
+       element — native apps don't have it, and it clashes with our own
+       :active feedback below (fighting each other looks janky). */
+    -webkit-tap-highlight-color:transparent;
 }
 
 html,body{
@@ -19,6 +23,11 @@ html,body{
     min-height:100%;
     font-family:Arial,Helvetica,sans-serif;
     color:var(--text);
+    /* Stops scrolling inside the app from chaining into the browser's
+       own pull-to-refresh / back-swipe gesture once you hit the top or
+       edge of the page — without this, a slightly-too-enthusiastic
+       scroll in the feed can accidentally reload or navigate back. */
+    overscroll-behavior-y:contain;
 }
 
 body{
@@ -28,6 +37,7 @@ body{
         linear-gradient(180deg,#72dcff 0%,#b8f5ff 42%,#e9fff7 100%);
     background-attachment:fixed;
     overflow-x:hidden;
+    overscroll-behavior-x:contain;
 }
 
 body:before{
@@ -64,6 +74,24 @@ textarea{
 
 button{
     cursor:pointer;
+}
+
+/* Baseline tap feedback for every button that doesn't already define
+   its own :active state — since -webkit-tap-highlight-color is turned
+   off above, tappable things need SOME visual response or they feel
+   unresponsive/broken on a touchscreen. More specific :active rules
+   elsewhere (e.g. .primary, .story-ring) naturally take priority. */
+button:not(:disabled):active,
+a.nav-btn:active{
+    transform:scale(.97);
+    transition:transform .08s ease;
+}
+
+@media(prefers-reduced-motion: reduce){
+    button:not(:disabled):active,
+    a.nav-btn:active{
+        transform:none;
+    }
 }
 
 .hidden{
@@ -199,8 +227,9 @@ input[type="radio"]{
 }
 
 textarea{
-    resize:vertical;
+    resize:none;
     min-height:100px;
+    overflow-y:hidden;
 }
 
 input:focus,
@@ -415,6 +444,8 @@ select:focus{
     max-width:calc(100vw - 24px);
     max-height:420px;
     overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
+    overscroll-behavior:contain;
     background:#fff;
     border:2px solid #d5eef3;
     border-radius:16px;
@@ -909,6 +940,8 @@ select:focus{
     min-height:400px;
     max-height:500px;
     overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
+    overscroll-behavior:contain;
 }
 
 .message{
@@ -1505,6 +1538,8 @@ select:focus{
     width:min(420px,100%);
     max-height:85vh;
     overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
+    overscroll-behavior:contain;
     background:#fff;
     border-radius:22px;
     padding:18px;
@@ -1577,6 +1612,8 @@ select:focus{
     gap:6px;
     max-height:50vh;
     overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
+    overscroll-behavior:contain;
 }
 
 .share-friend-row{
@@ -1681,6 +1718,8 @@ select:focus{
     gap:6px;
     max-height:50vh;
     overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
+    overscroll-behavior:contain;
 }
 
 .music-picker-row{
@@ -1891,6 +1930,10 @@ select:focus{
 
 @media(max-width:850px){
 
+    body.keyboard-open .bottom-nav{
+        display:none;
+    }
+
     .layout{
         grid-template-columns:1fr;
     }
@@ -1916,6 +1959,8 @@ select:focus{
         border-bottom:2px solid #d5eef3;
         max-height:180px;
         overflow-y:auto;
+        -webkit-overflow-scrolling:touch;
+        overscroll-behavior:contain;
     }
 
     .chat-messages{
@@ -4211,6 +4256,8 @@ html::after{
     display:flex;
     gap:8px;
     overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+    overscroll-behavior:contain;
     flex-shrink:0;
     padding-bottom:2px;
 }
@@ -4267,6 +4314,8 @@ html::after{
     margin-bottom:10px;
     max-height:260px;
     overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
+    overscroll-behavior:contain;
 }
 
 .call-tile{
