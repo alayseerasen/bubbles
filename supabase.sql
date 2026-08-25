@@ -213,6 +213,14 @@ alter table public.messages add column if not exists encrypted boolean not null 
 alter table public.messages add column if not exists iv text not null default '';
 alter table public.messages add column if not exists img_iv text not null default '';
 
+-- Reply-to-message: just a reference to another row in this same table,
+-- not sensitive on its own (the referenced message's actual content is
+-- still only visible to whoever can already decrypt it), so it's a plain
+-- column rather than going through the encrypted text/image pair above.
+-- on delete set null: if the original message is later deleted, the
+-- reply survives and simply stops pointing at anything.
+alter table public.messages add column if not exists reply_to_id text references public.messages(id) on delete set null;
+
 -- ------------------------------------------------------------
 -- MESSAGE REACTIONS
 -- One row per (message, user), same pattern as post_likes/comment_likes —
