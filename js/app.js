@@ -635,19 +635,32 @@ const sb = window.bubblesSupabase;
 // permission and actually subscribing to push, on the other hand, only
 // happens once someone's logged in — see subscribeToPush() in startApp().
 //
-// IMPORTANT: this must live at the SITE ROOT (./sw.js), not under /js/.
+// IMPORTANT: sw.js MUST live at the SITE ROOT (./sw.js), not under /js/.
 // A service worker's default max scope is the directory it's served
 // from — registering js/sw.js with scope:"./" (the whole site) exceeds
-// that and throws a SecurityError, which the .catch() below used to
-// swallow silently. That's not a hypothetical: it's exactly what was
-// breaking "Enable notifications" for everyone, including on the real
-// deployed site, not just when testing this zip locally.
+// that and throws a SecurityError. That was the actual bug that broke
+// push for everyone, on every platform: the file was sitting in /js/
+// while this code (correctly) asked for it at the root, so the
+// registration 404'd/threw and silently never happened — no service
+// worker, no push, ever, and it looked like "nothing" was wrong because
+// the .catch() below just logged it to a console nobody was watching.
+// It's fixed now (sw.js ships at the project root, next to index.html)
+// but the check stays here as a guardrail against it regressing again.
 if ("serviceWorker" in navigator) {
-    // ?v=2 forces the browser to treat this as a fresh fetch instead of
+    // ?v=3 forces the browser to treat this as a fresh fetch instead of
     // reusing a cached sw.js — bump this alongside the ?v= in index.html
     // whenever sw.js itself changes.
-    navigator.serviceWorker.register("./sw.js?v=2", { scope: "./" })
-        .catch(err => console.error("Service worker registration failed:", err));
+    navigator.serviceWorker.register("./sw.js?v=3", { scope: "./" })
+        .then(reg => {
+            // Proactively check for a newer sw.js on every load instead of
+            // waiting for the browser's own (slow, unpredictable) update
+            // cycle — matters a lot on iOS Home Screen apps, which don't
+            // get background update checks the way a normal browser tab does.
+            reg.update().catch(() => {});
+        })
+        .catch(err => console.error("Service worker registration failed — push notifications will not work:", err));
+} else {
+    console.warn("This browser has no Service Worker support — push notifications are unavailable.");
 }
 
 let db = {
@@ -3778,16 +3791,30 @@ async function subscribeToPush({ requestPermission = false } = {}) {
     // iOS only exposes Web Push to Home Screen web apps, not ordinary Safari tabs.
     if (isIOSDevice() && !isBubblesInstalled()) return false;
     if (Notification.permission === "denied") return false;
+    if (!requestPermission && Notification.permission !== "granted") return false;
 
     // Each step below is wrapped separately and throws a short, specific
-    // tag (registration-timeout / permission / subscribe / save) instead
+    // tag (permission / registration-timeout / subscribe / save) instead
     // of letting everything collapse into one opaque "something broke".
     // The outer catch turns that tag into copy the person can actually
-    // act on — this is the difference between "try again" (useless) and
-    // "the service worker never became ready — check that sw.js is at
-    // the site root" (something they, or I, can actually fix).
-    let step = "registration";
+    // act on.
+    let step = "permission";
     try {
+        // Ask for permission FIRST, before touching anything async like
+        // the service worker or an existing subscription. This matters a
+        // lot on iOS/Safari: WebKit only honours Notification.requestPermission()
+        // as a direct response to the tap that triggered it, and silently
+        // drops the request (no prompt, no error, permission just stays
+        // "default" forever) the moment there's an await — even a fast
+        // one — sitting in front of it. Asking immediately, as the very
+        // first thing this function does off the click, is what keeps the
+        // native prompt actually showing up on iPhone.
+        if (Notification.permission !== "granted") {
+            const permission = await Notification.requestPermission();
+            if (permission !== "granted") return false;
+        }
+
+        step = "registration";
         const registration = await Promise.race([
             navigator.serviceWorker.ready,
             new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 8000))
@@ -3806,13 +3833,6 @@ async function subscribeToPush({ requestPermission = false } = {}) {
         }
 
         if (!subscription) {
-            // Permission must be requested from a user gesture on iOS.
-            if (!requestPermission && Notification.permission !== "granted") return false;
-            if (Notification.permission !== "granted") {
-                step = "permission";
-                const permission = await Notification.requestPermission();
-                if (permission !== "granted") return false;
-            }
             step = "subscribe";
             subscription = await registration.pushManager.subscribe({
                 userVisibleOnly: true,
@@ -3840,10 +3860,11 @@ async function subscribeToPush({ requestPermission = false } = {}) {
         console.error(`Push subscribe failed at step "${step}":`, error, error?.cause || "");
         if (requestPermission) {
             const messages = {
-                "registration-timeout": "Service worker не подключился вовремя. Проверь, что sw.js лежит в корне сайта (рядом с index.html), и полностью перезайди в приложение (закрыть и открыть заново, не просто обновить).",
+                "registration-timeout": "Service worker не подключился вовремя. Полностью закрой Bubbles (смахни из списка приложений на iPhone) и открой заново — не просто обнови страницу.",
                 getSubscription: "Не удалось прочитать текущую push-подписку браузера.",
                 subscribe: "Браузер отказался создать push-подписку — обычно это старая/повреждённая подписка. Попробуй удалить Bubbles с экрана Домой и добавить заново.",
-                save: "Подписка создана, но не сохранилась на сервере — проверь, что таблица push_subscriptions существует (supabase.sql) и RLS её не блокирует."
+                save: "Подписка создана, но не сохранилась на сервере — проверь, что таблица push_subscriptions существует (supabase.sql) и RLS её не блокирует.",
+                permission: "iPhone не показал запрос на разрешение. Открой приложение заново (закрыть и открыть, не просто обновить страницу) и сразу нажми «Включить уведомления»."
             };
             toast(messages[step] || "Не удалось включить уведомления. Попробуй ещё раз через пару секунд.", 8000);
         }
