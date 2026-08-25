@@ -2964,9 +2964,22 @@ html::after{
     --green:#7ee56d;
     --green2:#4ecb6c;
     --white:rgba(34,46,58,.85);
-    --text:#f1f8fc;
-    --muted:#9db2bd;
+    --text:#ffffff;
+    --muted:#aebfc9;
     --shadow:0 12px 35px rgba(0,0,0,.45);
+}
+
+/* Основной текст (посты, комментарии, сообщения) — явно, а не только
+   через наследование var(--text), чтобы гарантированно не было тусклых
+   мест независимо от того, что происходит с фоном/блюром вокруг. */
+[data-theme="dark"] .post-content,
+[data-theme="dark"] .comment,
+[data-theme="dark"] .comment-body,
+[data-theme="dark"] .comment strong,
+[data-theme="dark"] .message,
+[data-theme="dark"] .reply-preview-text,
+[data-theme="dark"] .bio{
+    color:#ffffff;
 }
 
 /* BACKGROUND */
