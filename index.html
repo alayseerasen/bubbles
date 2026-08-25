@@ -8,6 +8,17 @@
 <meta name="theme-color" content="#64d9fa">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" href="icons/icon-192.png">
+<!--
+  iOS-specific PWA tags. Web Push on iPhone ONLY works inside a web app
+  that was added to the Home Screen — a normal Safari tab can never
+  receive push, no matter what the JS does. These three tags are what
+  makes "Поделиться → На экран Домой" actually create a standalone app
+  (its own window, no Safari chrome, correct status bar) instead of just
+  a bookmark that reopens inside Safari:
+-->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Bubbles">
 <script>
 // Apply saved theme immediately, before CSS paints, to avoid a flash of the wrong theme.
 (function(){
@@ -65,7 +76,7 @@
 <script src="js/crypto.js?v=2"></script>
 <script src="js/sounds.js?v=1"></script>
 <script src="js/image-cropper.js?v=1"></script>
-<script src="js/app.js?v=2"></script>
+<script src="js/app.js?v=3"></script>
 <script src="js/calls.js?v=2"></script>
 </body>
 </html>
