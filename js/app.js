@@ -1348,7 +1348,7 @@ function loginForm() {
                 <label>Пароль</label>
                 <input id="loginPassword" type="password" autocomplete="current-password" required placeholder="••••••••">
             </div>
-            <button class="primary full">Войти в bubbles</button>
+            <button id="loginSubmitBtn" class="primary full">Войти в bubbles</button>
         </form>
         <div class="auth-switch">
             Нет аккаунта?
@@ -1384,7 +1384,7 @@ function registerForm() {
                     <button type="button" class="gender-btn" id="maleGender" onclick="selectGender('male')">♂ Мужской</button>
                 </div>
             </div>
-            <button class="primary full">Создать аккаунт</button>
+            <button id="registerSubmitBtn" class="primary full">Создать аккаунт</button>
         </form>
         <div class="auth-switch">
             Уже есть аккаунт?
@@ -1430,58 +1430,83 @@ async function bootstrapSession(user) {
     return sessionBootstrapPromise;
 }
 
+let isRegistering = false;
 async function register(event) {
     event.preventDefault();
-    const email = document.getElementById("registerEmail").value.trim().toLowerCase();
-    const username = document.getElementById("registerUsername").value.trim().toLowerCase();
-    const displayName = document.getElementById("registerName").value.trim();
-    const password = document.getElementById("registerPassword").value;
-    const { data: existing } = await sb.from("profiles").select("id").eq("username", username).maybeSingle();
-    if (existing) {
-        toast("Такой юзернейм уже занят.");
-        return;
-    }
-    const { data, error } = await sb.auth.signUp({
-        email,
-        password,
-        options: {
-            data: { username, displayName, gender: genderValue }
-        }
-    });
-    if (error) {
-        console.error(error);
-        toast(error.message || "Не удалось создать аккаунт.");
-        return;
-    }
-    if (!data.session) {
-        toast("Аккаунт создан. Проверь почту и подтверди адрес, затем войди.");
-        showAuth("login");
-        return;
-    }
+    if (isRegistering) return;
+    isRegistering = true;
+    const btn = document.getElementById("registerSubmitBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Создаём…"; }
     try {
-        await bootstrapSession(data.user);
-    }
-    catch (error) {
-        console.error(error);
-        toast("Аккаунт создан, но профиль не удалось создать: " + (error?.message || error), 9000);
+        const email = document.getElementById("registerEmail").value.trim().toLowerCase();
+        const username = document.getElementById("registerUsername").value.trim().toLowerCase();
+        const displayName = document.getElementById("registerName").value.trim();
+        const password = document.getElementById("registerPassword").value;
+        const { data: existing } = await sb.from("profiles").select("id").eq("username", username).maybeSingle();
+        if (existing) {
+            toast("Такой юзернейм уже занят.");
+            return;
+        }
+        const { data, error } = await sb.auth.signUp({
+            email,
+            password,
+            options: {
+                data: { username, displayName, gender: genderValue }
+            }
+        });
+        if (error) {
+            console.error(error);
+            toast(error.message || "Не удалось создать аккаунт.");
+            return;
+        }
+        if (!data.session) {
+            toast("Аккаунт создан. Проверь почту и подтверди адрес, затем войди.");
+            showAuth("login");
+            return;
+        }
+        try {
+            await bootstrapSession(data.user);
+        }
+        catch (error) {
+            console.error(error);
+            toast("Аккаунт создан, но профиль не удалось создать: " + (error?.message || error), 9000);
+        }
+    } finally {
+        isRegistering = false;
+        const btnAgain = document.getElementById("registerSubmitBtn");
+        if (btnAgain) { btnAgain.disabled = false; btnAgain.textContent = "Создать аккаунт"; }
     }
 }
 
+let isLoggingIn = false;
 async function login(event) {
     event.preventDefault();
-    const email = document.getElementById("loginEmail").value.trim().toLowerCase();
-    const password = document.getElementById("loginPassword").value;
-    const { data, error } = await sb.auth.signInWithPassword({ email, password });
-    if (error) {
-        toast(error.message || "Неверная почта или пароль.");
-        return;
-    }
+    if (isLoggingIn) return;
+    isLoggingIn = true;
+    const btn = document.getElementById("loginSubmitBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Входим…"; }
     try {
-        await bootstrapSession(data.user);
-    }
-    catch (error) {
-        console.error(error);
-        toast("Не удалось загрузить профиль: " + (error?.message || error), 9000);
+        const email = document.getElementById("loginEmail").value.trim().toLowerCase();
+        const password = document.getElementById("loginPassword").value;
+        const { data, error } = await sb.auth.signInWithPassword({ email, password });
+        if (error) {
+            toast(error.message || "Неверная почта или пароль.");
+            return;
+        }
+        try {
+            await bootstrapSession(data.user);
+        }
+        catch (error) {
+            console.error(error);
+            toast("Не удалось загрузить профиль: " + (error?.message || error), 9000);
+        }
+    } finally {
+        isLoggingIn = false;
+        // A successful login navigates away from this form entirely
+        // (showAuth/bootstrapSession replace the screen), so the button
+        // only needs resetting on the failure paths above.
+        const btnAgain = document.getElementById("loginSubmitBtn");
+        if (btnAgain) { btnAgain.disabled = false; btnAgain.textContent = "Войти в bubbles"; }
     }
 }
 
@@ -1810,6 +1835,7 @@ function closeMoreSheet() {
    ============================================================ */
 
 function navigate(page, id = null){
+    const isFreshEntryToFeed = page === "feed" && currentPage !== "feed";
     currentPage = page;
     selectedProfileId = id || selectedProfileId;
     closeStoryViewer(); // it's a full-screen modal appended to <body>, outside the normal page — don't leave it floating over the newly navigated-to page
@@ -1819,6 +1845,14 @@ function navigate(page, id = null){
     document.querySelectorAll("[data-page]").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.page === page);
     });
+
+    // Only reset the feed's pagination when actually ARRIVING at it from
+    // somewhere else — navigate("feed") also fires for incidental
+    // whole-app re-renders (e.g. an achievement toast) while you're
+    // already sitting in the feed, and collapsing everything you'd
+    // scrolled through back down to 20 posts in that case would be
+    // exactly the jarring reset "load more" is meant to avoid.
+    if (isFreshEntryToFeed) feedVisibleCount = FEED_PAGE_SIZE;
 
     switch(page){
         case "feed": renderFeed(); break;
@@ -1847,6 +1881,9 @@ function navigate(page, id = null){
    FEED
    ============================================================ */
 
+let feedVisibleCount = 20;
+const FEED_PAGE_SIZE = 20;
+
 function renderFeed(){
     const page = document.getElementById("page");
     // Pinned posts (max 2, enforced in the DB) always lead the feed,
@@ -1857,6 +1894,8 @@ function renderFeed(){
         if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
         return b.createdAt - a.createdAt;
     });
+    const visible = posts.slice(0, feedVisibleCount);
+    const hasMore = posts.length > visible.length;
 
     page.innerHTML = `
 
@@ -1903,6 +1942,7 @@ function renderFeed(){
                 </button>
 
                 <button
+                    id="createPostBtn"
                     class="primary"
                     onclick="createPost()"
                 >
@@ -1916,19 +1956,55 @@ function renderFeed(){
         </div>
 
 
+        <div id="feedPostsList">
+            ${
+                visible.length
+                ? visible.map(renderPost).join("")
+                : emptyState(
+                    "🌊",
+                    "Лента пока пустая",
+                    "Опубликуй что-нибудь первым."
+                )
+            }
+        </div>
+
         ${
-            posts.length
-            ? posts.map(renderPost).join("")
-            : emptyState(
-                "🌊",
-                "Лента пока пустая",
-                "Опубликуй что-нибудь первым."
-            )
+            hasMore
+            ? `
+                <button id="feedLoadMoreBtn" class="secondary full profile-expand-btn" onclick="loadMoreFeedPosts()">
+                    Показать ещё (осталось ${posts.length - visible.length})
+                </button>
+              `
+            : ""
         }
 
     `;
 
     renderComposerMusicChip();
+}
+
+// Appends the next batch straight into the DOM instead of calling
+// renderFeed() again — a full page.innerHTML rebuild would blow away
+// everything above the button (story rail, composer, all the posts
+// already on screen) and reset scroll to the top, which is exactly
+// the annoying thing "load more" is supposed to avoid.
+function loadMoreFeedPosts(){
+    const posts = [...db.posts].sort((a,b) => {
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
+        return b.createdAt - a.createdAt;
+    });
+    const nextBatch = posts.slice(feedVisibleCount, feedVisibleCount + FEED_PAGE_SIZE);
+    const list = document.getElementById("feedPostsList");
+    if (list && nextBatch.length) list.insertAdjacentHTML("beforeend", nextBatch.map(renderPost).join(""));
+    feedVisibleCount += nextBatch.length;
+
+    const remaining = posts.length - feedVisibleCount;
+    const btn = document.getElementById("feedLoadMoreBtn");
+    if (btn) {
+        if (remaining > 0) btn.textContent = `Показать ещё (осталось ${remaining})`;
+        else btn.remove();
+    }
 }
 
 function renderCommentRepliesList(postId, topComment, replies){
@@ -2278,43 +2354,57 @@ function renderPost(post){
     `;
 }
 
+let isCreatingPost = false;
 async function createPost() {
+    if (isCreatingPost) return; // guards against a double-tap firing this twice while the upload/insert is still in flight — would otherwise post it twice
     const text = document.getElementById("postText")?.value.trim() || "";
     const file = document.getElementById("postImage")?.files[0];
     if (!text && !file && !selectedComposerMusicId) {
         toast("Добавь текст, изображение или музыку.");
         return;
     }
-    const postId = uid("post");
-    let image = "";
-    if (file) {
-        if (!file.type.startsWith("image/")) {
-            toast("Можно загружать только изображения.");
+    isCreatingPost = true;
+    const btn = document.getElementById("createPostBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Публикуем…"; }
+    try {
+        const postId = uid("post");
+        let image = "";
+        if (file) {
+            if (!file.type.startsWith("image/")) {
+                toast("Можно загружать только изображения.");
+                return;
+            }
+            if (file.size > 20 * 1024 * 1024) {
+                toast("Изображение слишком большое. Максимум 20 МБ.");
+                return;
+            }
+            try { image = await uploadImageToStorage(file, `${currentUserId}/post-${postId}.jpg`, 1600); }
+            catch (e) { console.error(e); toast("Не удалось загрузить изображение."); return; }
+        }
+        const musicId = selectedComposerMusicId || null;
+        const post = { id: postId, authorId: currentUserId, text, image, musicId, sharedPostId: null, likes: [], createdAt: Date.now() };
+        db.posts.unshift(post);
+        const { error } = await sb.from("posts").insert({
+            id: post.id, author_id: post.authorId, text: post.text, image: post.image, music_id: post.musicId, likes: [], created_at: new Date(post.createdAt).toISOString()
+        });
+        if (error) {
+            db.posts = db.posts.filter(p => p.id !== post.id);
+            console.error(error);
+            toast("Не удалось опубликовать пост.");
             return;
         }
-        if (file.size > 20 * 1024 * 1024) {
-            toast("Изображение слишком большое. Максимум 20 МБ.");
-            return;
-        }
-        try { image = await uploadImageToStorage(file, `${currentUserId}/post-${postId}.jpg`, 1600); }
-        catch (e) { console.error(e); toast("Не удалось загрузить изображение."); return; }
+        selectedComposerMusicId = null;
+        toast("Пост опубликован!");
+        recomputeAchievements();
+        renderFeed();
+    } finally {
+        isCreatingPost = false;
+        // renderFeed() (on success) rebuilds the whole composer card anyway,
+        // so the button no longer exists to re-enable — this only matters
+        // for the early-return/error paths where the old card is still on screen.
+        const btnAgain = document.getElementById("createPostBtn");
+        if (btnAgain) { btnAgain.disabled = false; btnAgain.textContent = "Опубликовать"; }
     }
-    const musicId = selectedComposerMusicId || null;
-    const post = { id: postId, authorId: currentUserId, text, image, musicId, sharedPostId: null, likes: [], createdAt: Date.now() };
-    db.posts.unshift(post);
-    const { error } = await sb.from("posts").insert({
-        id: post.id, author_id: post.authorId, text: post.text, image: post.image, music_id: post.musicId, likes: [], created_at: new Date(post.createdAt).toISOString()
-    });
-    if (error) {
-        db.posts = db.posts.filter(p => p.id !== post.id);
-        console.error(error);
-        toast("Не удалось опубликовать пост.");
-        return;
-    }
-    selectedComposerMusicId = null;
-    toast("Пост опубликован!");
-    recomputeAchievements();
-    renderFeed();
 }
 
 // Re-renders just one post card in place, wherever it currently sits in the
@@ -4014,6 +4104,38 @@ function closeNotificationsPanel() {
 }
 
 document.addEventListener("click", closeNotificationsPanel);
+
+// Every textarea in the app is a content-composition field (post, bio,
+// caption, edit) — growing with what you type instead of forcing you
+// to scroll inside a cramped box is just more comfortable to type
+// into, especially on a phone keyboard. Delegated on document so it
+// covers textareas that don't exist yet at page load (modals, edit
+// forms rendered later) without wiring up each one individually.
+function autoGrowTextarea(el) {
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 420) + "px";
+}
+document.addEventListener("input", (e) => {
+    if (e.target.tagName === "TEXTAREA") autoGrowTextarea(e.target);
+});
+// Textareas that already have content when they're rendered (editing an
+// existing post/bio) need one initial resize too, not just on typing.
+document.addEventListener("focusin", (e) => {
+    if (e.target.tagName === "TEXTAREA") autoGrowTextarea(e.target);
+    // Hides the fixed bottom nav while the on-screen keyboard is open.
+    // Fixed-position elements interact inconsistently with the iOS
+    // keyboard across Safari versions (sometimes floating awkwardly
+    // above it, sometimes hidden behind it) — rather than chase that
+    // per-version behavior, just get it out of the way entirely
+    // whenever something is actually being typed into. Also frees up
+    // real vertical space for the content while typing, which helps
+    // regardless of platform.
+    if (e.target.matches("input,textarea")) document.body.classList.add("keyboard-open");
+});
+document.addEventListener("focusout", (e) => {
+    if (e.target.matches("input,textarea")) document.body.classList.remove("keyboard-open");
+});
+
 window.addEventListener("resize", () => {
     const panel = document.getElementById("notifPanel");
     if (panel && !panel.classList.contains("hidden")) positionNotificationsPanel(panel);
@@ -6115,27 +6237,35 @@ async function moderateDeleteReportedContent(reportId) {
 
 let userSearchQuery = "";
 
+let searchRenderDebounceTimer = null;
+
 function searchUsers(value, sourceId){
     userSearchQuery = value;
-    const query = value.trim().toLowerCase();
     currentPage = "search";
-    renderSearchResults(query);
-    // renderSearchResults() rebuilds #page's innerHTML, which destroys and
-    // recreates #searchPageInput as a brand-new (unfocused) DOM node every
-    // keystroke — on mobile that closes the keyboard after a single
-    // character. Re-focus + restore the caret on whichever input the
-    // person is actually typing in.
-    ["searchInput", "searchPageInput"].forEach(id => {
-        const el = document.getElementById(id);
-        if (el && el.value !== value) el.value = value;
-    });
-    if (sourceId) {
-        const active = document.getElementById(sourceId);
-        if (active) {
-            active.focus();
-            active.setSelectionRange(value.length, value.length);
+    // The <input> already shows what's typed instantly (that's just the
+    // browser) — only the expensive part (rebuilding the whole results
+    // list, which fights for the keyboard focus, see below) gets
+    // debounced, so fast typing doesn't re-render on every keystroke.
+    clearTimeout(searchRenderDebounceTimer);
+    searchRenderDebounceTimer = setTimeout(() => {
+        const query = value.trim().toLowerCase();
+        renderSearchResults(query);
+        // renderSearchResults() rebuilds #page's innerHTML, which destroys and
+        // recreates #searchPageInput as a brand-new (unfocused) DOM node every
+        // time — on mobile that closes the keyboard. Re-focus + restore the
+        // caret on whichever input the person is actually typing in.
+        ["searchInput", "searchPageInput"].forEach(id => {
+            const el = document.getElementById(id);
+            if (el && el.value !== value) el.value = value;
+        });
+        if (sourceId) {
+            const active = document.getElementById(sourceId);
+            if (active) {
+                active.focus();
+                active.setSelectionRange(value.length, value.length);
+            }
         }
-    }
+    }, 150);
 }
 
 function renderSearchResults(query){
@@ -7095,6 +7225,7 @@ Object.assign(window,{
     toggleProfileMusicExpanded,toggleProfileFriendsExpanded,toggleProfileAchievementsExpanded,
     setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,backfillAchievementsForAllUsers,togglePinPost,
     toggleMoreSheet,openMoreSheet,closeMoreSheet,
+    loadMoreFeedPosts,
     reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent,
     toggleBlockUser,
     addStoryPrompt,openStoryViewer,closeStoryViewer,storyViewerAdvance,deleteCurrentStory,
