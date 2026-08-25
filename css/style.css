@@ -4538,3 +4538,190 @@ html::after{
 .cropper-controls input[type="range"]{
     flex:1;
 }
+
+/* ============================================================
+   BUBBLES+ — subscription perks (avatar frames, exclusive themes,
+   exclusive reactions/stickers). See js/app.js for the plans/perks
+   config and supabase.sql for the "SUBSCRIPTION" section.
+   ============================================================ */
+
+/* Avatar frames — applied as an extra class alongside whichever avatar
+   class (.mini-avatar, .profile-avatar, plain <img>, etc.) is already
+   on the element, so this works everywhere an avatar is rendered
+   without needing any markup restructuring. Uses box-shadow rather
+   than border so it layers on top of each avatar's own existing white
+   border/shadow instead of fighting it. */
+.sub-frame-gold{
+    box-shadow:
+        0 0 0 3px #ffd76a,
+        0 0 12px rgba(255,193,7,.7),
+        0 3px 10px rgba(30,120,150,.2);
+}
+
+.sub-frame-neon{
+    box-shadow:
+        0 0 0 3px #7ef7e0,
+        0 0 14px rgba(30,240,210,.8),
+        0 3px 10px rgba(30,120,150,.2);
+}
+
+.sub-frame-holo{
+    box-shadow:0 0 0 3px transparent, 0 3px 10px rgba(30,120,150,.2);
+    background:
+        linear-gradient(#fff,#fff) padding-box,
+        conic-gradient(from 0deg,#ff9a9e,#fad0c4,#a1c4fd,#c2e9fb,#ff9a9e) border-box;
+    border:3px solid transparent !important;
+    animation:sub-frame-holo-spin 4s linear infinite;
+}
+
+@keyframes sub-frame-holo-spin{
+    0%{ filter:hue-rotate(0deg); }
+    100%{ filter:hue-rotate(360deg); }
+}
+
+/* Small "Bubbles+" tag shown next to a subscriber's name — in the
+   chat header, message list, profile page, etc. */
+.sub-badge{
+    display:inline-flex;
+    align-items:center;
+    gap:2px;
+    font-size:11px;
+    font-weight:700;
+    padding:1px 7px;
+    border-radius:999px;
+    color:#7a4a00;
+    background:linear-gradient(135deg,#ffe89c,#ffc65c);
+    box-shadow:0 2px 6px rgba(255,180,40,.35);
+    vertical-align:middle;
+    white-space:nowrap;
+}
+
+[data-theme="dark"] .sub-badge{
+    color:#3a2400;
+}
+
+/* ------------------------------------------------------------
+   Exclusive accent themes — layered on top of light/dark mode via a
+   second attribute (data-sub-theme) so a subscriber can combine either
+   base theme with one of these accent palettes. Only ever applied when
+   js/app.js confirms the profile's subscription is actually active.
+   ------------------------------------------------------------ */
+:root[data-sub-theme="sunset"]{
+    --blue:#ff9868;
+    --blue2:#e2632f;
+    --cyan:#ffe0c9;
+    --green:#ffcf6b;
+    --green2:#e8a13a;
+}
+
+:root[data-sub-theme="galaxy"]{
+    --blue:#9d7bff;
+    --blue2:#5c33c9;
+    --cyan:#e3d8ff;
+    --green:#ff7bd0;
+    --green2:#c93893;
+}
+
+:root[data-sub-theme="mint"]{
+    --blue:#57e0b8;
+    --blue2:#149a75;
+    --cyan:#d3fff2;
+    --green:#8fe86a;
+    --green2:#3fae3f;
+}
+
+/* ------------------------------------------------------------
+   Bubbles+ purchase screen
+   ------------------------------------------------------------ */
+.plus-hero{
+    text-align:center;
+    padding:22px 16px;
+    border-radius:18px;
+    color:#7a4a00;
+    background:linear-gradient(135deg,#ffe89c,#ffc65c);
+    box-shadow:0 8px 22px rgba(255,180,40,.35);
+    margin-bottom:16px;
+}
+
+[data-theme="dark"] .plus-hero{ color:#3a2400; }
+
+.plus-hero h2{
+    margin:6px 0 4px;
+}
+
+.plus-plans{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+    gap:12px;
+    margin:14px 0;
+}
+
+.plus-plan{
+    border-radius:14px;
+    padding:16px 12px;
+    text-align:center;
+    background:var(--white);
+    box-shadow:var(--shadow);
+    border:2px solid transparent;
+    cursor:pointer;
+}
+
+.plus-plan.selected{
+    border-color:#ffc65c;
+    background:linear-gradient(135deg,rgba(255,232,156,.5),rgba(255,198,92,.35));
+}
+
+.plus-plan .plus-plan-months{
+    font-size:20px;
+    font-weight:800;
+}
+
+.plus-plan .plus-plan-price{
+    margin-top:4px;
+    font-size:14px;
+    opacity:.75;
+}
+
+.plus-plan .plus-plan-save{
+    margin-top:6px;
+    font-size:11px;
+    font-weight:700;
+    color:#2f9e44;
+}
+
+.perk-option-grid{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px;
+    margin-top:10px;
+}
+
+.perk-option{
+    border:2px solid transparent;
+    border-radius:12px;
+    padding:8px 12px;
+    background:var(--white);
+    box-shadow:var(--shadow);
+    cursor:pointer;
+    font-size:13px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+}
+
+.perk-option.selected{
+    border-color:#ffc65c;
+}
+
+.perk-option.locked{
+    opacity:.5;
+    cursor:not-allowed;
+}
+
+.perk-swatch{
+    width:18px;
+    height:18px;
+    border-radius:50%;
+    display:inline-block;
+    flex-shrink:0;
+}
