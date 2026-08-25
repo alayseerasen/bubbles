@@ -10,6 +10,80 @@ const IMAGES_BUCKET = "images";
 const QUICK_REACTIONS = ["❤️", "😂", "👍", "😮", "😢"];
 
 /* ============================================================
+   BUBBLES+ — subscription config
+   ------------------------------------------------------------
+   Everything about what's for sale and what it unlocks lives here,
+   client-side — same philosophy as achievements. The database only
+   ever stores the RESULT (tier + expiry + which frame/theme is
+   currently selected), never these definitions.
+
+   Payment is deliberately manual (see renderPremium() /
+   createSubscriptionRequest()): a person picks a plan, gets shown
+   PAYMENT_INSTRUCTIONS, and submits a request that sits pending until
+   an admin confirms the payment arrived and approves it from the
+   moderation queue on their own profile page. No payment processor,
+   no card/bank data touches this code at all — swap
+   PAYMENT_INSTRUCTIONS below for however you actually want to get
+   paid (a crypto address, a link, "напиши мне в директ", whatever).
+   ============================================================ */
+
+const SUBSCRIPTION_PLANS = [
+    { months: 1, price: "150₽", perMonth: null },
+    { months: 6, price: "750₽", perMonth: "125₽/мес", save: "Выгода 17%" },
+    { months: 12, price: "1200₽", perMonth: "100₽/мес", save: "Выгода 33%" }
+];
+
+// Edit this to however you actually want to get paid — it's just shown
+// as plain text on the purchase screen, nothing here talks to a real
+// payment provider.
+const PAYMENT_INSTRUCTIONS =
+    "Переведи по реквизитам, которые тебе прислали отдельно, и нажми кнопку ниже — заявка уйдёт на подтверждение, подписку включат вручную, обычно быстро.";
+
+const FRAME_OPTIONS = [
+    { id: "gold", label: "Золотая", swatch: "linear-gradient(135deg,#ffe89c,#ffc65c)" },
+    { id: "neon", label: "Неоновая", swatch: "linear-gradient(135deg,#7ef7e0,#12c9a8)" },
+    { id: "holo", label: "Голографическая", swatch: "conic-gradient(from 0deg,#ff9a9e,#fad0c4,#a1c4fd,#c2e9fb,#ff9a9e)" }
+];
+
+const THEME_OPTIONS = [
+    { id: "default", label: "Обычная", swatch: "linear-gradient(135deg,#4fc9f5,#7ee56d)" },
+    { id: "sunset", label: "Закат", swatch: "linear-gradient(135deg,#ff9868,#e2632f)" },
+    { id: "galaxy", label: "Галактика", swatch: "linear-gradient(135deg,#9d7bff,#5c33c9)" },
+    { id: "mint", label: "Мята", swatch: "linear-gradient(135deg,#57e0b8,#149a75)" }
+];
+
+// Extra reaction row shown only to subscribers in the message reaction
+// picker — QUICK_REACTIONS above stays exactly as-is for everyone else.
+const PLUS_REACTIONS = ["🫧", "✨", "💎", "🌈", "🔥", "😻"];
+
+function isSubscriber(user) {
+    return !!user
+        && user.subscriptionTier === "plus"
+        && !!user.subscriptionExpiresAt
+        && user.subscriptionExpiresAt > Date.now();
+}
+
+function subscriptionDaysLeft(user) {
+    if (!isSubscriber(user)) return 0;
+    return Math.max(0, Math.ceil((user.subscriptionExpiresAt - Date.now()) / 86400000));
+}
+
+// The extra class to fold into any avatar <img>'s class="" attribute —
+// empty string when the user isn't an active subscriber or hasn't
+// picked a frame, so this is always safe to interpolate directly.
+function avatarFrameClass(user) {
+    if (!isSubscriber(user) || !user.subscriptionFrame || user.subscriptionFrame === "none") return "";
+    return ` sub-frame-${user.subscriptionFrame}`;
+}
+
+// Small inline "💎 Bubbles+" tag — pass a size like "11px" to match
+// whatever text it's sitting next to, or leave it at the default.
+function subBadge(user, { fontSize } = {}) {
+    if (!isSubscriber(user)) return "";
+    return `<span class="sub-badge"${fontSize ? ` style="font-size:${fontSize}"` : ""}>💎 Plus</span>`;
+}
+
+/* ============================================================
    ACHIEVEMENTS & STATUS
    ------------------------------------------------------------
    Edit this list to add/change achievements — each just needs an id,
@@ -673,6 +747,7 @@ let db = {
     messages: [],
     music: [],
     reports: [],
+    subscriptionRequests: [],
     blocks: [],
     stories: [],
     storyViews: [],
@@ -1516,10 +1591,11 @@ async function logout(){
     stopOnlineCountPolling();
     teardownRealtime();
     closeMusicPlayer();
+    document.documentElement.removeAttribute("data-sub-theme");
     await sb.auth.signOut();
     currentUserId = null;
     teardownCallSignaling();
-    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],notifications:[],messages:[],music:[],reports:[],blocks:[],stories:[],storyViews:[],pet:null};
+    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],notifications:[],messages:[],music:[],reports:[],subscriptionRequests:[],blocks:[],stories:[],storyViews:[],pet:null};
     showAuth("landing");
 }
 
@@ -1540,6 +1616,7 @@ function startApp(){
     }
     startPresenceHeartbeat();
     if (db.pet) startPetHeartbeat();
+    applySubscriptionTheme(me);
     setupMessagesRealtime();
     setupFriendRequestsRealtime();
     setupSocialRealtime();
@@ -1605,12 +1682,12 @@ function renderApp(){
                 >${getTheme() === "dark" ? "☀️" : "🌙"}</button>
 
                 <img
-                    class="mini-avatar"
+                    class="mini-avatar${avatarFrameClass(user)}"
                     src="${user.avatar || defaultAvatar()}"
                 >
 
                 <span>
-                    ${escapeHtml(user.displayName)}
+                    ${escapeHtml(user.displayName)} ${subBadge(user)}
                 </span>
 
             </div>
@@ -1693,6 +1770,14 @@ function renderApp(){
                 >
                     🐣 Питомец
                     <span id="petNeedsAttentionBadge" class="nav-badge hidden"></span>
+                </button>
+
+                <button
+                    class="nav-btn"
+                    data-page="premium"
+                    onclick="navigate('premium')"
+                >
+                    💎 Bubbles+
                 </button>
 
                 <button
@@ -1795,6 +1880,10 @@ function renderApp(){
                     <span id="petNeedsAttentionBadgeMobile" class="nav-badge hidden"></span>
                 </button>
 
+                <button class="more-sheet-item" data-page="premium" onclick="navigate('premium'); closeMoreSheet();">
+                    💎 Bubbles+
+                </button>
+
                 <button class="more-sheet-item" data-page="edit" onclick="navigate('edit'); closeMoreSheet();">
                     ⚙️ Настройки
                 </button>
@@ -1866,6 +1955,7 @@ function navigate(page, id = null){
         case "messages": renderMessages(); break;
         case "music": renderMusic(); break;
         case "pet": renderPet(); break;
+        case "premium": renderPremium(); break;
         case "edit": renderEditProfile(); break;
         case "search": renderSearchResults((id != null ? id : userSearchQuery).trim().toLowerCase()); break;
         default: renderFeed();
@@ -2028,7 +2118,7 @@ function renderCommentRow(postId, comment, topComment){
         <div class="comment${isReply ? " comment-reply" : ""}">
 
             <img loading="lazy" decoding="async"
-                class="mini-avatar small comment-avatar"
+                class="mini-avatar small comment-avatar${avatarFrameClass(user)}"
                 src="${user?.avatar || defaultAvatar()}"
                 ${user ? `onclick="${goToProfile}" style="cursor:pointer"` : ""}
             >
@@ -2038,7 +2128,7 @@ function renderCommentRow(postId, comment, topComment){
                 <strong
                     ${user ? `onclick="${goToProfile}" style="cursor:pointer"` : ""}
                 >
-                    ${escapeHtml(user?.displayName || "Пользователь")}
+                    ${escapeHtml(user?.displayName || "Пользователь")} ${user ? subBadge(user, { fontSize: "9px" }) : ""}
                 </strong>
 
                 ${escapeHtml(comment.text)}
@@ -2160,7 +2250,7 @@ function renderPost(post){
             <div class="post-head">
 
                 <img loading="lazy" decoding="async"
-                    class="mini-avatar"
+                    class="mini-avatar${avatarFrameClass(author)}"
                     src="${author.avatar || defaultAvatar()}"
                     onclick="navigate('profile','${author.id}')"
                     style="cursor:pointer"
@@ -2178,6 +2268,7 @@ function renderPost(post){
                     </strong>
 
                     ${statusBadgeHtml(author, "small")}
+                    ${subBadge(author, { fontSize: "9px" })}
 
                     <small>
                         @${escapeHtml(author.username)}
@@ -3069,7 +3160,7 @@ function renderProfile(userId){
             <div class="profile-main">
 
                 <img loading="lazy" decoding="async"
-                    class="profile-avatar"
+                    class="profile-avatar${avatarFrameClass(user)}"
                     src="${user.avatar || defaultAvatar()}"
                 >
 
@@ -3087,6 +3178,7 @@ function renderProfile(userId){
                         </div>
 
                         ${statusBadgeHtml(user)}
+                        ${subBadge(user)}
 
                         ${isUserOnline(user.lastSeen) ? `<div class="online-status">🟢 Онлайн</div>` : `<div class="offline-status">⚪ Оффлайн</div>`}
 
@@ -3185,7 +3277,7 @@ function renderProfile(userId){
 
         </div>
 
-        ${isMe && isAdmin() ? renderModerationQueue() + renderAchievementsBackfillCard() : adminProfileControls(user)}
+        ${isMe && isAdmin() ? renderModerationQueue() + renderSubscriptionRequestsQueue() + renderAchievementsBackfillCard() : adminProfileControls(user)}
 
         ${renderAchievementsGrid(user)}
 
@@ -3623,8 +3715,8 @@ function renderFriends(){
                 <div class="friend-grid">
                     ${incoming.map(({request, user}) => `
                         <div class="friend-card">
-                            <img loading="lazy" decoding="async" src="${user.avatar || defaultAvatar()}" onclick="navigate('profile','${user.id}')" style="cursor:pointer">
-                            <h4>${escapeHtml(user.displayName)}</h4>
+                            <img loading="lazy" decoding="async" class="${avatarFrameClass(user).trim()}" src="${user.avatar || defaultAvatar()}" onclick="navigate('profile','${user.id}')" style="cursor:pointer">
+                            <h4>${escapeHtml(user.displayName)} ${subBadge(user, { fontSize: "9px" })}</h4>
                             <p>@${escapeHtml(user.username)}</p>
                             <div style="display:flex;gap:6px;">
                                 <button class="primary" style="flex:1;" onclick="acceptFriendRequest('${request.id}','${user.id}')">✓ Принять</button>
@@ -3644,8 +3736,8 @@ function renderFriends(){
                 <div class="friend-grid">
                     ${outgoing.map(({request, user}) => `
                         <div class="friend-card">
-                            <img loading="lazy" decoding="async" src="${user.avatar || defaultAvatar()}" onclick="navigate('profile','${user.id}')" style="cursor:pointer">
-                            <h4>${escapeHtml(user.displayName)}</h4>
+                            <img loading="lazy" decoding="async" class="${avatarFrameClass(user).trim()}" src="${user.avatar || defaultAvatar()}" onclick="navigate('profile','${user.id}')" style="cursor:pointer">
+                            <h4>${escapeHtml(user.displayName)} ${subBadge(user, { fontSize: "9px" })}</h4>
                             <p>@${escapeHtml(user.username)}</p>
                             <button class="secondary" style="width:100%;" onclick="cancelFriendRequest('${request.id}')">Отменить заявку</button>
                         </div>
@@ -3683,13 +3775,14 @@ function friendCard(user){
         <div class="friend-card">
 
             <img loading="lazy" decoding="async"
+                class="${avatarFrameClass(user).trim()}"
                 src="${user.avatar || defaultAvatar()}"
                 onclick="navigate('profile','${user.id}')"
                 style="cursor:pointer"
             >
 
             <h4>
-                ${escapeHtml(user.displayName)}
+                ${escapeHtml(user.displayName)} ${subBadge(user, { fontSize: "9px" })}
             </h4>
 
             <p>
@@ -4435,7 +4528,7 @@ function renderConversation(user) {
         >
 
             <img loading="lazy" decoding="async"
-                class="mini-avatar"
+                class="mini-avatar${avatarFrameClass(user)}"
                 src="${
                     user.avatar ||
                     defaultAvatar()
@@ -4502,14 +4595,14 @@ function renderChat(userId){
         <div class="chat-header">
 
             <img loading="lazy" decoding="async"
-                class="mini-avatar"
+                class="mini-avatar${avatarFrameClass(user)}"
                 src="${user.avatar || defaultAvatar()}"
                 style="width:30px;height:30px;vertical-align:middle;cursor:pointer;"
                 onclick="navigate('profile','${user.id}')"
             >
 
             <div style="display:flex;flex-direction:column;">
-                <span style="cursor:pointer;" onclick="navigate('profile','${user.id}')">${escapeHtml(user.displayName)}</span>
+                <span style="cursor:pointer;" onclick="navigate('profile','${user.id}')">${escapeHtml(user.displayName)} ${subBadge(user, { fontSize: "9px" })}</span>
                 <small id="chatPartnerStatus" class="chat-partner-status">${isUserOnline(user.lastSeen) ? "🟢 Онлайн" : "⚪ Не в сети"}</small>
             </div>
 
@@ -4700,6 +4793,19 @@ function messageBubble(message){
                                 ${emoji}
                             </button>
                         `).join("")
+                    }
+                    ${
+                        isSubscriber(getCurrentUser())
+                        ? PLUS_REACTIONS.map(emoji => `
+                            <button
+                                type="button"
+                                title="💎 Bubbles+"
+                                onclick="toggleMessageReaction('${message.id}','${emoji}');closeReactionPickers();"
+                            >
+                                ${emoji}
+                            </button>
+                        `).join("")
+                        : ""
                     }
                 </div>
 
@@ -5921,6 +6027,7 @@ function adminProfileControls(user){
                 ${user.role === "admin" ? "🛡️ Администратор" : "Обычный пользователь"}
                 ${user.banned ? ` · 🚫 забанен${user.banReason ? ": " + escapeHtml(user.banReason) : ""}` : ""}
                 ${user.customStatusTitle ? ` · статус: ${escapeHtml(user.customStatusIcon || "🌟")} ${escapeHtml(user.customStatusTitle)}` : ""}
+                ${isSubscriber(user) ? ` · 💎 Plus ещё ${subscriptionDaysLeft(user)} дн.` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
                 ${
@@ -5943,7 +6050,67 @@ function adminProfileControls(user){
                 }
             </div>
         </div>
+
+        <div class="card" style="margin-top:14px;">
+            <h3 style="margin-top:0;">💎 Bubbles+</h3>
+            <div style="opacity:.7;font-size:14px;margin-bottom:10px;">
+                ${
+                    isSubscriber(user)
+                    ? `Активна до ${new Date(user.subscriptionExpiresAt).toLocaleDateString("ru-RU")} (ещё ${subscriptionDaysLeft(user)} дн.)`
+                    : "Подписки сейчас нет."
+                }
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="secondary" onclick="adminGrantSubscription('${user.id}',1)">+1 мес.</button>
+                <button class="secondary" onclick="adminGrantSubscription('${user.id}',6)">+6 мес.</button>
+                <button class="secondary" onclick="adminGrantSubscription('${user.id}',12)">+12 мес.</button>
+                ${
+                    isSubscriber(user)
+                    ? `<button class="danger" onclick="adminRevokeSubscription('${user.id}')">Отключить подписку</button>`
+                    : ""
+                }
+            </div>
+        </div>
     `;
+}
+
+// Manual grant, entirely separate from a subscription_requests flow —
+// for the case an admin just wants to hand someone Bubbles+ directly
+// (a gift, a moderator perk, fixing a payment that came through some
+// channel that never made it into a request). Stacks on top of any
+// remaining active time, exactly like approve_subscription_request does.
+async function adminGrantSubscription(userId, months) {
+    if (!isAdmin()) return;
+    const user = getUser(userId);
+    if (!user) return;
+    if (!confirm(`Выдать ${user.displayName} подписку Bubbles+ на ${months} мес.?`)) return;
+    const base = isSubscriber(user) ? user.subscriptionExpiresAt : Date.now();
+    const expiresAt = new Date(base + months * 30 * 86400000);
+    const { error } = await sb.from("profiles")
+        .update({ subscription_tier: "plus", subscription_expires_at: expiresAt.toISOString() })
+        .eq("id", userId);
+    if (error) { console.error(error); toast("Не удалось выдать подписку."); return; }
+    user.subscriptionTier = "plus";
+    user.subscriptionExpiresAt = expiresAt.getTime();
+    toast(`Bubbles+ выдана: ${user.displayName}, +${months} мес.`);
+    renderApp();
+}
+
+async function adminRevokeSubscription(userId) {
+    if (!isAdmin()) return;
+    const user = getUser(userId);
+    if (!user) return;
+    if (!confirm(`Отключить подписку у ${user.displayName}?`)) return;
+    const { error } = await sb.from("profiles")
+        .update({ subscription_tier: "free", subscription_expires_at: null })
+        .eq("id", userId);
+    if (error) { console.error(error); toast("Не удалось отключить подписку."); return; }
+    user.subscriptionTier = "free";
+    user.subscriptionExpiresAt = null;
+    user.subscriptionFrame = "none";
+    user.subscriptionTheme = "default";
+    toast("Подписка отключена.");
+    renderApp();
 }
 
 // Overrides the auto-computed achievement tier outright — only an admin
@@ -6232,6 +6399,276 @@ async function moderateDeleteReportedContent(reportId) {
 }
 
 /* ============================================================
+   BUBBLES+ — subscription purchase + admin approval queue
+   ============================================================ */
+
+function pendingSubscriptionRequests() {
+    return db.subscriptionRequests.filter(r => r.status === "pending").sort((a,b) => a.createdAt - b.createdAt);
+}
+
+// The current user's own request, if any — used on the purchase screen
+// so it shows "заявка на рассмотрении" instead of the plan picker again.
+function myPendingSubscriptionRequest() {
+    return db.subscriptionRequests.find(r => r.userId === currentUserId && r.status === "pending") || null;
+}
+
+let selectedPlusMonths = 1;
+
+function renderPremium() {
+    const user = getCurrentUser();
+    const pending = myPendingSubscriptionRequest();
+    const subscribed = isSubscriber(user);
+
+    document.getElementById("page").innerHTML = `
+
+        <h1 class="section-title">💎 Bubbles+</h1>
+
+        <div class="plus-hero">
+            <div style="font-size:34px;">💎</div>
+            <h2>Bubbles+</h2>
+            <div>Рамка на аватар, эксклюзивные темы и стикеры.</div>
+        </div>
+
+        ${
+            subscribed
+            ? `
+                <div class="card" style="margin-bottom:16px;">
+                    <strong>Подписка активна</strong>
+                    <div style="opacity:.75;font-size:14px;margin-top:6px;">
+                        До ${new Date(user.subscriptionExpiresAt).toLocaleDateString("ru-RU")} (ещё ${subscriptionDaysLeft(user)} дн.). Можно продлить заранее — новые месяцы добавятся поверх текущих.
+                    </div>
+                </div>
+            `
+            : ""
+        }
+
+        ${
+            pending
+            ? `
+                <div class="card" style="margin-bottom:16px;">
+                    <strong>⏳ Заявка на рассмотрении</strong>
+                    <div style="opacity:.75;font-size:14px;margin-top:6px;">
+                        ${pending.months} мес. · отправлена ${timeAgo(pending.createdAt)}. Как только оплата подтвердится, подписку включат — обновлять страницу не нужно.
+                    </div>
+                </div>
+            `
+            : `
+                <div class="card" style="margin-bottom:16px;">
+                    <h3 style="margin-top:0;">Выбери срок</h3>
+                    <div class="plus-plans">
+                        ${SUBSCRIPTION_PLANS.map(plan => `
+                            <div class="plus-plan${selectedPlusMonths === plan.months ? " selected" : ""}" onclick="selectPlusPlan(${plan.months})">
+                                <div class="plus-plan-months">${plan.months} мес.</div>
+                                <div class="plus-plan-price">${plan.price}${plan.perMonth ? ` · ${plan.perMonth}` : ""}</div>
+                                ${plan.save ? `<div class="plus-plan-save">${plan.save}</div>` : ""}
+                            </div>
+                        `).join("")}
+                    </div>
+
+                    <div style="font-size:14px;opacity:.8;margin:14px 0;line-height:1.5;">
+                        ${escapeHtml(PAYMENT_INSTRUCTIONS)}
+                    </div>
+
+                    <button class="primary" onclick="createSubscriptionRequest()">
+                        Отправить заявку на ${selectedPlusMonths} мес.
+                    </button>
+                </div>
+            `
+        }
+
+        <div class="card">
+            <h3 style="margin-top:0;">Что входит</h3>
+
+            <div style="margin-bottom:14px;">
+                <strong>🖼️ Рамка на аватар</strong>
+                <div class="perk-option-grid">
+                    ${FRAME_OPTIONS.map(f => `
+                        <div class="perk-option${subscribed && user.subscriptionFrame === f.id ? " selected" : ""}${subscribed ? "" : " locked"}"
+                            ${subscribed ? `onclick="setSubscriptionFrame('${f.id}')"` : ""}
+                            title="${subscribed ? "" : "Доступно с подпиской"}"
+                        >
+                            <span class="perk-swatch" style="background:${f.swatch}"></span>
+                            ${f.label}
+                        </div>
+                    `).join("")}
+                    <div class="perk-option${subscribed && user.subscriptionFrame === "none" ? " selected" : ""}${subscribed ? "" : " locked"}"
+                        ${subscribed ? `onclick="setSubscriptionFrame('none')"` : ""}
+                    >Без рамки</div>
+                </div>
+            </div>
+
+            <div style="margin-bottom:14px;">
+                <strong>🎨 Эксклюзивная тема</strong>
+                <div class="perk-option-grid">
+                    ${THEME_OPTIONS.map(t => `
+                        <div class="perk-option${subscribed && user.subscriptionTheme === t.id ? " selected" : ""}${subscribed || t.id === "default" ? "" : " locked"}"
+                            ${subscribed || t.id === "default" ? `onclick="setSubscriptionTheme('${t.id}')"` : ""}
+                            title="${subscribed || t.id === "default" ? "" : "Доступно с подпиской"}"
+                        >
+                            <span class="perk-swatch" style="background:${t.swatch}"></span>
+                            ${t.label}
+                        </div>
+                    `).join("")}
+                </div>
+            </div>
+
+            <div>
+                <strong>🫧 Эксклюзивные стикеры</strong>
+                <div style="font-size:24px;margin-top:8px;${subscribed ? "" : "opacity:.4;"}">
+                    ${PLUS_REACTIONS.join(" ")}
+                </div>
+                <div style="opacity:.7;font-size:13px;margin-top:4px;">
+                    ${subscribed ? "Доступны в реакциях на сообщения." : "Появятся в реакциях на сообщения с активной подпиской."}
+                </div>
+            </div>
+        </div>
+
+    `;
+}
+
+function selectPlusPlan(months) {
+    selectedPlusMonths = months;
+    renderPremium();
+}
+
+async function createSubscriptionRequest() {
+    if (!currentUserId) return;
+    if (myPendingSubscriptionRequest()) return;
+    const row = {
+        id: uid("subreq"),
+        user_id: currentUserId,
+        months: selectedPlusMonths,
+        status: "pending"
+    };
+    const { error } = await sb.from("subscription_requests").insert(row);
+    if (error) {
+        console.error(error);
+        toast("Не удалось отправить заявку.");
+        return;
+    }
+    db.subscriptionRequests.push(rowToSubscriptionRequest({ ...row, created_at: new Date().toISOString() }));
+    toast("Заявка отправлена — подписку включат после подтверждения оплаты.");
+    renderPremium();
+}
+
+// Frame/theme picks only ever stick while a subscription is actually
+// active — see the protect_profile_role_columns trigger in supabase.sql,
+// which silently resets both back to the free defaults server-side the
+// instant it isn't, no matter what gets sent here.
+async function setSubscriptionFrame(frame) {
+    const user = getCurrentUser();
+    if (!isSubscriber(user)) return;
+    const { error } = await sb.from("profiles").update({ subscription_frame: frame }).eq("id", currentUserId);
+    if (error) { console.error(error); toast("Не удалось сохранить рамку."); return; }
+    user.subscriptionFrame = frame;
+    toast("Рамка обновлена.");
+    renderApp();
+}
+
+async function setSubscriptionTheme(themeId) {
+    const user = getCurrentUser();
+    if (themeId !== "default" && !isSubscriber(user)) return;
+    const { error } = await sb.from("profiles").update({ subscription_theme: themeId }).eq("id", currentUserId);
+    if (error) { console.error(error); toast("Не удалось сохранить тему."); return; }
+    user.subscriptionTheme = themeId;
+    applySubscriptionTheme(user);
+    toast("Тема обновлена.");
+    renderApp();
+}
+
+// Applies (or clears) the data-sub-theme attribute the CSS in
+// style.css keys off of. Called once at startup and again any time the
+// theme selection or subscription status changes.
+function applySubscriptionTheme(user) {
+    if (isSubscriber(user) && user.subscriptionTheme && user.subscriptionTheme !== "default") {
+        document.documentElement.setAttribute("data-sub-theme", user.subscriptionTheme);
+    } else {
+        document.documentElement.removeAttribute("data-sub-theme");
+    }
+}
+
+function renderSubscriptionRequestsQueue() {
+    const requests = pendingSubscriptionRequests();
+    if (!requests.length) {
+        return `
+            <h2 class="section-title">💎 Заявки на Bubbles+</h2>
+            ${emptyState("💎", "Заявок нет", "Пока никто не оформлял подписку.")}
+        `;
+    }
+    return `
+        <h2 class="section-title">💎 Заявки на Bubbles+ (${requests.length})</h2>
+        ${requests.map(subscriptionRequestRow).join("")}
+    `;
+}
+
+function subscriptionRequestRow(request) {
+    const user = getUser(request.userId);
+    if (!user) return "";
+    return `
+        <div class="card" style="display:flex;flex-direction:column;gap:8px;">
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <img loading="lazy" decoding="async"
+                    class="mini-avatar"
+                    src="${user.avatar || defaultAvatar()}"
+                    onclick="navigate('profile','${user.id}')"
+                    style="cursor:pointer"
+                >
+                <div style="flex:1;min-width:160px;">
+                    <strong style="cursor:pointer" onclick="navigate('profile','${user.id}')">${escapeHtml(user.displayName)}</strong>
+                    <div style="opacity:.7;font-size:13px;">
+                        ${request.months} мес. · ${timeAgo(request.createdAt)}
+                        ${isSubscriber(user) ? ` · уже 💎 Plus, ещё ${subscriptionDaysLeft(user)} дн.` : ""}
+                    </div>
+                </div>
+            </div>
+
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="primary" onclick="approveSubscriptionRequest('${request.id}')">✅ Оплата пришла</button>
+                <button class="secondary" onclick="declineSubscriptionRequest('${request.id}')">Отклонить</button>
+            </div>
+
+        </div>
+    `;
+}
+
+async function approveSubscriptionRequest(requestId) {
+    if (!isAdmin()) return;
+    const request = db.subscriptionRequests.find(r => r.id === requestId);
+    if (!request) return;
+    const { error } = await sb.rpc("approve_subscription_request", { request_id: requestId });
+    if (error) {
+        console.error(error);
+        toast("Не удалось подтвердить подписку.");
+        return;
+    }
+    request.status = "approved";
+    request.resolvedAt = Date.now();
+    request.resolvedBy = currentUserId;
+    const user = getUser(request.userId);
+    if (user) {
+        const base = isSubscriber(user) ? user.subscriptionExpiresAt : Date.now();
+        user.subscriptionTier = "plus";
+        user.subscriptionExpiresAt = base + request.months * 30 * 86400000;
+    }
+    toast("Подписка включена.");
+    renderApp();
+}
+
+async function declineSubscriptionRequest(requestId) {
+    if (!isAdmin()) return;
+    const request = db.subscriptionRequests.find(r => r.id === requestId);
+    if (!request) return;
+    const { error } = await sb.from("subscription_requests")
+        .update({ status: "declined", resolved_at: new Date().toISOString(), resolved_by: currentUserId })
+        .eq("id", requestId);
+    if (error) { console.error(error); toast("Не удалось отклонить заявку."); return; }
+    request.status = "declined";
+    toast("Заявка отклонена.");
+    renderApp();
+}
+
+/* ============================================================
    SEARCH
    ============================================================ */
 
@@ -6333,6 +6770,10 @@ function rowToUser(row){
         achievementLevel: row.achievement_level || 0,
         customStatusTitle: row.custom_status_title || "",
         customStatusIcon: row.custom_status_icon || "",
+        subscriptionTier: row.subscription_tier || "free",
+        subscriptionExpiresAt: row.subscription_expires_at ? Date.parse(row.subscription_expires_at) : null,
+        subscriptionFrame: row.subscription_frame || "none",
+        subscriptionTheme: row.subscription_theme || "default",
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
@@ -6402,6 +6843,19 @@ function rowToReport(row) {
         reason: row.reason || "",
         status: row.status || "pending",
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
+    };
+}
+
+function rowToSubscriptionRequest(row) {
+    return {
+        id: row.id,
+        userId: row.user_id,
+        months: row.months,
+        note: row.note || "",
+        status: row.status || "pending",
+        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
+        resolvedAt: row.resolved_at ? Date.parse(row.resolved_at) : null,
+        resolvedBy: row.resolved_by || null
     };
 }
 
@@ -6579,8 +7033,9 @@ function updateNavBadges() {
     setNavBadge("notifBadge", unreadNotificationsCount());
     // There's no separate "Admin" nav item any more — moderation lives on
     // your own profile page (see renderProfile), so this badge on
-    // "Профиль" is the only hint an admin gets that reports are waiting.
-    setNavBadge(["pendingReportsBadge","pendingReportsBadgeMobile"], isAdmin() ? pendingReports().length : 0);
+    // "Профиль" is the only hint an admin gets that reports OR pending
+    // Bubbles+ requests are waiting — both queues live on that same page.
+    setNavBadge(["pendingReportsBadge","pendingReportsBadgeMobile"], isAdmin() ? pendingReports().length + pendingSubscriptionRequests().length : 0);
     const petAttn = petNeedsAttention();
     setNavBadge(["petNeedsAttentionBadge","petNeedsAttentionBadgeMobile"], petAttn ? 1 : 0);
     // One combined dot on the "Ещё" bottom-nav button — otherwise a
@@ -6635,7 +7090,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, blocks, stories, storyViews, petRow] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, petRow] = await Promise.all([
             sb.from("profiles").select("*").order("created_at", { ascending: true }),
             sb.from("posts").select("*").order("created_at", { ascending: false }),
             sb.from("comments").select("*").order("created_at", { ascending: true }),
@@ -6652,6 +7107,9 @@ async function loadDB() {
             // admin, so this is cheap/empty for a regular user and only an
             // admin's own profile page ends up showing anything from it.
             currentUserId ? sb.from("reports").select("*").order("created_at", { ascending: false }) : Promise.resolve({ data: [], error: null }),
+            // Same RLS shape as reports just above: empty for a regular
+            // user except their own requests, everything for an admin.
+            currentUserId ? sb.from("subscription_requests").select("*").order("created_at", { ascending: false }) : Promise.resolve({ data: [], error: null }),
             // RLS restricts this to blocker_id = you, so this is always just
             // your own block list — nobody else's, and nobody can see theirs.
             currentUserId ? sb.from("blocks").select("*") : Promise.resolve({ data: [], error: null }),
@@ -6661,7 +7119,7 @@ async function loadDB() {
             currentUserId ? sb.from("story_views").select("*") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("pets").select("*").eq("owner_id", currentUserId).maybeSingle() : Promise.resolve({ data: null, error: null })
         ]);
-        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, blocks, stories, storyViews, petRow];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, petRow];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -6675,6 +7133,7 @@ async function loadDB() {
             messages: [],
             music: (music.data || []).map(rowToMusic),
             reports: (reports.data || []).map(rowToReport),
+            subscriptionRequests: (subscriptionRequests.data || []).map(rowToSubscriptionRequest),
             blocks: (blocks.data || []).map(row => ({ id: row.id, blockerId: row.blocker_id, blockedId: row.blocked_id })),
             stories: (stories.data || []).map(rowToStory),
             storyViews: (storyViews.data || []).map(row => ({ id: row.id, storyId: row.story_id, viewerId: row.viewer_id })),
