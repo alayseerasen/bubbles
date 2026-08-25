@@ -1058,6 +1058,82 @@ select:focus{
     border-radius:10px;
 }
 
+.reply-preview-bar{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:8px 12px;
+    border-top:2px solid #d5eef3;
+    border-left:3px solid #4fc9f5;
+    background:#f4fdff;
+}
+
+.reply-preview-text{
+    flex:1;
+    min-width:0;
+    display:flex;
+    flex-direction:column;
+    gap:1px;
+}
+
+.reply-preview-text strong{
+    font-size:12px;
+    color:#168fd0;
+}
+
+.reply-preview-text span{
+    font-size:13px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    color:var(--muted);
+}
+
+.message-reply-quote{
+    display:flex;
+    flex-direction:column;
+    gap:1px;
+    padding:5px 8px;
+    margin-bottom:5px;
+    border-left:3px solid rgba(255,255,255,.7);
+    background:rgba(255,255,255,.18);
+    border-radius:8px;
+    cursor:pointer;
+}
+
+.message.them .message-reply-quote{
+    border-left-color:#4fc9f5;
+    background:rgba(79,201,245,.1);
+}
+
+.message-reply-quote strong{
+    font-size:12px;
+}
+
+.message-reply-quote span{
+    font-size:13px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    opacity:.85;
+}
+
+.message-reply-quote.unavailable{
+    font-style:italic;
+    opacity:.7;
+    cursor:default;
+}
+
+@keyframes messageHighlightFlash{
+    0%,100%{ background:transparent; }
+    30%{ background:rgba(79,201,245,.35); }
+}
+
+.message-highlight{
+    animation:messageHighlightFlash 1.2s ease;
+    border-radius:14px;
+}
+
 .message-image-remove{
     border:0;
     width:26px;
@@ -3083,6 +3159,10 @@ html::after{
 [data-theme="dark"] .message.them{ background:rgba(255,255,255,.07); }
 [data-theme="dark"] .message small{ color:#7f9ba8; }
 [data-theme="dark"] .message-image-preview{ border-top-color:#233542; }
+[data-theme="dark"] .reply-preview-bar{ border-top-color:#233542; border-left-color:#4fc9f5; background:rgba(79,201,245,.08); }
+[data-theme="dark"] .reply-preview-text span{ color:#84a0ad; }
+[data-theme="dark"] .message-reply-quote{ background:rgba(255,255,255,.06); border-left-color:rgba(255,255,255,.25); }
+[data-theme="dark"] .message.them .message-reply-quote{ border-left-color:#4fc9f5; background:rgba(79,201,245,.12); }
 [data-theme="dark"] .chat-attach-btn{ background:rgba(255,255,255,.06); border-color:#233542; color:var(--text); }
 
 [data-theme="dark"] .chat-input{ border-top-color:#233542; }
