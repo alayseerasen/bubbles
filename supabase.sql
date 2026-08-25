@@ -415,6 +415,26 @@ alter table public.profiles add column if not exists achievement_level integer n
 alter table public.profiles add column if not exists custom_status_title text;
 alter table public.profiles add column if not exists custom_status_icon text;
 
+-- ------------------------------------------------------------
+-- SUBSCRIPTION (Bubbles+)
+-- ------------------------------------------------------------
+-- No payment processor involved on purpose — see subscription_requests
+-- below. subscription_tier/subscription_expires_at are the source of
+-- truth for "is this person a subscriber right now" (checked as
+-- tier='plus' AND expires_at > now(), not just the tier alone, so an
+-- expired subscription quietly stops counting without needing a cron
+-- job to flip it back to 'free'). frame/theme are which of their
+-- unlocked cosmetic options they're CURRENTLY showing — self-service,
+-- but only among what an active subscription actually unlocks; the
+-- protect_profile_role_columns trigger further down resets both to the
+-- free defaults the moment a subscription isn't active, so there's no
+-- way to keep the frame/theme by editing the row after expiry.
+alter table public.profiles add column if not exists subscription_tier text not null default 'free' check (subscription_tier in ('free','plus'));
+alter table public.profiles add column if not exists subscription_expires_at timestamptz;
+alter table public.profiles add column if not exists subscription_frame text not null default 'none';
+alter table public.profiles add column if not exists subscription_theme text not null default 'default';
+
+
 
 -- security definer so these can be read inside RLS policies without
 -- recursively re-triggering RLS on profiles.
@@ -577,6 +597,21 @@ begin
         new.ban_reason := old.ban_reason;
         new.custom_status_title := old.custom_status_title;
         new.custom_status_icon := old.custom_status_icon;
+        -- Only an admin can grant/extend/revoke a subscription — this is
+        -- what actually keeps "Bubbles+" from being something a person
+        -- could just switch on themselves by calling the API directly.
+        new.subscription_tier := old.subscription_tier;
+        new.subscription_expires_at := old.subscription_expires_at;
+        -- Frame/theme picks ARE self-service (see the subscription_frame
+        -- comment above) — but only while a subscription is actually
+        -- active. The moment it isn't, force both back to the free
+        -- defaults no matter what value came in with this update, so an
+        -- expired subscription can't keep the cosmetic by just leaving
+        -- the row untouched.
+        if old.subscription_tier <> 'plus' or old.subscription_expires_at is null or old.subscription_expires_at < now() then
+            new.subscription_frame := 'none';
+            new.subscription_theme := 'default';
+        end if;
     end if;
     return new;
 end;
@@ -588,8 +623,97 @@ before update on public.profiles
 for each row execute function public.protect_profile_role_columns();
 
 -- ------------------------------------------------------------
--- REPORTS (жалобы) — on posts, comments, and profiles.
--- target_type/target_id point at the reported thing itself; target_user_id
+-- SUBSCRIPTION REQUESTS
+-- ------------------------------------------------------------
+-- There's deliberately no payment processor wired in here — nothing in
+-- this table is charged automatically. A request is just "I'd like N
+-- months of Bubbles+", left pending until an admin manually confirms
+-- payment happened (however that payment actually arrives — that part
+-- is intentionally outside the database) and approves it, which is what
+-- actually sets subscription_tier/subscription_expires_at on profiles.
+-- Same shape/trust model as public.reports just above: the person who
+-- filed it and any admin can see it, only an admin can resolve it.
+create table if not exists public.subscription_requests (
+    id text primary key,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    months integer not null check (months in (1, 6, 12)),
+    note text not null default '',
+    status text not null default 'pending' check (status in ('pending', 'approved', 'declined')),
+    created_at timestamptz not null default now(),
+    resolved_at timestamptz,
+    resolved_by uuid references public.profiles(id)
+);
+
+create index if not exists subscription_requests_status_idx on public.subscription_requests(status, created_at desc);
+
+alter table public.subscription_requests enable row level security;
+
+drop policy if exists subscription_requests_select on public.subscription_requests;
+create policy subscription_requests_select on public.subscription_requests for select
+using (auth.uid() = user_id or public.is_admin());
+
+drop policy if exists subscription_requests_insert on public.subscription_requests;
+create policy subscription_requests_insert on public.subscription_requests for insert
+with check (auth.uid() = user_id);
+
+-- Only an admin can move a request out of 'pending' — a person can't
+-- mark their own request approved. They CAN still update their own row
+-- while it's pending (e.g. to edit the note), just not the status.
+drop policy if exists subscription_requests_update on public.subscription_requests;
+create policy subscription_requests_update on public.subscription_requests for update
+using (auth.uid() = user_id or public.is_admin())
+with check (
+    public.is_admin()
+    or (auth.uid() = user_id and status = 'pending' and resolved_at is null and resolved_by is null)
+);
+
+-- Approves a request and grants/extends the subscription in one
+-- transaction, so there's never a moment where the request shows
+-- "approved" but the profile wasn't actually updated (or vice versa).
+-- If the person already has active time left, the new months are added
+-- ON TOP of it instead of overwriting it — buying/renewing a couple of
+-- times in a row stacks, it doesn't reset the clock.
+create or replace function public.approve_subscription_request(request_id text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    req record;
+    base timestamptz;
+begin
+    if not public.is_admin() then
+        raise exception 'only an admin can approve a subscription request';
+    end if;
+
+    select * into req from public.subscription_requests where id = request_id for update;
+    if req is null then
+        raise exception 'subscription request % not found', request_id;
+    end if;
+    if req.status <> 'pending' then
+        raise exception 'subscription request % is already %', request_id, req.status;
+    end if;
+
+    select greatest(now(), coalesce(subscription_expires_at, now()))
+      into base
+      from public.profiles
+      where id = req.user_id;
+
+    update public.profiles
+    set subscription_tier = 'plus',
+        subscription_expires_at = base + (req.months || ' months')::interval
+    where id = req.user_id;
+
+    update public.subscription_requests
+    set status = 'approved', resolved_at = now(), resolved_by = auth.uid()
+    where id = request_id;
+end;
+$$;
+
+grant execute on function public.approve_subscription_request(text) to authenticated;
+
+
 -- is always the author behind it (for a profile report, that's just the
 -- profile owner) so moderation can ban/unban straight from a report
 -- without having to re-derive who it was against, even after the
