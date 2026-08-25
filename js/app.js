@@ -6809,6 +6809,80 @@ function teardownRealtime() {
 }
 
 /* ------------------------------------------------------------
+   REALTIME WATCHDOG
+   ------------------------------------------------------------
+   None of the channel setup functions above ever got called a second
+   time on their own — they only ran once, at login. That's the actual
+   reason messages/likes/notifications "stop arriving in real time" and
+   need a manual page refresh to come back: the underlying WebSocket
+   drops constantly on a phone (screen locks, app goes to background,
+   wifi hands off to cellular, the browser reclaims memory from a
+   backgrounded tab) and, unlike a plain network request, nothing
+   automatically retries a dead realtime subscription — it just stays
+   silently disconnected until something explicitly reconnects it.
+
+   This re-subscribes everything whenever the app plausibly needs it:
+   coming back from the background, regaining a network connection, or
+   restoring from iOS's back/forward cache (pageshow with persisted:true,
+   which is how Safari resumes a Home Screen app instead of reloading
+   it — none of Bubbles' own JS re-runs in that case, so nothing else
+   would ever re-fire this). A trailing safety-net interval catches the
+   rare cases where none of those events fire but the socket is dead
+   anyway.
+   ------------------------------------------------------------ */
+
+let lastRealtimeReconnectAt = 0;
+
+function reconnectRealtime({ force = false } = {}) {
+    if (!currentUserId || !sb?.realtime) return;
+
+    // Debounce: visibilitychange, pageshow, and online can all fire
+    // together within the same second (e.g. unlocking the phone while
+    // it reconnects to wifi) — no need to tear down and rebuild every
+    // channel more than once for that.
+    const now = Date.now();
+    if (!force && now - lastRealtimeReconnectAt < 3000) return;
+    lastRealtimeReconnectAt = now;
+
+    try {
+        if (!sb.realtime.isConnected()) sb.realtime.connect();
+    } catch (_) { /* best-effort — the setup calls below still rebuild the channels either way */ }
+
+    setupMessagesRealtime();
+    setupNotificationsRealtime();
+    setupFriendRequestsRealtime();
+    setupSocialRealtime();
+    // Re-join the open chat's typing/presence channel too, if there is one —
+    // joinTypingChannel() already no-ops if it's somehow still alive.
+    if (typingChannelPartnerId) {
+        const partnerId = typingChannelPartnerId;
+        typingChannel = null; // force joinTypingChannel to actually rebuild it
+        typingChannelPartnerId = null;
+        joinTypingChannel(partnerId);
+    }
+}
+
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") reconnectRealtime();
+});
+window.addEventListener("online", () => reconnectRealtime());
+// iOS Home Screen apps get suspended (not killed) in the background and
+// resumed via "pageshow" with persisted:true instead of a fresh page
+// load — this is the PWA equivalent of the tab-switch case above and is
+// otherwise completely invisible to the rest of this file.
+window.addEventListener("pageshow", (event) => {
+    if (event.persisted) reconnectRealtime({ force: true });
+});
+// Safety net for the rare case none of the above fire but the socket
+// died anyway: only acts when the page is visible and actually
+// disconnected, so this is a no-op almost all the time.
+setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    if (!currentUserId || !sb?.realtime) return;
+    if (!sb.realtime.isConnected()) reconnectRealtime({ force: true });
+}, 45000);
+
+/* ------------------------------------------------------------
    Auto-advance to the next track when one finishes playing.
    ------------------------------------------------------------ */
 (function setupAudioAutoplay(){
