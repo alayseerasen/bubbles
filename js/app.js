@@ -688,6 +688,7 @@ let profileAchievementsExpanded = false;
 let lastProfileRenderId = null;
 let selectedChatId = null;
 let selectedMessageImage = null; // resized data URL staged to send in the current chat, or null
+let replyingToMessageId = null; // message the compose box is currently replying to, or null
 let selectedComposerMusicId = null; // track staged to attach to the next post, or null
 let editPostState = null; // { postId, text, image, musicId } while the edit-post modal is open, or null
 
@@ -4056,6 +4057,7 @@ function goToPost(postId) {
 function openChat(userId) {
     selectedChatId = userId;
     selectedMessageImage = null; // a staged photo shouldn't follow you into a different chat
+    replyingToMessageId = null; // neither should a pending reply
     navigate("messages");
     markChatAsRead(userId);
     joinTypingChannel(userId);
@@ -4256,6 +4258,7 @@ function renderMessages(){
     if (selectedChatId) {
         const box = document.getElementById("chatMessages");
         if (box) box.scrollTop = box.scrollHeight;
+        renderReplyPreviewBar();
     }
 }
 
@@ -4419,6 +4422,8 @@ function renderChat(userId){
 
         <div id="typingIndicator" class="typing-indicator hidden">${escapeHtml(user.displayName)} печатает…</div>
 
+        <div id="replyPreviewBar" class="hidden"></div>
+
         <div id="messageImagePreview" class="message-image-preview ${selectedMessageImage ? "" : "hidden"}">
             <img id="messageImagePreviewImg" src="${selectedMessageImage || ""}">
             <button type="button" class="message-image-remove" onclick="removeMessageImage()" title="Убрать фото">✕</button>
@@ -4488,10 +4493,26 @@ function messageBubble(message){
     });
 
     const sharedPost = parseSharedPostMessage(message.text);
+    const repliedTo = message.replyToId ? db.messages.find(m => m.id === message.replyToId) : null;
 
     return `
 
         <div class="message ${mine ? "me" : "them"}${message.image ? " has-image" : ""}" data-bubbles-message-id="${message.id}">
+
+            ${
+                message.replyToId
+                ? (
+                    repliedTo
+                    ? `
+                        <div class="message-reply-quote" onclick="scrollToMessage('${repliedTo.id}')">
+                            <strong>${escapeHtml(repliedTo.from === currentUserId ? "Вы" : (getUser(repliedTo.from)?.displayName || "Пользователь"))}</strong>
+                            <span>${escapeHtml((messagePreviewText(repliedTo) || "").slice(0, 80))}</span>
+                        </div>
+                      `
+                    : `<div class="message-reply-quote unavailable">Сообщение недоступно</div>`
+                  )
+                : ""
+            }
 
             ${message.image ? `<img loading="lazy" decoding="async" class="message-image" src="${message.image}" onclick="viewChatImage(this.src)">` : ""}
 
@@ -4539,6 +4560,13 @@ function messageBubble(message){
                     onclick="toggleReactionPicker(event,'${message.id}')"
                     title="Добавить реакцию"
                 >🙂</button>
+
+                <button
+                    type="button"
+                    class="reaction-add-btn"
+                    onclick="startReplyToMessage('${message.id}')"
+                    title="Ответить"
+                >↩️</button>
 
                 <div class="reaction-picker hidden">
                     ${
@@ -4606,6 +4634,65 @@ function refreshMessageBubbleInPlace(messageId) {
     const wrapper = document.createElement("div");
     wrapper.innerHTML = messageBubble(message).trim();
     el.replaceWith(wrapper.firstElementChild);
+}
+
+// Starts (or switches) the reply-to-message compose state for the
+// currently open chat — shows a small "replying to…" strip above the
+// input, same idea as the image-attach preview right below it.
+function startReplyToMessage(messageId) {
+    const message = db.messages.find(m => m.id === messageId);
+    if (!message) return;
+    replyingToMessageId = messageId;
+    renderReplyPreviewBar();
+    document.getElementById("messageInput")?.focus();
+}
+
+function cancelReplyToMessage() {
+    replyingToMessageId = null;
+    renderReplyPreviewBar();
+}
+
+function renderReplyPreviewBar() {
+    const el = document.getElementById("replyPreviewBar");
+    if (!el) return;
+    if (!replyingToMessageId) {
+        el.innerHTML = "";
+        el.classList.add("hidden");
+        return;
+    }
+    const original = db.messages.find(m => m.id === replyingToMessageId);
+    if (!original) {
+        replyingToMessageId = null;
+        el.innerHTML = "";
+        el.classList.add("hidden");
+        return;
+    }
+    const author = getUser(original.from);
+    const authorName = original.from === currentUserId ? "Вы" : (author?.displayName || "Пользователь");
+    const preview = messagePreviewText(original) || "";
+    el.classList.remove("hidden");
+    el.innerHTML = `
+        <div class="reply-preview-bar">
+            <div class="reply-preview-text">
+                <strong>↩ ${escapeHtml(authorName)}</strong>
+                <span>${escapeHtml(preview.length > 60 ? preview.slice(0, 60) + "…" : preview)}</span>
+            </div>
+            <button type="button" class="message-image-remove" onclick="cancelReplyToMessage()" title="Отменить ответ">✕</button>
+        </div>
+    `;
+}
+
+// Tapping a quoted reply inside a bubble jumps to (and briefly
+// highlights) the original message, if it's still loaded in this chat.
+function scrollToMessage(messageId) {
+    const el = document.querySelector(`[data-bubbles-message-id="${messageId}"]`);
+    if (!el) {
+        toast("Исходное сообщение не найдено.");
+        return;
+    }
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("message-highlight");
+    setTimeout(() => el.classList.remove("message-highlight"), 1200);
 }
 
 // Opens the quick-emoji picker for one bubble, closing any other picker
@@ -5278,12 +5365,13 @@ function refreshConversationPreview(partnerId) {
 // sendMessage (the chat composer) and shareToChat (sharing a post into a
 // conversation that might not even be open) so both go through the exact
 // same encryption path rather than two copies that could drift apart.
-async function buildEncryptedMessageRow(id, toUserId, text, image, createdAtIso){
+async function buildEncryptedMessageRow(id, toUserId, text, image, createdAtIso, replyToId){
     const row = {
         id,
         sender_id: currentUserId,
         receiver_id: toUserId,
-        created_at: createdAtIso
+        created_at: createdAtIso,
+        reply_to_id: replyToId || null
     };
 
     let sharedKey = null;
@@ -5330,13 +5418,15 @@ async function sendMessage(event, userId) {
         return;
     input.value = "";
     removeMessageImage();
+    const replyToId = replyingToMessageId;
+    cancelReplyToMessage();
     // Shown locally right away in plaintext — we already know the plaintext,
     // no need to round-trip through decryption for our own optimistic bubble.
-    const message = { id: uid("message"), from: currentUserId, to: userId, text, image, createdAt: Date.now(), readAt: null, reactions: [] };
+    const message = { id: uid("message"), from: currentUserId, to: userId, text, image, replyToId, createdAt: Date.now(), readAt: null, reactions: [] };
     db.messages.push(message);
     appendMessageToChat(message, userId);
 
-    const row = await buildEncryptedMessageRow(message.id, userId, text, image, new Date(message.createdAt).toISOString());
+    const row = await buildEncryptedMessageRow(message.id, userId, text, image, new Date(message.createdAt).toISOString(), replyToId);
 
     const { error } = await sb.from("messages").insert(row);
     if (error) {
@@ -6262,6 +6352,8 @@ async function rowToMessage(row) {
 
         image,
 
+        replyToId: row.reply_to_id || null,
+
         createdAt:
             row.created_at
                 ? Date.parse(row.created_at)
@@ -6994,8 +7086,9 @@ Object.assign(window,{
     showAuth,loginForm,registerForm,selectGender,register,login,logout,
     navigate,renderFeed,renderProfile,renderFriends,renderMessages,renderMusic,renderEditProfile,
     searchUsers,createPost,toggleLike,toggleCommentLike,addComment,deleteComment,focusComment,openReplyBox,closeReplyBox,deletePost,
-    saveProfile,previewAvatar,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
+    saveProfile,onAvatarFileChosen,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
     toggleMessageReaction,toggleReactionPicker,
+    startReplyToMessage,cancelReplyToMessage,scrollToMessage,
     toggleNotificationsPanel,goToPost,
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
