@@ -95,6 +95,11 @@ create table if not exists public.posts (
     created_at timestamptz not null default now()
 );
 
+alter table public.posts add column if not exists wall_owner_id uuid references public.profiles(id) on delete cascade;
+-- Backfill legacy posts so older installations behave exactly as before.
+update public.posts set wall_owner_id = author_id where wall_owner_id is null;
+create index if not exists posts_wall_owner_created_idx on public.posts(wall_owner_id, created_at desc);
+
 alter table public.posts add column if not exists pinned boolean not null default false;
 alter table public.posts add column if not exists pinned_at timestamptz;
 -- The pin trigger/policy live further down (search "PINNED POSTS"),
@@ -820,7 +825,7 @@ create policy posts_insert on public.posts for insert with check (auth.uid() = a
  drop policy if exists posts_update on public.posts;
 create policy posts_update on public.posts for update using (auth.uid() = author_id) with check (auth.uid() = author_id);
  drop policy if exists posts_delete on public.posts;
-create policy posts_delete on public.posts for delete using (auth.uid() = author_id or public.is_admin());
+create policy posts_delete on public.posts for delete using (auth.uid() = author_id or auth.uid() = wall_owner_id or public.is_admin());
 
 -- Comments
  drop policy if exists comments_select on public.comments;
