@@ -1184,3 +1184,15 @@ using (
 -- 🛡️ Админ page — you won't need to touch SQL again.
 -- ============================================================
 -- update public.profiles set role = 'admin' where username = 'your_username';
+
+-- ------------------------------------------------------------
+-- PERFORMANCE INDEXES (Bubbles optimization)
+-- ------------------------------------------------------------
+create index if not exists messages_receiver_created_idx
+    on public.messages(receiver_id, created_at desc);
+create index if not exists messages_sender_created_idx
+    on public.messages(sender_id, created_at desc);
+create index if not exists profiles_last_seen_idx
+    on public.profiles(last_seen desc);
+create index if not exists profiles_created_at_idx
+    on public.profiles(created_at desc);
