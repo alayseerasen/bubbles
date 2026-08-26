@@ -312,6 +312,72 @@ on public.friend_requests (from_user, to_user)
 where status = 'pending';
 
 -- ------------------------------------------------------------
+-- ROOMS — public group spaces / community chats
+-- ------------------------------------------------------------
+create table if not exists public.rooms (
+    id uuid primary key,
+    name text not null,
+    slug text not null,
+    description text not null default '',
+    icon text not null default '🫧',
+    owner_id uuid not null references public.profiles(id) on delete cascade,
+    is_public boolean not null default true,
+    created_at timestamptz not null default now()
+);
+
+create unique index if not exists rooms_slug_unique on public.rooms(slug);
+create index if not exists rooms_created_at_idx on public.rooms(created_at desc);
+
+create table if not exists public.room_members (
+    id uuid primary key default gen_random_uuid(),
+    room_id uuid not null references public.rooms(id) on delete cascade,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    role text not null default 'member' check (role in ('owner','moderator','member')),
+    created_at timestamptz not null default now(),
+    unique (room_id, user_id)
+);
+
+create index if not exists room_members_room_idx on public.room_members(room_id, created_at);
+create index if not exists room_members_user_idx on public.room_members(user_id, room_id);
+
+create table if not exists public.room_messages (
+    id uuid primary key default gen_random_uuid(),
+    room_id uuid not null references public.rooms(id) on delete cascade,
+    author_id uuid not null references public.profiles(id) on delete cascade,
+    text text not null,
+    created_at timestamptz not null default now()
+);
+
+create index if not exists room_messages_room_created_idx on public.room_messages(room_id, created_at desc);
+
+alter table public.rooms enable row level security;
+alter table public.room_members enable row level security;
+alter table public.room_messages enable row level security;
+
+drop policy if exists rooms_select_public on public.rooms;
+create policy rooms_select_public on public.rooms for select using (is_public = true or auth.uid() = owner_id);
+drop policy if exists rooms_insert_owner on public.rooms;
+create policy rooms_insert_owner on public.rooms for insert with check (auth.uid() = owner_id);
+drop policy if exists rooms_update_owner on public.rooms;
+create policy rooms_update_owner on public.rooms for update using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
+drop policy if exists rooms_delete_owner on public.rooms;
+create policy rooms_delete_owner on public.rooms for delete using (auth.uid() = owner_id);
+
+drop policy if exists room_members_select_own on public.room_members;
+create policy room_members_select_own on public.room_members for select using (auth.uid() = user_id or exists (select 1 from public.rooms r where r.id = room_members.room_id and r.is_public = true));
+drop policy if exists room_members_insert_own on public.room_members;
+create policy room_members_insert_own on public.room_members for insert with check (auth.uid() = user_id);
+drop policy if exists room_members_delete_own on public.room_members;
+create policy room_members_delete_own on public.room_members for delete using (auth.uid() = user_id);
+
+drop policy if exists room_messages_select_member on public.room_messages;
+create policy room_messages_select_member on public.room_messages for select using (exists (select 1 from public.room_members m where m.room_id = room_messages.room_id and m.user_id = auth.uid()));
+drop policy if exists room_messages_insert_member on public.room_messages;
+create policy room_messages_insert_member on public.room_messages for insert with check (auth.uid() = author_id and exists (select 1 from public.room_members m where m.room_id = room_messages.room_id and m.user_id = auth.uid()));
+drop policy if exists room_messages_delete_author on public.room_messages;
+create policy room_messages_delete_author on public.room_messages for delete using (auth.uid() = author_id);
+
+-- ------------------------------------------------------------
 -- STORIES — 24-hour disappearing posts. Image is stored the same way
 -- post images are (a resized base64 data URL right in the row), so no
 -- Storage bucket/policy is needed. expires_at is set at insert time and
@@ -1201,3 +1267,16 @@ create index if not exists profiles_last_seen_idx
     on public.profiles(last_seen desc);
 create index if not exists profiles_created_at_idx
     on public.profiles(created_at desc);
+
+-- Realtime for live room chat.
+do $$
+begin
+    if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime'
+          and schemaname = 'public'
+          and tablename = 'room_messages'
+    ) then
+        alter publication supabase_realtime add table public.room_messages;
+    end if;
+end $$;
