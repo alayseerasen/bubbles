@@ -765,6 +765,7 @@ let selectedChatId = null;
 let selectedMessageImage = null; // resized data URL staged to send in the current chat, or null
 let replyingToMessageId = null; // message the compose box is currently replying to, or null
 let selectedComposerMusicId = null; // track staged to attach to the next post, or null
+let wallTargetUserId = null; // profile whose wall is currently being composed to
 let editPostState = null; // { postId, text, image, musicId } while the edit-post modal is open, or null
 
 // Shared posts (in profile reposts and in DM shares) are carried as a
@@ -2369,12 +2370,12 @@ function renderPost(post){
                 }
 
                 ${
-                    post.authorId === currentUserId || isAdmin()
+                    post.authorId === currentUserId || post.wallOwnerId === currentUserId || isAdmin()
                     ? `
                         <button
                             class="action-btn"
                             onclick="deletePost('${post.id}')"
-                            title="${post.authorId === currentUserId ? "Удалить" : "Удалить (админ)"}"
+                            title="${post.authorId === currentUserId ? "Удалить" : (post.wallOwnerId === currentUserId ? "Удалить со стены" : "Удалить (админ)" )}"
                         >
                             🗑️
                         </button>
@@ -2444,7 +2445,7 @@ function renderPost(post){
 }
 
 let isCreatingPost = false;
-async function createPost() {
+async function createPost(targetWallId = null) {
     if (isCreatingPost) return; // guards against a double-tap firing this twice while the upload/insert is still in flight — would otherwise post it twice
     const text = document.getElementById("postText")?.value.trim() || "";
     const file = document.getElementById("postImage")?.files[0];
@@ -2471,10 +2472,11 @@ async function createPost() {
             catch (e) { console.error(e); toast("Не удалось загрузить изображение."); return; }
         }
         const musicId = selectedComposerMusicId || null;
-        const post = { id: postId, authorId: currentUserId, text, image, musicId, sharedPostId: null, likes: [], createdAt: Date.now() };
+        const wallOwnerId = targetWallId || currentUserId;
+        const post = { id: postId, authorId: currentUserId, wallOwnerId, text, image, musicId, sharedPostId: null, likes: [], createdAt: Date.now() };
         db.posts.unshift(post);
         const { error } = await sb.from("posts").insert({
-            id: post.id, author_id: post.authorId, text: post.text, image: post.image, music_id: post.musicId, likes: [], created_at: new Date(post.createdAt).toISOString()
+            id: post.id, author_id: post.authorId, wall_owner_id: post.wallOwnerId, text: post.text, image: post.image, music_id: post.musicId, likes: [], created_at: new Date(post.createdAt).toISOString()
         });
         if (error) {
             db.posts = db.posts.filter(p => p.id !== post.id);
@@ -2483,9 +2485,11 @@ async function createPost() {
             return;
         }
         selectedComposerMusicId = null;
-        toast("Пост опубликован!");
+        wallTargetUserId = null;
+        toast(targetWallId && targetWallId !== currentUserId ? "Пост опубликован на стене!" : "Пост опубликован!");
         recomputeAchievements();
-        renderFeed();
+        if (targetWallId) renderProfile(targetWallId);
+        else renderFeed();
     } finally {
         isCreatingPost = false;
         // renderFeed() (on success) rebuilds the whole composer card anyway,
@@ -2494,6 +2498,56 @@ async function createPost() {
         const btnAgain = document.getElementById("createPostBtn");
         if (btnAgain) { btnAgain.disabled = false; btnAgain.textContent = "Опубликовать"; }
     }
+}
+
+async function createWallPost(userId){
+    wallTargetUserId = userId;
+    const text = document.getElementById("wallPostText")?.value?.trim() || "";
+    const fileInput = document.getElementById("wallPostImage");
+    const file = fileInput?.files?.[0] || null;
+    const oldText = document.getElementById("postText");
+    const oldImage = document.getElementById("postImage");
+    const oldChip = document.getElementById("composerMusicChip");
+    const oldBtn = document.getElementById("createPostBtn");
+    const wallBtn = document.getElementById("wallCreatePostBtn");
+    const musicId = selectedComposerMusicId;
+    if (!text && !file && !musicId){ toast("Добавь текст, изображение или музыку."); return; }
+    if (wallBtn){ wallBtn.disabled = true; wallBtn.textContent = "Публикуем…"; }
+    try {
+        // Reuse the hardened upload/validation path from the normal composer.
+        let image = "";
+        const postId = uid("post");
+        if (file){
+            if (!file.type.startsWith("image/")){ toast("Можно загружать только изображения."); return; }
+            if (file.size > 20 * 1024 * 1024){ toast("Изображение слишком большое. Максимум 20 МБ."); return; }
+            image = await uploadImageToStorage(file, `${currentUserId}/post-${postId}.jpg`, 1600);
+        }
+        const post = { id: postId, authorId: currentUserId, wallOwnerId: userId, text, image, musicId: musicId || null, sharedPostId: null, likes: [], createdAt: Date.now() };
+        const { error } = await sb.from("posts").insert({
+            id: post.id, author_id: post.authorId, wall_owner_id: post.wallOwnerId, text: post.text, image: post.image, music_id: post.musicId, likes: [], created_at: new Date(post.createdAt).toISOString()
+        });
+        if (error) throw error;
+        db.posts.unshift(post);
+        selectedComposerMusicId = null;
+        wallTargetUserId = null;
+        recomputeAchievements();
+        toast(userId === currentUserId ? "Пост опубликован на стене!" : "Сообщение оставлено на стене!");
+        renderProfile(userId);
+    } catch (e){
+        console.error(e);
+        toast("Не удалось опубликовать пост на стене.");
+    } finally {
+        if (wallBtn) { wallBtn.disabled = false; wallBtn.textContent = "Опубликовать"; }
+    }
+}
+
+function renderWallComposerMusicChip(){
+    const el = document.getElementById("wallComposerMusicChip");
+    if (!el) return;
+    if (!selectedComposerMusicId){ el.innerHTML = ""; return; }
+    const track = db.music.find(m => m.id === selectedComposerMusicId);
+    if (!track){ selectedComposerMusicId = null; el.innerHTML = ""; return; }
+    el.innerHTML = `<div class="composer-music-chip">🎵 <span>${escapeHtml(track.title)}</span><button type="button" class="message-image-remove" onclick="removeComposerMusic()" title="Убрать трек">✕</button></div>`;
 }
 
 // Re-renders just one post card in place, wherever it currently sits in the
@@ -2741,10 +2795,10 @@ async function shareToProfile(postId){
     const original = db.posts.find(p => p.id === postId);
     if(!original) return;
     const caption = document.getElementById("shareCaptionInput")?.value.trim() || "";
-    const post = { id: uid("post"), authorId: currentUserId, text: caption, image: "", musicId: null, sharedPostId: postId, likes: [], createdAt: Date.now() };
+    const post = { id: uid("post"), authorId: currentUserId, wallOwnerId: currentUserId, text: caption, image: "", musicId: null, sharedPostId: postId, likes: [], createdAt: Date.now() };
     db.posts.unshift(post);
     const { error } = await sb.from("posts").insert({
-        id: post.id, author_id: post.authorId, text: post.text, image: "", music_id: null, shared_post_id: postId, likes: [], created_at: new Date(post.createdAt).toISOString()
+        id: post.id, author_id: post.authorId, wall_owner_id: post.wallOwnerId, text: post.text, image: "", music_id: null, shared_post_id: postId, likes: [], created_at: new Date(post.createdAt).toISOString()
     });
     if(error){
         console.error(error);
@@ -2885,7 +2939,8 @@ function selectComposerMusic(musicId, context){
     }else{
         selectedComposerMusicId = musicId;
         closeBubblesModal();
-        renderComposerMusicChip();
+        if (context === "wall") renderWallComposerMusicChip();
+        else renderComposerMusicChip();
     }
 }
 
@@ -3044,9 +3099,10 @@ async function saveEditPost(){
 
 async function deletePost(postId) {
     const post = db.posts.find(p => p.id === postId);
-    if (!post || (post.authorId !== currentUserId && !isAdmin()))
-        return;
-    if (!confirm(post.authorId === currentUserId ? "Удалить пост?" : "Удалить этот пост как администратор?"))
+    const canDelete = post && (post.authorId === currentUserId || post.wallOwnerId === currentUserId || isAdmin());
+    if (!canDelete) return;
+    const deleteLabel = post.authorId === currentUserId ? "Удалить пост?" : (post.wallOwnerId === currentUserId ? "Удалить этот пост со своей стены?" : "Удалить этот пост как администратор?");
+    if (!confirm(deleteLabel))
         return;
     const [postResult, commentResult] = await Promise.all([
         sb.from("posts").delete().eq("id", postId),
@@ -3065,7 +3121,8 @@ async function deletePost(postId) {
     }
     db.posts = db.posts.filter(p => p.id !== postId);
     db.comments = db.comments.filter(c => c.postId !== postId);
-    renderFeed();
+    if (currentPage === "profile" && selectedProfileId) renderProfile(selectedProfileId);
+    else renderFeed();
 }
 
 // Admin-only. Max 2 pinned posts at once — checked here for a fast,
@@ -3131,6 +3188,11 @@ function renderProfile(userId){
         lastProfileRenderId = userId;
     }
     const posts = db.posts.filter(p => p.authorId === user.id).sort((a,b) => b.createdAt - a.createdAt);
+    const wallPosts = db.posts.filter(p => (p.wallOwnerId || p.authorId) === user.id).sort((a,b) => {
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
+        return b.createdAt - a.createdAt;
+    });
     const friends = db.friends.filter(f => f.user1 === user.id || f.user2 === user.id);
     // "Their music" = tracks they uploaded + tracks they saved to their
     // library from someone else — same rule as the "Моя музыка" tab.
@@ -3255,8 +3317,8 @@ function renderProfile(userId){
                 <div class="stats">
 
                     <div class="stat">
-                        <strong>${posts.length}</strong>
-                        <span>постов</span>
+                        <strong>${wallPosts.length}</strong>
+                        <span>постов на стене</span>
                     </div>
 
                     <div class="stat">
@@ -3279,6 +3341,39 @@ function renderProfile(userId){
 
         ${renderAchievementsGrid(user)}
 
+        <section class="profile-wall">
+            <div class="profile-wall-title-row">
+                <h2 class="section-title">📝 Стена</h2>
+                <span class="wall-count">${wallPosts.length}</span>
+            </div>
+
+            ${
+                isBlockedByMe(user.id)
+                ? `<div class="card wall-locked">🚫 Стена недоступна</div>`
+                : `
+                    <div class="card wall-composer">
+                        <div class="wall-composer-head">
+                            <img loading="lazy" decoding="async" class="mini-avatar" src="${getCurrentUser()?.avatar || defaultAvatar()}">
+                            <div>
+                                <strong>${isMe ? "Что нового?" : `Написать на стене ${escapeHtml(user.displayName)}`}</strong>
+                                <small>Пост появится прямо в профиле</small>
+                            </div>
+                        </div>
+                        <textarea id="wallPostText" maxlength="1000" placeholder="${isMe ? "Что нового?" : `Напиши что-нибудь для ${escapeHtml(user.displayName)}…`}"></textarea>
+                        <input id="wallPostImage" type="file" accept="image/*" style="max-width:100%;">
+                        <div class="wall-composer-actions">
+                            <button type="button" class="secondary" onclick="openMusicPicker('wall')">🎵 Музыка</button>
+                            <button id="wallCreatePostBtn" type="button" class="primary" onclick="createWallPost('${user.id}')">Опубликовать</button>
+                        </div>
+                        <div id="wallComposerMusicChip"></div>
+                    </div>
+                `
+            }
+
+            <div id="profileWallPosts">
+                ${wallPosts.length ? wallPosts.map(renderPost).join("") : emptyState("🫧", "Стена пустая", isMe ? "Напиши первый пост." : "Оставь первый пост на стене этого пользователя.")}
+            </div>
+        </section>
 
         <h2 class="section-title">
             🎵 Музыка
@@ -3364,21 +3459,6 @@ function renderProfile(userId){
             )
         }
 
-
-        <h2 class="section-title">
-            📝 Посты
-        </h2>
-
-
-        ${
-            posts.length
-            ? posts.map(renderPost).join("")
-            : emptyState(
-                "🫧",
-                "Постов пока нет",
-                "Здесь появятся публикации пользователя."
-            )
-        }
 
     `;
 }
@@ -6780,6 +6860,7 @@ function rowToPost(row) {
     return {
         id: row.id,
         authorId: row.author_id,
+        wallOwnerId: row.wall_owner_id || row.author_id,
         text: row.text || "",
         image: row.image || "",
         musicId: row.music_id || null,
@@ -7090,7 +7171,7 @@ async function loadDB() {
         currentUserId = user?.id || null;
         const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, petRow] = await Promise.all([
             sb.from("profiles").select("id,username,display_name,gender,avatar,cover,bio,last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,created_at").order("created_at", { ascending: true }),
-            sb.from("posts").select("id,author_id,text,image,music_id,shared_post_id,likes,pinned,pinned_at,created_at").order("created_at", { ascending: false }).limit(150),
+            sb.from("posts").select("id,author_id,wall_owner_id,text,image,music_id,shared_post_id,likes,pinned,pinned_at,created_at").order("created_at", { ascending: false }).limit(150),
             sb.from("comments").select("id,post_id,author_id,parent_comment_id,text,created_at").order("created_at", { ascending: true }).limit(1000),
             sb.from("post_likes").select("post_id,user_id"),
             sb.from("comment_likes").select("comment_id,user_id"),
@@ -7195,6 +7276,7 @@ async function saveDB() {
         const posts = db.posts.map(p => ({
             id: p.id,
             author_id: p.authorId,
+            wall_owner_id: p.wallOwnerId || p.authorId,
             text: p.text || "",
             image: p.image || "",
             music_id: p.musicId || null,
@@ -7474,6 +7556,7 @@ function setupSocialRealtime() {
             post.likes = [];
             db.posts.unshift(post);
             if (currentPage === "feed") renderFeed();
+            else if (currentPage === "profile" && selectedProfileId && (post.wallOwnerId || post.authorId) === selectedProfileId) renderProfile(selectedProfileId);
         })
         .subscribe();
 }
