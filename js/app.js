@@ -751,6 +751,9 @@ let db = {
     blocks: [],
     stories: [],
     storyViews: [],
+    rooms: [],
+    roomMembers: [],
+    roomMessages: [],
     pet: null // this account's single companion, or null if none created yet
 };
 
@@ -762,6 +765,8 @@ let profileFriendsExpanded = false;
 let profileAchievementsExpanded = false;
 let lastProfileRenderId = null;
 let selectedChatId = null;
+let selectedRoomId = null;
+let roomMessagesChannel = null;
 let selectedMessageImage = null; // resized data URL staged to send in the current chat, or null
 let replyingToMessageId = null; // message the compose box is currently replying to, or null
 let selectedComposerMusicId = null; // track staged to attach to the next post, or null
@@ -1756,6 +1761,14 @@ function renderApp(){
 
                 <button
                     class="nav-btn"
+                    data-page="rooms"
+                    onclick="navigate('rooms')"
+                >
+                    🫧 Комнаты
+                </button>
+
+                <button
+                    class="nav-btn"
                     data-page="music"
                     onclick="navigate('music')"
                 >
@@ -1874,6 +1887,10 @@ function renderApp(){
                     🔎 Поиск
                 </button>
 
+                <button class="more-sheet-item" data-page="rooms" onclick="navigate('rooms'); closeMoreSheet();">
+                    🫧 Комнаты
+                </button>
+
                 <button class="more-sheet-item" data-page="pet" onclick="navigate('pet'); closeMoreSheet();">
                     🐣 Питомец
                     <span id="petNeedsAttentionBadgeMobile" class="nav-badge hidden"></span>
@@ -1952,6 +1969,7 @@ function navigate(page, id = null){
         case "profile": renderProfile(selectedProfileId || currentUserId); break;
         case "friends": renderFriends(); break;
         case "messages": renderMessages(); break;
+        case "rooms": renderRooms(); break;
         case "music": renderMusic(); break;
         case "pet": renderPet(); break;
         case "premium": renderPremium(); break;
@@ -1961,6 +1979,7 @@ function navigate(page, id = null){
     }
 
     stopWatchingChatPartnerPresence();
+    if (page !== "rooms") stopRoomRealtime();
     if (page === "messages" && selectedChatId) watchChatPartnerPresence(selectedChatId);
 
     updateNavBadges();
@@ -6903,6 +6922,176 @@ function rowToPet(row) {
     };
 }
 
+function rowToRoom(row) {
+    return {
+        id: row.id,
+        name: row.name || "Room",
+        slug: row.slug || "",
+        description: row.description || "",
+        icon: row.icon || "🫧",
+        ownerId: row.owner_id,
+        isPublic: row.is_public !== false,
+        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
+    };
+}
+
+function rowToRoomMember(row) {
+    return {
+        id: row.id,
+        roomId: row.room_id,
+        userId: row.user_id,
+        role: row.role || "member",
+        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
+    };
+}
+
+function rowToRoomMessage(row) {
+    return {
+        id: row.id,
+        roomId: row.room_id,
+        authorId: row.author_id,
+        text: row.text || "",
+        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
+    };
+}
+
+function isRoomMember(roomId) {
+    return db.roomMembers.some(m => m.roomId === roomId && m.userId === currentUserId);
+}
+
+function roomMemberCount(roomId) {
+    return db.roomMembers.filter(m => m.roomId === roomId).length;
+}
+
+function myRoomRole(roomId) {
+    return db.roomMembers.find(m => m.roomId === roomId && m.userId === currentUserId)?.role || null;
+}
+
+function stopRoomRealtime() {
+    if (roomMessagesChannel) sb.removeChannel(roomMessagesChannel);
+    roomMessagesChannel = null;
+}
+
+async function openRoom(roomId) {
+    const room = db.rooms.find(r => r.id === roomId);
+    if (!room) return;
+    if (!isRoomMember(roomId)) { toast("Сначала вступи в комнату."); return; }
+    selectedRoomId = roomId;
+    await loadRoomMessages(roomId);
+    setupRoomRealtime(roomId);
+    currentPage = "rooms";
+    renderRooms();
+}
+
+async function loadRoomMessages(roomId) {
+    const { data, error } = await sb.from("room_messages").select("id,room_id,author_id,text,created_at").eq("room_id", roomId).order("created_at", { ascending: false }).limit(100);
+    if (error) { console.error(error); toast("Не удалось загрузить сообщения комнаты."); return; }
+    db.roomMessages = (data || []).reverse().map(rowToRoomMessage);
+}
+
+function setupRoomRealtime(roomId) {
+    stopRoomRealtime();
+    roomMessagesChannel = sb.channel("bubbles-room-" + roomId)
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_messages", filter: `room_id=eq.${roomId}` }, payload => {
+            const row = payload.new;
+            if (db.roomMessages.some(m => m.id === row.id)) return;
+            db.roomMessages.push(rowToRoomMessage(row));
+            if (currentPage === "rooms" && selectedRoomId === roomId) renderRooms();
+        })
+        .subscribe();
+}
+
+async function joinRoom(roomId) {
+    if (isRoomMember(roomId)) return openRoom(roomId);
+    const { data, error } = await sb.from("room_members").insert({ room_id: roomId, user_id: currentUserId, role: "member" }).select("id,room_id,user_id,role,created_at").single();
+    if (error) {
+        console.error(error); toast(error.message || "Не удалось вступить."); return;
+    }
+    db.roomMembers.push(rowToRoomMember(data));
+    toast("Ты вступил(а) в комнату 🫧");
+    openRoom(roomId);
+}
+
+async function leaveRoom(roomId) {
+    const role = myRoomRole(roomId);
+    if (role === "owner") { toast("Создатель не может выйти из своей комнаты."); return; }
+    const { error } = await sb.from("room_members").delete().eq("room_id", roomId).eq("user_id", currentUserId);
+    if (error) { console.error(error); toast("Не удалось выйти из комнаты."); return; }
+    db.roomMembers = db.roomMembers.filter(m => !(m.roomId === roomId && m.userId === currentUserId));
+    if (selectedRoomId === roomId) { selectedRoomId = null; db.roomMessages = []; stopRoomRealtime(); }
+    renderRooms();
+}
+
+async function createRoom() {
+    const name = prompt("Название комнаты");
+    if (!name) return;
+    const clean = name.trim().slice(0, 40);
+    if (!clean) return;
+    const description = (prompt("Описание комнаты (необязательно)") || "").trim().slice(0, 160);
+    let slug = clean.toLowerCase().replace(/[^a-z0-9а-яё]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 30) || "room";
+    slug += "-" + Math.random().toString(36).slice(2, 7);
+    const id = crypto.randomUUID();
+    const { data: room, error } = await sb.from("rooms").insert({ id, name: clean, slug, description, icon: "🫧", owner_id: currentUserId, is_public: true }).select("id,name,slug,description,icon,owner_id,created_at,is_public").single();
+    if (error) { console.error(error); toast(error.message || "Не удалось создать комнату."); return; }
+    const { data: member, error: memberError } = await sb.from("room_members").insert({ room_id: room.id, user_id: currentUserId, role: "owner" }).select("id,room_id,user_id,role,created_at").single();
+    if (memberError) { console.error(memberError); toast("Комната создана, но вступить не получилось."); }
+    db.rooms.unshift(rowToRoom(room));
+    if (member) db.roomMembers.push(rowToRoomMember(member));
+    toast("Комната создана 🫧");
+    openRoom(room.id);
+}
+
+async function sendRoomMessage(event) {
+    event?.preventDefault();
+    const input = document.getElementById("roomMessageInput");
+    if (!input || !selectedRoomId || !isRoomMember(selectedRoomId)) return;
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    const row = { id: crypto.randomUUID(), room_id: selectedRoomId, author_id: currentUserId, text: text.slice(0, 4000) };
+    const { data, error } = await sb.from("room_messages").insert(row).select("id,room_id,author_id,text,created_at").single();
+    if (error) { console.error(error); input.value = text; toast(error.message || "Не удалось отправить сообщение."); return; }
+    if (!db.roomMessages.some(m => m.id === data.id)) db.roomMessages.push(rowToRoomMessage(data));
+    renderRooms();
+}
+
+function renderRoomMessage(m) {
+    const author = getUser(m.authorId);
+    const mine = m.authorId === currentUserId;
+    return `<div class="room-message ${mine ? "mine" : ""}">
+        <img loading="lazy" decoding="async" class="mini-avatar" src="${author?.avatar || defaultAvatar()}" onclick="navigate('profile','${m.authorId}')">
+        <div class="room-message-body">
+            <div class="room-message-meta"><strong>${escapeHtml(author?.displayName || "User")}</strong><span>${timeAgo(m.createdAt)}</span></div>
+            <div class="room-message-bubble">${escapeHtml(m.text)}</div>
+        </div>
+    </div>`;
+}
+
+function renderRooms() {
+    const page = document.getElementById("page");
+    const room = db.rooms.find(r => r.id === selectedRoomId) || null;
+    if (room && isRoomMember(room.id)) {
+        const messages = db.roomMessages.filter(m => m.roomId === room.id);
+        page.innerHTML = `
+            <div class="rooms-header">
+                <div><div class="section-title">${room.icon} ${escapeHtml(room.name)}</div><div class="room-description">${escapeHtml(room.description || "Публичная комната Bubbles")}</div></div>
+                <div class="rooms-header-actions">${myRoomRole(room.id) === "owner" ? `<button class="secondary" disabled>👑 Ты создатель</button>` : `<button class="secondary" onclick="leaveRoom('${room.id}')">Выйти</button>`}<button class="secondary" onclick="selectedRoomId=null;stopRoomRealtime();renderRooms()">← Комнаты</button></div>
+            </div>
+            <div class="card room-chat-card">
+                <div class="room-chat-list" id="roomChatList">${messages.length ? messages.map(renderRoomMessage).join("") : `<div class="empty"><div class="empty-icon">🫧</div><strong>Пока тихо</strong><p>Напиши первое сообщение в этой комнате.</p></div>`}</div>
+                <form class="room-composer" onsubmit="sendRoomMessage(event)"><input id="roomMessageInput" maxlength="4000" autocomplete="off" placeholder="Написать в комнату…"><button class="primary">Отправить</button></form>
+            </div>`;
+        const list = document.getElementById("roomChatList"); if (list) list.scrollTop = list.scrollHeight;
+        return;
+    }
+    stopRoomRealtime();
+    page.innerHTML = `
+        <div class="rooms-topbar"><div><h1 class="section-title">🫧 Комнаты</h1><p class="room-description">Публичные места Bubbles для общения по интересам.</p></div><button class="primary" onclick="createRoom()">＋ Создать</button></div>
+        <div class="rooms-grid">
+            ${db.rooms.length ? db.rooms.map(r => { const joined=isRoomMember(r.id); return `<div class="card room-card"><div class="room-card-icon">${r.icon}</div><div class="room-card-main"><h3>${escapeHtml(r.name)}</h3><p>${escapeHtml(r.description || "Без описания")}</p><div class="room-card-meta">👥 ${roomMemberCount(r.id)} участников · ${r.isPublic ? "публичная" : "приватная"}</div></div><div class="room-card-actions">${joined ? `<button class="primary" onclick="openRoom('${r.id}')">Открыть</button>` : `<button class="secondary" onclick="joinRoom('${r.id}')">Вступить</button>`}</div></div>`; }).join("") : emptyState("🫧", "Комнат пока нет", "Создай первую комнату для своего сообщества.")}
+        </div>`;
+}
+
 function rowToFriend(row) {
     return {
         id: row.id,
@@ -7169,7 +7358,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, petRow] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, rooms, roomMembers, petRow] = await Promise.all([
             sb.from("profiles").select("id,username,display_name,gender,avatar,cover,bio,last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,created_at").order("created_at", { ascending: true }),
             sb.from("posts").select("id,author_id,wall_owner_id,text,image,music_id,shared_post_id,likes,pinned,pinned_at,created_at").order("created_at", { ascending: false }).limit(150),
             sb.from("comments").select("id,post_id,author_id,parent_comment_id,text,created_at").order("created_at", { ascending: true }).limit(1000),
@@ -7196,9 +7385,11 @@ async function loadDB() {
             // just "everyone's currently-active stories".
             sb.from("stories").select("*").order("created_at", { ascending: true }),
             currentUserId ? sb.from("story_views").select("*") : Promise.resolve({ data: [], error: null }),
+            sb.from("rooms").select("id,name,slug,description,icon,owner_id,created_at,is_public").eq("is_public", true).order("created_at", { ascending: false }).limit(100),
+            currentUserId ? sb.from("room_members").select("id,room_id,user_id,role,created_at").eq("user_id", currentUserId) : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("pets").select("*").eq("owner_id", currentUserId).maybeSingle() : Promise.resolve({ data: null, error: null })
         ]);
-        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, petRow];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, rooms, roomMembers, petRow];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -7216,6 +7407,9 @@ async function loadDB() {
             blocks: (blocks.data || []).map(row => ({ id: row.id, blockerId: row.blocker_id, blockedId: row.blocked_id })),
             stories: (stories.data || []).map(rowToStory),
             storyViews: (storyViews.data || []).map(row => ({ id: row.id, storyId: row.story_id, viewerId: row.viewer_id })),
+            rooms: (rooms.data || []).map(rowToRoom),
+            roomMembers: (roomMembers.data || []).map(rowToRoomMember),
+            roomMessages: [],
             pet: petRow.data ? rowToPet(petRow.data) : null
         };
         // Catches the pet up on however long the app was closed for
@@ -7562,13 +7756,15 @@ function setupSocialRealtime() {
 }
 
 function teardownRealtime() {
-    [messagesChannel, friendRequestsChannel, notificationsChannel, typingChannel, socialChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
+    [messagesChannel, friendRequestsChannel, notificationsChannel, typingChannel, socialChannel, roomMessagesChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
     messagesChannel = null;
     friendRequestsChannel = null;
     notificationsChannel = null;
     typingChannel = null;
     typingChannelPartnerId = null;
     socialChannel = null;
+    roomMessagesChannel = null;
+    selectedRoomId = null;
     stopWatchingChatPartnerPresence();
 }
 
