@@ -4725,3 +4725,16 @@ html::after{
     display:inline-block;
     flex-shrink:0;
 }
+
+
+/* VK-like profile wall */
+.profile-wall { margin-top: 8px; }
+.profile-wall-title-row { display:flex; align-items:center; gap:10px; }
+.wall-count { color:var(--muted); font-size:13px; }
+.wall-composer { margin-bottom:16px; }
+.wall-composer-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.wall-composer-head small { display:block; color:var(--muted); margin-top:2px; }
+.wall-composer textarea { min-height:90px; resize:vertical; }
+.wall-composer-actions { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
+.wall-locked { color:var(--muted); text-align:center; }
+@media (max-width:600px){ .wall-composer-actions button { flex:1; } }
