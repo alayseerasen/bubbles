@@ -1305,7 +1305,7 @@ function isUserOnline(lastSeen){
 }
 
 async function updateLastSeen(){
-    if(!currentUserId) return;
+    if(!currentUserId || document.visibilityState !== "visible") return;
     try{
         const {error} = await sb.from("profiles").update({last_seen:new Date().toISOString()}).eq("id",currentUserId);
         if(error) throw error;
@@ -1319,7 +1319,7 @@ async function updateLastSeen(){
 function startPresenceHeartbeat(){
     updateLastSeen();
     if(heartbeatTimer) return;
-    heartbeatTimer = setInterval(updateLastSeen,30000);
+    heartbeatTimer = setInterval(updateLastSeen,45000);
 }
 
 function stopPresenceHeartbeat(){
@@ -1347,30 +1347,28 @@ function getOnlineCount(){
 // result (not db.users) so it also works pre-login on the landing screen,
 // where db.users is still empty.
 async function refreshOnlineCount(){
-    let rows = [];
+    if(document.visibilityState !== "visible") return;
     try{
-        const { data, error } = await sb.from("profiles").select("id,last_seen");
+        const cutoff = new Date(Date.now() - 60000).toISOString();
+        const { count, error } = await sb
+            .from("profiles")
+            .select("id", { count: "exact", head: true })
+            .gte("last_seen", cutoff);
         if(error) throw error;
-        rows = data || [];
-        rows.forEach(row => {
-            const u = getUser(row.id);
-            if(u) u.lastSeen = row.last_seen;
-        });
+        const safeCount = Number(count) || 0;
+        const topbarBadge = document.getElementById("topbarOnlineCount");
+        if(topbarBadge) topbarBadge.textContent = `🟢 ${safeCount} онлайн`;
+        const landingBadge = document.getElementById("landingOnlineCount");
+        if(landingBadge) landingBadge.textContent = `🟢 ${safeCount} ${pluralPeople(safeCount)} сейчас в bubbles`;
     }catch(error){
         console.error("Не удалось обновить счётчик онлайн:", error);
-        return;
     }
-    const count = rows.filter(row => isUserOnline(row.last_seen)).length;
-    const topbarBadge = document.getElementById("topbarOnlineCount");
-    if(topbarBadge) topbarBadge.textContent = `🟢 ${count} онлайн`;
-    const landingBadge = document.getElementById("landingOnlineCount");
-    if(landingBadge) landingBadge.textContent = `🟢 ${count} ${pluralPeople(count)} сейчас в bubbles`;
 }
 
 function startOnlineCountPolling(){
     refreshOnlineCount();
     if(onlineCountTimer) return;
-    onlineCountTimer = setInterval(refreshOnlineCount, 20000);
+    onlineCountTimer = setInterval(refreshOnlineCount, 60000);
 }
 
 function stopOnlineCountPolling(){
@@ -7091,17 +7089,17 @@ async function loadDB() {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
         const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, petRow] = await Promise.all([
-            sb.from("profiles").select("*").order("created_at", { ascending: true }),
-            sb.from("posts").select("*").order("created_at", { ascending: false }),
-            sb.from("comments").select("*").order("created_at", { ascending: true }),
-            sb.from("post_likes").select("*"),
-            sb.from("comment_likes").select("*"),
+            sb.from("profiles").select("id,username,display_name,gender,avatar,cover,bio,last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,created_at").order("created_at", { ascending: true }),
+            sb.from("posts").select("id,author_id,text,image,music_id,shared_post_id,likes,pinned,pinned_at,created_at").order("created_at", { ascending: false }).limit(150),
+            sb.from("comments").select("id,post_id,author_id,parent_comment_id,text,created_at").order("created_at", { ascending: true }).limit(1000),
+            sb.from("post_likes").select("post_id,user_id"),
+            sb.from("comment_likes").select("comment_id,user_id"),
             currentUserId ? sb.from("friendships").select("*") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("friend_requests").select("*").eq("status", "pending") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("bubbles_notifications").select("*").eq("user_id", currentUserId).order("created_at", { ascending: false }).limit(50) : Promise.resolve({ data: [], error: null }),
-            currentUserId ? sb.from("messages").select("*").order("created_at", { ascending: true }) : Promise.resolve({ data: [], error: null }),
-            currentUserId ? sb.from("message_reactions").select("*") : Promise.resolve({ data: [], error: null }),
-            sb.from("music").select("*").order("created_at", { ascending: false }),
+            currentUserId ? sb.from("messages").select("id,sender_id,receiver_id,text,image,created_at,read_at,encrypted,iv,img_iv,reply_to_id").or(`sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`).order("created_at", { ascending: false }).limit(1000) : Promise.resolve({ data: [], error: null }),
+            currentUserId ? sb.from("message_reactions").select("message_id,user_id,emoji") : Promise.resolve({ data: [], error: null }),
+            sb.from("music").select("id,author_id,title,artist,cover_url,audio_url,audio_path,cover_path,created_at").order("created_at", { ascending: false }).limit(200),
             sb.from("music_saves").select("music_id,user_id"),
             // RLS only ever actually returns rows here for the reporter or an
             // admin, so this is cheap/empty for a regular user and only an
@@ -7147,7 +7145,8 @@ async function loadDB() {
         // Ключ переписки (см. js/crypto.js) подтягивается лениво в
         // rowToMessage/sendMessage — тут больше не нужно ничего готовить
         // заранее и не нужно ничего спрашивать у человека.
-        db.messages = await Promise.all((messages.data || []).map(rowToMessage));
+        const orderedMessages = [...(messages.data || [])].reverse();
+        db.messages = await Promise.all(orderedMessages.map(rowToMessage));
 
         // Same two-step attach as post/comment likes: reactions live in
         // their own table (message_reactions) so either side of a chat
@@ -7304,6 +7303,7 @@ async function ensureProfile(authUser) {
 function watchChatPartnerPresence(userId) {
     stopWatchingChatPartnerPresence();
     const refresh = async () => {
+        if(document.visibilityState !== "visible") return;
         const { data, error } = await sb.from("profiles").select("last_seen").eq("id", userId).maybeSingle();
         if (error || !data) return;
         const user = getUser(userId);
@@ -7312,7 +7312,7 @@ function watchChatPartnerPresence(userId) {
         if (el) el.textContent = isUserOnline(data.last_seen) ? "🟢 Онлайн" : "⚪ Не в сети";
     };
     refresh();
-    chatPartnerPresenceTimer = setInterval(refresh, 15000);
+    chatPartnerPresenceTimer = setInterval(refresh, 30000);
 }
 
 function stopWatchingChatPartnerPresence() {
@@ -7544,7 +7544,11 @@ function reconnectRealtime({ force = false } = {}) {
 }
 
 document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") reconnectRealtime();
+    if (document.visibilityState === "visible") {
+        if (currentUserId) updateLastSeen();
+        refreshOnlineCount();
+        reconnectRealtime();
+    }
 });
 window.addEventListener("online", () => reconnectRealtime());
 // iOS Home Screen apps get suspended (not killed) in the background and
