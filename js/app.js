@@ -896,15 +896,6 @@ function isBlockedByMe(userId) {
     return db.blocks.some(b => b.blockerId === currentUserId && b.blockedId === userId);
 }
 
-// The reverse direction — did THEY block ME. We can't read their block
-// row (RLS only lets people see their own list), so this only ever
-// reflects what we can infer client-side (e.g. a failed send). Kept
-// separate from isBlockedByMe so call sites are explicit about which
-// direction they mean.
-function isBlockedByThem(userId) {
-    return db.blocks.some(b => b.blockerId === userId && b.blockedId === currentUserId);
-}
-
 async function toggleBlockUser(userId) {
     if (!currentUserId || userId === currentUserId) return;
     const user = getUser(userId);
@@ -1146,11 +1137,6 @@ function isAdmin(userId = currentUserId) {
     return !!user && user.role === "admin";
 }
 
-function isBanned(userId = currentUserId) {
-    const user = getUser(userId);
-    return !!user && !!user.banned;
-}
-
 function defaultAvatar() {
     return "data:image/svg+xml;charset=UTF-8," +
         encodeURIComponent(`
@@ -1341,10 +1327,6 @@ function pluralPeople(n){
     if (mod10 === 1 && mod100 !== 11) return "человек";
     if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return "человека";
     return "человек";
-}
-
-function getOnlineCount(){
-    return db.users.filter(u => isUserOnline(u.lastSeen)).length;
 }
 
 // Polls everyone's last_seen periodically so the "N онлайн" badge (topbar
@@ -7341,19 +7323,6 @@ function rowToMusic(row) {
     };
 }
 
-function userToRow(u) {
-    return {
-        id: u.id,
-        username: u.username,
-        display_name: u.displayName,
-        gender: u.gender || "female",
-        avatar: u.avatar || null,
-        cover: u.cover || null,
-        bio: u.bio || "",
-        created_at: new Date(u.createdAt || Date.now()).toISOString()
-    };
-}
-
 async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
@@ -7461,68 +7430,6 @@ async function loadDB() {
     catch (error) {
         console.error("Supabase load error:", error);
         toast("Не удалось загрузить данные из Supabase: " + (error?.message || error), 9000);
-    }
-}
-
-async function saveDB() {
-    try {
-        const users = db.users.map(userToRow);
-        const posts = db.posts.map(p => ({
-            id: p.id,
-            author_id: p.authorId,
-            wall_owner_id: p.wallOwnerId || p.authorId,
-            text: p.text || "",
-            image: p.image || "",
-            music_id: p.musicId || null,
-            shared_post_id: p.sharedPostId || null,
-            likes: p.likes || [],
-            created_at: new Date(p.createdAt || Date.now()).toISOString()
-        }));
-        const comments = db.comments.map(c => ({
-            id: c.id,
-            post_id: c.postId,
-            author_id: c.authorId,
-            parent_comment_id: c.parentId || null,
-            text: c.text || "",
-            created_at: new Date(c.createdAt || Date.now()).toISOString()
-        }));
-        const friends = db.friends.map(f => ({
-            id: f.id,
-            user1: f.user1,
-            user2: f.user2,
-            created_at: new Date(f.createdAt || Date.now()).toISOString()
-        }));
-        // NOTE: messages are intentionally NOT bulk-upserted here. db.messages
-        // holds the *decrypted* plaintext (for display), so writing it back
-        // would overwrite the ciphertext in the messages table with
-        // plaintext and defeat E2E encryption. Sending a message always
-        // goes through sendMessage(), which encrypts before insert.
-        const music = db.music.map(m => ({
-            id: m.id,
-            author_id: m.authorId,
-            title: m.title,
-            artist: m.artist || "",
-            cover_url: m.cover || "",
-            audio_url: m.audioUrl || "",
-            audio_path: m.audioPath || "",
-            cover_path: m.coverPath || "",
-            created_at: new Date(m.createdAt || Date.now()).toISOString()
-        }));
-        const writes = [
-            users.length ? sb.from("profiles").upsert(users) : null,
-            posts.length ? sb.from("posts").upsert(posts) : null,
-            comments.length ? sb.from("comments").upsert(comments) : null,
-            friends.length ? sb.from("friendships").upsert(friends) : null,
-            music.length ? sb.from("music").upsert(music) : null
-        ].filter(Boolean);
-        const results = await Promise.all(writes);
-        const bad = results.find(r => r.error);
-        if (bad?.error)
-            throw bad.error;
-    }
-    catch (error) {
-        console.error("Supabase save error:", error);
-        toast("Не удалось сохранить изменения в Supabase.");
     }
 }
 
