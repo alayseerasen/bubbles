@@ -533,6 +533,66 @@ grant execute on function public.is_admin() to authenticated;
 grant execute on function public.is_banned() to authenticated;
 
 -- ------------------------------------------------------------
+-- CANVAS ROOMS — personal decorable space ("blank canvas" self-
+-- expression), replacing the old group-chat "Комнаты". Each person has
+-- exactly ONE room — their own — so there's no table of joinable rooms
+-- to create here; the ownership key is just their user id. The old
+-- rooms/room_members/room_messages tables above are left in place
+-- (unused) rather than dropped, so nothing breaks if there's already
+-- data in them — they just stop being referenced from the app.
+-- ------------------------------------------------------------
+create table if not exists public.canvas_rooms (
+    user_id uuid primary key references public.profiles(id) on delete cascade,
+    background text not null default 'sky',
+    updated_at timestamptz not null default now()
+);
+
+-- One placed thing on someone's canvas: a text note, an image/gif, a
+-- track from their music library, or a hand-drawn "graffiti" doodle
+-- (stored as an uploaded transparent PNG, same as images — `type` is
+-- just there so the client can treat it differently, e.g. no card
+-- background behind it). `content` holds whatever's appropriate for
+-- that type: the text itself, an image URL, or a music.id.
+create table if not exists public.canvas_items (
+    id text primary key,
+    owner_id uuid not null references public.profiles(id) on delete cascade,
+    type text not null check (type in ('text','image','gif','music','doodle')),
+    content text not null default '',
+    color text not null default '',
+    x numeric not null default 50,
+    y numeric not null default 50,
+    rotation numeric not null default 0,
+    scale numeric not null default 1,
+    z_index integer not null default 0,
+    created_at timestamptz not null default now()
+);
+
+create index if not exists canvas_items_owner_idx on public.canvas_items(owner_id);
+
+alter table public.canvas_rooms enable row level security;
+alter table public.canvas_items enable row level security;
+
+drop policy if exists canvas_rooms_select on public.canvas_rooms;
+create policy canvas_rooms_select on public.canvas_rooms for select using (true);
+drop policy if exists canvas_rooms_insert on public.canvas_rooms;
+create policy canvas_rooms_insert on public.canvas_rooms for insert with check (auth.uid() = user_id);
+drop policy if exists canvas_rooms_update on public.canvas_rooms;
+create policy canvas_rooms_update on public.canvas_rooms for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+drop policy if exists canvas_items_select on public.canvas_items;
+create policy canvas_items_select on public.canvas_items for select
+using (
+    auth.uid() is null
+    or (not public.is_blocked(owner_id, auth.uid()) and not public.is_blocked(auth.uid(), owner_id))
+);
+drop policy if exists canvas_items_insert on public.canvas_items;
+create policy canvas_items_insert on public.canvas_items for insert with check (auth.uid() = owner_id and not public.is_banned());
+drop policy if exists canvas_items_update on public.canvas_items;
+create policy canvas_items_update on public.canvas_items for update using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
+drop policy if exists canvas_items_delete on public.canvas_items;
+create policy canvas_items_delete on public.canvas_items for delete using (auth.uid() = owner_id or public.is_admin());
+
+-- ------------------------------------------------------------
 -- PINNED POSTS
 -- Only an admin can ever pin/unpin — and never more than 2 at once,
 -- enforced here rather than just in the UI so it holds even if two
