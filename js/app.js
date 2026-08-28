@@ -751,9 +751,7 @@ let db = {
     blocks: [],
     stories: [],
     storyViews: [],
-    rooms: [],
-    roomMembers: [],
-    roomMessages: [],
+    canvasItems: [], // whichever canvas room is currently open (see openCanvasRoom)
     pet: null // this account's single companion, or null if none created yet
 };
 
@@ -765,8 +763,8 @@ let profileFriendsExpanded = false;
 let profileAchievementsExpanded = false;
 let lastProfileRenderId = null;
 let selectedChatId = null;
-let selectedRoomId = null;
-let roomMessagesChannel = null;
+let selectedCanvasUserId = null; // whose canvas room is currently open — see openCanvasRoom
+let canvasBackground = "sky";
 let selectedMessageImage = null; // resized data URL staged to send in the current chat, or null
 let replyingToMessageId = null; // message the compose box is currently replying to, or null
 let selectedComposerMusicId = null; // track staged to attach to the next post, or null
@@ -1581,7 +1579,9 @@ async function logout(){
     await sb.auth.signOut();
     currentUserId = null;
     teardownCallSignaling();
-    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],notifications:[],messages:[],music:[],reports:[],subscriptionRequests:[],blocks:[],stories:[],storyViews:[],pet:null};
+    selectedCanvasUserId = null;
+    canvasBackground = "sky";
+    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],notifications:[],messages:[],music:[],reports:[],subscriptionRequests:[],blocks:[],stories:[],storyViews:[],canvasItems:[],pet:null};
     showAuth("landing");
 }
 
@@ -1746,7 +1746,7 @@ function renderApp(){
                     data-page="rooms"
                     onclick="navigate('rooms')"
                 >
-                    🫧 Комнаты
+                    🎨 Комната
                 </button>
 
                 <button
@@ -1870,7 +1870,7 @@ function renderApp(){
                 </button>
 
                 <button class="more-sheet-item" data-page="rooms" onclick="navigate('rooms'); closeMoreSheet();">
-                    🫧 Комнаты
+                    🎨 Комната
                 </button>
 
                 <button class="more-sheet-item" data-page="pet" onclick="navigate('pet'); closeMoreSheet();">
@@ -1923,6 +1923,7 @@ function closeMoreSheet() {
 
 function navigate(page, id = null){
     const isFreshEntryToFeed = page === "feed" && currentPage !== "feed";
+    const isFreshEntryToRooms = page === "rooms" && currentPage !== "rooms";
     currentPage = page;
     selectedProfileId = id || selectedProfileId;
     closeStoryViewer(); // it's a full-screen modal appended to <body>, outside the normal page — don't leave it floating over the newly navigated-to page
@@ -1941,6 +1942,14 @@ function navigate(page, id = null){
     // exactly the jarring reset "load more" is meant to avoid.
     if (isFreshEntryToFeed) feedVisibleCount = FEED_PAGE_SIZE;
 
+    // Same idea for rooms: the bottom-nav "Комнаты" tab always means
+    // "take me to MY OWN room", but an incidental re-render while
+    // already sitting in a room (yours or a visited one) shouldn't
+    // silently refetch and potentially flicker mid-edit. openCanvasRoom
+    // renders itself once its fetch resolves, so the switch below just
+    // skips rendering rooms synchronously in that one case.
+    if (isFreshEntryToRooms) openCanvasRoom(currentUserId);
+
     switch(page){
         case "feed": renderFeed(); break;
         // selectedProfileId was just updated above (id || selectedProfileId) —
@@ -1951,7 +1960,7 @@ function navigate(page, id = null){
         case "profile": renderProfile(selectedProfileId || currentUserId); break;
         case "friends": renderFriends(); break;
         case "messages": renderMessages(); break;
-        case "rooms": renderRooms(); break;
+        case "rooms": if (!isFreshEntryToRooms) renderRooms(); break;
         case "music": renderMusic(); break;
         case "pet": renderPet(); break;
         case "premium": renderPremium(); break;
@@ -1961,7 +1970,6 @@ function navigate(page, id = null){
     }
 
     stopWatchingChatPartnerPresence();
-    if (page !== "rooms") stopRoomRealtime();
     if (page === "messages" && selectedChatId) watchChatPartnerPresence(selectedChatId);
 
     updateNavBadges();
@@ -2937,6 +2945,9 @@ function selectComposerMusic(musicId, context){
         if(!editPostState) return;
         editPostState.musicId = musicId;
         renderEditPostModal();
+    }else if(context === "canvas"){
+        closeBubblesModal();
+        addCanvasItem({ type: "music", content: musicId });
     }else{
         selectedComposerMusicId = musicId;
         closeBubblesModal();
@@ -3259,6 +3270,13 @@ function renderProfile(userId){
                                 >
                                     ⚙️ Редактировать
                                 </button>
+
+                                <button
+                                    class="secondary"
+                                    onclick="openCanvasRoom('${user.id}')"
+                                >
+                                    🎨 Моя комната
+                                </button>
                             `
                             : isBlockedByMe(user.id)
                             ? `
@@ -3284,6 +3302,13 @@ function renderProfile(userId){
                                     `
                                     : ""
                                 }
+
+                                <button
+                                    class="secondary"
+                                    onclick="openCanvasRoom('${user.id}')"
+                                >
+                                    🎨 Комната
+                                </button>
 
                                 <button
                                     class="secondary"
@@ -4349,6 +4374,7 @@ function goToPost(postId) {
    ============================================================ */
 
 function openChat(userId) {
+    if (selectedChatId !== userId) chatVisibleCount = CHAT_PAGE_SIZE; // switching conversations — start back at "just the recent tail", same reasoning as feedVisibleCount
     selectedChatId = userId;
     selectedMessageImage = null; // a staged photo shouldn't follow you into a different chat
     replyingToMessageId = null; // neither should a pending reply
@@ -4661,9 +4687,20 @@ function renderConversation(user) {
 
 }
 
+let chatVisibleCount = 40;
+const CHAT_PAGE_SIZE = 40;
+
 function renderChat(userId){
     const user = getUser(userId);
-    const messages = db.messages.filter(m => (m.from === currentUserId && m.to === userId) || (m.from === userId && m.to === currentUserId)).sort((a,b) => a.createdAt - b.createdAt);
+    const allMessages = db.messages.filter(m => (m.from === currentUserId && m.to === userId) || (m.from === userId && m.to === currentUserId)).sort((a,b) => a.createdAt - b.createdAt);
+    // Only the tail is actually rendered into the DOM at first — a
+    // long-running friendship can easily have thousands of messages, and
+    // building/decrypting/laying out that whole history every time you
+    // just open the chat (you always land at the bottom anyway) is real,
+    // needless jank. "Показать более ранние" loads the rest on request,
+    // same idea as the feed's "Показать ещё".
+    const messages = allMessages.slice(-chatVisibleCount);
+    const hasEarlier = allMessages.length > messages.length;
     // Каждая переписка теперь всегда шифруется — нет отдельного шага
     // настройки на устройстве, поэтому бейдж больше не зависит от
     // publicKey/isReady, а просто отражает текущую схему.
@@ -4701,6 +4738,16 @@ function renderChat(userId){
             class="chat-messages"
             id="chatMessages"
         >
+
+            ${
+                hasEarlier
+                ? `
+                    <button type="button" id="loadEarlierMessagesBtn" class="secondary full profile-expand-btn" onclick="loadEarlierMessages('${userId}')">
+                        ⬆️ Показать более ранние (${allMessages.length - messages.length})
+                    </button>
+                  `
+                : ""
+            }
 
             ${
                 messages.length
@@ -5653,9 +5700,49 @@ function appendMessageToChat(message, partnerId) {
             wrapper.innerHTML = messageBubble(message).trim();
             box.appendChild(wrapper.firstElementChild);
             box.scrollTop = box.scrollHeight;
+            // A new message pushes the total past the visible window too,
+            // so "Показать более ранние" (if it exists) doesn't quietly
+            // under-count how many messages are actually still hidden.
+            chatVisibleCount++;
         }
     }
     refreshConversationPreview(partnerId);
+}
+
+// Prepends the next-older batch to the TOP of the chat instead of
+// re-rendering the whole thing — same idea as loadMoreFeedPosts().
+// Manually restoring scrollTop after prepending is essential here: the
+// browser doesn't do it for you, and without it the message you were
+// just reading jumps to a completely different spot on screen.
+function loadEarlierMessages(userId){
+    const box = document.getElementById("chatMessages");
+    if (!box) return;
+    const allMessages = db.messages.filter(m => (m.from === currentUserId && m.to === userId) || (m.from === userId && m.to === currentUserId)).sort((a,b) => a.createdAt - b.createdAt);
+    const alreadyShown = chatVisibleCount;
+    chatVisibleCount = Math.min(allMessages.length, chatVisibleCount + CHAT_PAGE_SIZE);
+    const earlierBatch = allMessages.slice(-chatVisibleCount, -alreadyShown || undefined);
+
+    const prevScrollHeight = box.scrollHeight;
+    const prevScrollTop = box.scrollTop;
+
+    const btn = document.getElementById("loadEarlierMessagesBtn");
+    const remaining = allMessages.length - chatVisibleCount;
+    const batchHtml = earlierBatch.map(messageBubble).join("");
+
+    // Insert the batch FIRST, while the button (if any) is still attached
+    // to the document — inserting "afterend" relative to a node that's
+    // already been removed silently does nothing.
+    if (btn) btn.insertAdjacentHTML("afterend", batchHtml);
+    else box.insertAdjacentHTML("afterbegin", batchHtml);
+
+    if (btn) {
+        if (remaining > 0) btn.textContent = `⬆️ Показать более ранние (${remaining})`;
+        else btn.remove();
+    }
+
+    // Keep whatever was on screen anchored in place rather than snapping
+    // back to the very top of the now-taller message list.
+    box.scrollTop = prevScrollTop + (box.scrollHeight - prevScrollHeight);
 }
 
 function refreshConversationPreview(partnerId) {
@@ -6904,174 +6991,391 @@ function rowToPet(row) {
     };
 }
 
-function rowToRoom(row) {
+function rowToCanvasItem(row) {
     return {
         id: row.id,
-        name: row.name || "Room",
-        slug: row.slug || "",
-        description: row.description || "",
-        icon: row.icon || "🫧",
         ownerId: row.owner_id,
-        isPublic: row.is_public !== false,
+        type: row.type,
+        content: row.content || "",
+        color: row.color || "",
+        x: Number(row.x ?? 50),
+        y: Number(row.y ?? 50),
+        rotation: Number(row.rotation ?? 0),
+        scale: Number(row.scale ?? 1),
+        zIndex: row.z_index ?? 0,
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
 
-function rowToRoomMember(row) {
-    return {
-        id: row.id,
-        roomId: row.room_id,
-        userId: row.user_id,
-        role: row.role || "member",
-        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
-    };
-}
+const CANVAS_BACKGROUNDS = {
+    sky: "linear-gradient(160deg,#8be9ff,#c9f7ff 55%,#fdfff5)",
+    candy: "linear-gradient(160deg,#ffb3e6,#c8b6ff 55%,#fff0fa)",
+    sunset: "linear-gradient(160deg,#ffcf8f,#ff9fb0 55%,#fff2e6)",
+    mint: "linear-gradient(160deg,#8ff5c9,#a9f0ff 55%,#f2fff9)",
+    night: "linear-gradient(160deg,#2a2350,#4a3a7a 55%,#1a1633)"
+};
 
-function rowToRoomMessage(row) {
-    return {
-        id: row.id,
-        roomId: row.room_id,
-        authorId: row.author_id,
-        text: row.text || "",
-        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
-    };
-}
-
-function isRoomMember(roomId) {
-    return db.roomMembers.some(m => m.roomId === roomId && m.userId === currentUserId);
-}
-
-function roomMemberCount(roomId) {
-    return db.roomMembers.filter(m => m.roomId === roomId).length;
-}
-
-function myRoomRole(roomId) {
-    return db.roomMembers.find(m => m.roomId === roomId && m.userId === currentUserId)?.role || null;
-}
-
-function stopRoomRealtime() {
-    if (roomMessagesChannel) sb.removeChannel(roomMessagesChannel);
-    roomMessagesChannel = null;
-}
-
-async function openRoom(roomId) {
-    const room = db.rooms.find(r => r.id === roomId);
-    if (!room) return;
-    if (!isRoomMember(roomId)) { toast("Сначала вступи в комнату."); return; }
-    selectedRoomId = roomId;
-    await loadRoomMessages(roomId);
-    setupRoomRealtime(roomId);
+// Everyone has exactly ONE room — themselves — so "opening a room" just
+// means "load this person's canvas_rooms row + canvas_items". Nothing
+// to join/leave/create the way the old group-chat rooms worked.
+async function openCanvasRoom(userId) {
+    selectedCanvasUserId = userId;
+    canvasSelectedItemId = null;
     currentPage = "rooms";
+    const [roomResult, itemsResult] = await Promise.all([
+        sb.from("canvas_rooms").select("user_id,background").eq("user_id", userId).maybeSingle(),
+        sb.from("canvas_items").select("*").eq("owner_id", userId).order("z_index", { ascending: true })
+    ]);
+    if (roomResult.error) console.error(roomResult.error);
+    if (itemsResult.error) { console.error(itemsResult.error); toast("Не удалось загрузить комнату."); }
+    canvasBackground = roomResult.data?.background || "sky";
+    db.canvasItems = (itemsResult.data || []).map(rowToCanvasItem);
     renderRooms();
 }
 
-async function loadRoomMessages(roomId) {
-    const { data, error } = await sb.from("room_messages").select("id,room_id,author_id,text,created_at").eq("room_id", roomId).order("created_at", { ascending: false }).limit(100);
-    if (error) { console.error(error); toast("Не удалось загрузить сообщения комнаты."); return; }
-    db.roomMessages = (data || []).reverse().map(rowToRoomMessage);
+function isOwnCanvas() {
+    return selectedCanvasUserId === currentUserId;
 }
 
-function setupRoomRealtime(roomId) {
-    stopRoomRealtime();
-    roomMessagesChannel = sb.channel("bubbles-room-" + roomId)
-        .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_messages", filter: `room_id=eq.${roomId}` }, payload => {
-            const row = payload.new;
-            if (db.roomMessages.some(m => m.id === row.id)) return;
-            db.roomMessages.push(rowToRoomMessage(row));
-            if (currentPage === "rooms" && selectedRoomId === roomId) renderRooms();
-        })
-        .subscribe();
+async function setCanvasBackground(bg) {
+    if (!isOwnCanvas() || !CANVAS_BACKGROUNDS[bg]) return;
+    canvasBackground = bg;
+    const stage = document.getElementById("canvasStage");
+    if (stage) stage.style.background = CANVAS_BACKGROUNDS[bg];
+    const { error } = await sb.from("canvas_rooms")
+        .upsert({ user_id: currentUserId, background: bg, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    if (error) console.error(error);
 }
 
-async function joinRoom(roomId) {
-    if (isRoomMember(roomId)) return openRoom(roomId);
-    const { data, error } = await sb.from("room_members").insert({ room_id: roomId, user_id: currentUserId, role: "member" }).select("id,room_id,user_id,role,created_at").single();
+function nextCanvasZIndex() {
+    return db.canvasItems.reduce((max, it) => Math.max(max, it.zIndex), 0) + 1;
+}
+
+async function addCanvasItem({ type, content, color = "" }) {
+    if (!isOwnCanvas()) return;
+    const item = {
+        id: uid("canvasitem"),
+        ownerId: currentUserId,
+        type, content, color,
+        x: 30 + Math.random() * 40,
+        y: 30 + Math.random() * 40,
+        rotation: Math.round((Math.random() * 16) - 8),
+        scale: 1,
+        zIndex: nextCanvasZIndex(),
+        createdAt: Date.now()
+    };
+    db.canvasItems.push(item);
+    renderRooms();
+    const { error } = await sb.from("canvas_items").insert({
+        id: item.id, owner_id: item.ownerId, type: item.type, content: item.content, color: item.color,
+        x: item.x, y: item.y, rotation: item.rotation, scale: item.scale, z_index: item.zIndex
+    });
     if (error) {
-        console.error(error); toast(error.message || "Не удалось вступить."); return;
+        console.error(error);
+        db.canvasItems = db.canvasItems.filter(it => it.id !== item.id);
+        toast("Не удалось добавить элемент.");
+        renderRooms();
     }
-    db.roomMembers.push(rowToRoomMember(data));
-    toast("Ты вступил(а) в комнату 🫧");
-    openRoom(roomId);
 }
 
-async function leaveRoom(roomId) {
-    const role = myRoomRole(roomId);
-    if (role === "owner") { toast("Создатель не может выйти из своей комнаты."); return; }
-    const { error } = await sb.from("room_members").delete().eq("room_id", roomId).eq("user_id", currentUserId);
-    if (error) { console.error(error); toast("Не удалось выйти из комнаты."); return; }
-    db.roomMembers = db.roomMembers.filter(m => !(m.roomId === roomId && m.userId === currentUserId));
-    if (selectedRoomId === roomId) { selectedRoomId = null; db.roomMessages = []; stopRoomRealtime(); }
-    renderRooms();
-}
-
-async function createRoom() {
-    const name = prompt("Название комнаты");
-    if (!name) return;
-    const clean = name.trim().slice(0, 40);
-    if (!clean) return;
-    const description = (prompt("Описание комнаты (необязательно)") || "").trim().slice(0, 160);
-    let slug = clean.toLowerCase().replace(/[^a-z0-9а-яё]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 30) || "room";
-    slug += "-" + Math.random().toString(36).slice(2, 7);
-    const id = crypto.randomUUID();
-    const { data: room, error } = await sb.from("rooms").insert({ id, name: clean, slug, description, icon: "🫧", owner_id: currentUserId, is_public: true }).select("id,name,slug,description,icon,owner_id,created_at,is_public").single();
-    if (error) { console.error(error); toast(error.message || "Не удалось создать комнату."); return; }
-    const { data: member, error: memberError } = await sb.from("room_members").insert({ room_id: room.id, user_id: currentUserId, role: "owner" }).select("id,room_id,user_id,role,created_at").single();
-    if (memberError) { console.error(memberError); toast("Комната создана, но вступить не получилось."); }
-    db.rooms.unshift(rowToRoom(room));
-    if (member) db.roomMembers.push(rowToRoomMember(member));
-    toast("Комната создана 🫧");
-    openRoom(room.id);
-}
-
-async function sendRoomMessage(event) {
-    event?.preventDefault();
-    const input = document.getElementById("roomMessageInput");
-    if (!input || !selectedRoomId || !isRoomMember(selectedRoomId)) return;
-    const text = input.value.trim();
+function addCanvasText() {
+    if (!isOwnCanvas()) return;
+    const text = (prompt("Что напишем на стене? (до 120 символов)") || "").trim().slice(0, 120);
     if (!text) return;
-    input.value = "";
-    const row = { id: crypto.randomUUID(), room_id: selectedRoomId, author_id: currentUserId, text: text.slice(0, 4000) };
-    const { data, error } = await sb.from("room_messages").insert(row).select("id,room_id,author_id,text,created_at").single();
-    if (error) { console.error(error); input.value = text; toast(error.message || "Не удалось отправить сообщение."); return; }
-    if (!db.roomMessages.some(m => m.id === data.id)) db.roomMessages.push(rowToRoomMessage(data));
+    const colors = ["#ff6ec7", "#4fc9f5", "#7ee56d", "#ffce54", "#a78bfa"];
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    addCanvasItem({ type: "text", content: text, color });
+}
+
+async function addCanvasImage(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !isOwnCanvas()) return;
+    if (!file.type.startsWith("image/")) { toast("Можно загружать только изображения."); return; }
+    if (file.size > 15 * 1024 * 1024) { toast("Файл слишком большой. Максимум 15 МБ."); return; }
+    const type = file.type === "image/gif" ? "gif" : "image";
+    toast("Загружаем…");
+    try {
+        const url = await uploadImageToStorage(file, `${currentUserId}/canvas-${uid("img")}.jpg`, 900);
+        addCanvasItem({ type, content: url });
+    } catch (e) {
+        console.error(e);
+        toast("Не удалось загрузить файл.");
+    }
+}
+
+function openCanvasMusicPicker() {
+    if (!isOwnCanvas()) return;
+    openMusicPicker("canvas");
+}
+
+function toggleCanvasItemMusic(musicId) {
+    playMusic(musicId);
+}
+
+// ------------------------------------------------------------
+// GRAFFITI — a tiny full-screen freehand drawing tool. Draws on a
+// transparent canvas so the result reads as "sprayed onto the wall"
+// rather than a photo with a white box around it, then uploads the
+// result as a normal image (type "doodle" is just for styling —
+// no card/border behind it when placed).
+// ------------------------------------------------------------
+let graffitiCtx = null;
+let graffitiDrawing = false;
+let graffitiColor = "#ff2d78";
+let graffitiSize = 10;
+
+function openGraffitiTool() {
+    if (!isOwnCanvas()) return;
+    showBubblesModal(`
+        <div class="modal-header">
+            <h3>🖌️ Граффити</h3>
+            <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
+        </div>
+        <canvas id="graffitiCanvas" class="graffiti-canvas" width="600" height="600"></canvas>
+        <div class="graffiti-toolbar">
+            ${["#ff2d78","#ff9f1c","#ffe066","#4fc9f5","#7ee56d","#a78bfa","#1a1a1a","#ffffff"].map(c => `
+                <button type="button" class="graffiti-swatch" style="background:${c};" onclick="graffitiColor='${c}'"></button>
+            `).join("")}
+        </div>
+        <div class="graffiti-toolbar">
+            <button type="button" class="secondary" onclick="graffitiSize=6">Тонко</button>
+            <button type="button" class="secondary" onclick="graffitiSize=14">Средне</button>
+            <button type="button" class="secondary" onclick="graffitiSize=26">Жирно</button>
+            <button type="button" class="secondary" onclick="clearGraffitiCanvas()">Стереть всё</button>
+        </div>
+        <button class="primary full" onclick="saveGraffiti()">Готово — повесить на стену</button>
+    `);
+    requestAnimationFrame(setupGraffitiCanvas);
+}
+
+function setupGraffitiCanvas() {
+    const canvas = document.getElementById("graffitiCanvas");
+    if (!canvas) return;
+    graffitiCtx = canvas.getContext("2d");
+    graffitiCtx.lineCap = "round";
+    graffitiCtx.lineJoin = "round";
+
+    const pos = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return {
+            x: (clientX - rect.left) * (canvas.width / rect.width),
+            y: (clientY - rect.top) * (canvas.height / rect.height)
+        };
+    };
+
+    const start = (e) => {
+        e.preventDefault();
+        graffitiDrawing = true;
+        const { x, y } = pos(e);
+        graffitiCtx.beginPath();
+        graffitiCtx.moveTo(x, y);
+    };
+    const draw = (e) => {
+        if (!graffitiDrawing) return;
+        e.preventDefault();
+        const { x, y } = pos(e);
+        graffitiCtx.strokeStyle = graffitiColor;
+        graffitiCtx.lineWidth = graffitiSize;
+        graffitiCtx.lineTo(x, y);
+        graffitiCtx.stroke();
+    };
+    const stop = () => { graffitiDrawing = false; };
+
+    canvas.addEventListener("pointerdown", start);
+    canvas.addEventListener("pointermove", draw);
+    window.addEventListener("pointerup", stop);
+}
+
+function clearGraffitiCanvas() {
+    const canvas = document.getElementById("graffitiCanvas");
+    if (canvas && graffitiCtx) graffitiCtx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+async function saveGraffiti() {
+    const canvas = document.getElementById("graffitiCanvas");
+    if (!canvas) return;
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+    if (!blob) { toast("Пустой рисунок."); return; }
+    closeBubblesModal();
+    toast("Вешаем на стену…");
+    const path = `${currentUserId}/canvas-${uid("doodle")}.png`;
+    const { error: upErr } = await sb.storage.from(IMAGES_BUCKET).upload(path, blob, { contentType: "image/png", upsert: true });
+    if (upErr) { console.error(upErr); toast("Не удалось сохранить рисунок."); return; }
+    const url = sb.storage.from(IMAGES_BUCKET).getPublicUrl(path).data.publicUrl;
+    addCanvasItem({ type: "doodle", content: url });
+}
+
+// ------------------------------------------------------------
+// DRAG TO REPOSITION (owner only) — pointer-based so it works the same
+// with touch and mouse. Position updates live while dragging for
+// instant feedback; the DB write only happens once, on release.
+// ------------------------------------------------------------
+let canvasDragState = null;
+let canvasSelectedItemId = null;
+
+function startCanvasItemDrag(event, itemId) {
+    if (!isOwnCanvas()) return;
+    event.preventDefault();
+    const stage = document.getElementById("canvasStage");
+    const el = document.querySelector(`[data-canvas-item-id="${itemId}"]`);
+    if (!stage || !el) return;
+    selectCanvasItem(itemId);
+    const rect = stage.getBoundingClientRect();
+    canvasDragState = { itemId, stageRect: rect, el };
+    el.setPointerCapture?.(event.pointerId);
+    el.addEventListener("pointermove", onCanvasItemDragMove);
+    el.addEventListener("pointerup", onCanvasItemDragEnd, { once: true });
+}
+
+function onCanvasItemDragMove(event) {
+    if (!canvasDragState) return;
+    const { stageRect, el, itemId } = canvasDragState;
+    const item = db.canvasItems.find(it => it.id === itemId);
+    if (!item) return;
+    let x = ((event.clientX - stageRect.left) / stageRect.width) * 100;
+    let y = ((event.clientY - stageRect.top) / stageRect.height) * 100;
+    x = Math.max(4, Math.min(96, x));
+    y = Math.max(4, Math.min(96, y));
+    item.x = x;
+    item.y = y;
+    el.style.left = x + "%";
+    el.style.top = y + "%";
+}
+
+async function onCanvasItemDragEnd(event) {
+    if (!canvasDragState) return;
+    const { el, itemId } = canvasDragState;
+    el.removeEventListener("pointermove", onCanvasItemDragMove);
+    canvasDragState = null;
+    const item = db.canvasItems.find(it => it.id === itemId);
+    if (!item) return;
+    const { error } = await sb.from("canvas_items").update({ x: item.x, y: item.y }).eq("id", itemId);
+    if (error) console.error(error);
+}
+
+function selectCanvasItem(itemId) {
+    canvasSelectedItemId = canvasSelectedItemId === itemId ? null : itemId;
     renderRooms();
 }
 
-function renderRoomMessage(m) {
-    const author = getUser(m.authorId);
-    const mine = m.authorId === currentUserId;
-    return `<div class="room-message ${mine ? "mine" : ""}">
-        <img loading="lazy" decoding="async" class="mini-avatar" src="${author?.avatar || defaultAvatar()}" onclick="navigate('profile','${m.authorId}')">
-        <div class="room-message-body">
-            <div class="room-message-meta"><strong>${escapeHtml(author?.displayName || "User")}</strong><span>${timeAgo(m.createdAt)}</span></div>
-            <div class="room-message-bubble">${escapeHtml(m.text)}</div>
+async function bringCanvasItemToFront(itemId) {
+    const item = db.canvasItems.find(it => it.id === itemId);
+    if (!item || !isOwnCanvas()) return;
+    item.zIndex = nextCanvasZIndex();
+    renderRooms();
+    const { error } = await sb.from("canvas_items").update({ z_index: item.zIndex }).eq("id", itemId);
+    if (error) console.error(error);
+}
+
+async function rotateCanvasItem(itemId) {
+    const item = db.canvasItems.find(it => it.id === itemId);
+    if (!item || !isOwnCanvas()) return;
+    item.rotation = (item.rotation + 15) % 360;
+    renderRooms();
+    const { error } = await sb.from("canvas_items").update({ rotation: item.rotation }).eq("id", itemId);
+    if (error) console.error(error);
+}
+
+async function deleteCanvasItem(itemId) {
+    if (!isOwnCanvas()) return;
+    if (!confirm("Убрать этот элемент со стены?")) return;
+    db.canvasItems = db.canvasItems.filter(it => it.id !== itemId);
+    canvasSelectedItemId = null;
+    renderRooms();
+    const { error } = await sb.from("canvas_items").delete().eq("id", itemId);
+    if (error) console.error(error);
+}
+
+function renderCanvasItem(item) {
+    const selected = item.id === canvasSelectedItemId;
+    const owner = isOwnCanvas();
+    const baseStyle = `left:${item.x}%;top:${item.y}%;transform:translate(-50%,-50%) rotate(${item.rotation}deg) scale(${item.scale});z-index:${item.zIndex};`;
+    const dragHandlers = owner
+        ? `onpointerdown="startCanvasItemDrag(event,'${item.id}')"`
+        : "";
+
+    let inner = "";
+    if (item.type === "text") {
+        inner = `<div class="canvas-item-text" style="color:${item.color || "#333"};">${escapeHtml(item.content)}</div>`;
+    } else if (item.type === "image" || item.type === "gif") {
+        inner = `<div class="canvas-item-photo"><img loading="lazy" decoding="async" src="${item.content}"></div>`;
+    } else if (item.type === "doodle") {
+        inner = `<img loading="lazy" decoding="async" class="canvas-item-doodle" src="${item.content}">`;
+    } else if (item.type === "music") {
+        const track = db.music.find(m => m.id === item.content);
+        inner = `
+            <div class="canvas-item-music" onclick="${owner && selected ? "" : `toggleCanvasItemMusic('${item.content}')`}" title="${track ? escapeHtml(track.title) : "Трек удалён"}">
+                💿
+            </div>
+        `;
+    }
+
+    return `
+        <div class="canvas-item ${selected ? "canvas-item-selected" : ""}" data-canvas-item-id="${item.id}" style="${baseStyle}" ${dragHandlers} ${owner ? `onclick="selectCanvasItem('${item.id}')"` : ""}>
+            ${inner}
+            ${
+                owner && selected
+                ? `
+                    <div class="canvas-item-toolbar">
+                        <button type="button" onclick="event.stopPropagation();rotateCanvasItem('${item.id}')" title="Повернуть">↻</button>
+                        <button type="button" onclick="event.stopPropagation();bringCanvasItemToFront('${item.id}')" title="Наверх">⬆️</button>
+                        <button type="button" onclick="event.stopPropagation();deleteCanvasItem('${item.id}')" title="Удалить">🗑️</button>
+                    </div>
+                  `
+                : ""
+            }
         </div>
-    </div>`;
+    `;
 }
 
 function renderRooms() {
     const page = document.getElementById("page");
-    const room = db.rooms.find(r => r.id === selectedRoomId) || null;
-    if (room && isRoomMember(room.id)) {
-        const messages = db.roomMessages.filter(m => m.roomId === room.id);
-        page.innerHTML = `
-            <div class="rooms-header">
-                <div><div class="section-title">${room.icon} ${escapeHtml(room.name)}</div><div class="room-description">${escapeHtml(room.description || "Публичная комната Bubbles")}</div></div>
-                <div class="rooms-header-actions">${myRoomRole(room.id) === "owner" ? `<button class="secondary" disabled>👑 Ты создатель</button>` : `<button class="secondary" onclick="leaveRoom('${room.id}')">Выйти</button>`}<button class="secondary" onclick="selectedRoomId=null;stopRoomRealtime();renderRooms()">← Комнаты</button></div>
-            </div>
-            <div class="card room-chat-card">
-                <div class="room-chat-list" id="roomChatList">${messages.length ? messages.map(renderRoomMessage).join("") : `<div class="empty"><div class="empty-icon">🫧</div><strong>Пока тихо</strong><p>Напиши первое сообщение в этой комнате.</p></div>`}</div>
-                <form class="room-composer" onsubmit="sendRoomMessage(event)"><input id="roomMessageInput" maxlength="4000" autocomplete="off" placeholder="Написать в комнату…"><button class="primary">Отправить</button></form>
-            </div>`;
-        const list = document.getElementById("roomChatList"); if (list) list.scrollTop = list.scrollHeight;
-        return;
-    }
-    stopRoomRealtime();
+    if (!selectedCanvasUserId) selectedCanvasUserId = currentUserId;
+    if (db.canvasItems === undefined) db.canvasItems = [];
+    const owner = getUser(selectedCanvasUserId);
+    const mine = isOwnCanvas();
+
     page.innerHTML = `
-        <div class="rooms-topbar"><div><h1 class="section-title">🫧 Комнаты</h1><p class="room-description">Публичные места Bubbles для общения по интересам.</p></div><button class="primary" onclick="createRoom()">＋ Создать</button></div>
-        <div class="rooms-grid">
-            ${db.rooms.length ? db.rooms.map(r => { const joined=isRoomMember(r.id); return `<div class="card room-card"><div class="room-card-icon">${r.icon}</div><div class="room-card-main"><h3>${escapeHtml(r.name)}</h3><p>${escapeHtml(r.description || "Без описания")}</p><div class="room-card-meta">👥 ${roomMemberCount(r.id)} участников · ${r.isPublic ? "публичная" : "приватная"}</div></div><div class="room-card-actions">${joined ? `<button class="primary" onclick="openRoom('${r.id}')">Открыть</button>` : `<button class="secondary" onclick="joinRoom('${r.id}')">Вступить</button>`}</div></div>`; }).join("") : emptyState("🫧", "Комнат пока нет", "Создай первую комнату для своего сообщества.")}
-        </div>`;
+        <div class="rooms-topbar">
+            <div>
+                <h1 class="section-title">🎨 ${mine ? "Твоя комната" : `Комната: ${escapeHtml(owner?.displayName || "")}`}</h1>
+                <p class="room-description">${mine ? "Пустое полотно — вставляй что угодно и переставляй как хочешь." : "Гостевой просмотр — трогать может только хозяин(-ка)."}</p>
+            </div>
+            ${!mine ? `<button class="secondary" onclick="openCanvasRoom(currentUserId)">← Моя комната</button>` : ""}
+        </div>
+
+        ${
+            mine
+            ? `
+                <div class="canvas-toolbar">
+                    <button type="button" class="secondary" onclick="addCanvasText()">🔤 Текст</button>
+                    <label class="secondary canvas-upload-btn">
+                        🖼️ Фото/GIF
+                        <input type="file" accept="image/*" onchange="addCanvasImage(event)" hidden>
+                    </label>
+                    <button type="button" class="secondary" onclick="openCanvasMusicPicker()">🎵 Музыка</button>
+                    <button type="button" class="secondary" onclick="openGraffitiTool()">🖌️ Граффити</button>
+                </div>
+                <div class="canvas-bg-picker">
+                    ${Object.keys(CANVAS_BACKGROUNDS).map(bg => `
+                        <button type="button" class="canvas-bg-swatch ${bg === canvasBackground ? "active" : ""}" style="background:${CANVAS_BACKGROUNDS[bg]};" onclick="setCanvasBackground('${bg}')" title="${bg}"></button>
+                    `).join("")}
+                </div>
+              `
+            : ""
+        }
+
+        <div class="canvas-stage" id="canvasStage" style="background:${CANVAS_BACKGROUNDS[canvasBackground] || CANVAS_BACKGROUNDS.sky};" onclick="if(event.target.id==='canvasStage') canvasSelectedItemId=null, renderRooms()">
+            ${
+                db.canvasItems.length
+                ? db.canvasItems.map(renderCanvasItem).join("")
+                : `<div class="canvas-empty">${mine ? "Пока пусто — добавь первый элемент кнопками сверху 🫧" : "Здесь пока ничего нет."}</div>`
+            }
+        </div>
+    `;
 }
 
 function rowToFriend(row) {
@@ -7327,7 +7631,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, rooms, roomMembers, petRow] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, petRow] = await Promise.all([
             sb.from("profiles").select("id,username,display_name,gender,avatar,cover,bio,last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,created_at").order("created_at", { ascending: true }),
             sb.from("posts").select("id,author_id,wall_owner_id,text,image,music_id,shared_post_id,likes,pinned,pinned_at,created_at").order("created_at", { ascending: false }).limit(150),
             sb.from("comments").select("id,post_id,author_id,parent_comment_id,text,created_at").order("created_at", { ascending: true }).limit(1000),
@@ -7354,11 +7658,12 @@ async function loadDB() {
             // just "everyone's currently-active stories".
             sb.from("stories").select("*").order("created_at", { ascending: true }),
             currentUserId ? sb.from("story_views").select("*") : Promise.resolve({ data: [], error: null }),
-            sb.from("rooms").select("id,name,slug,description,icon,owner_id,created_at,is_public").eq("is_public", true).order("created_at", { ascending: false }).limit(100),
-            currentUserId ? sb.from("room_members").select("id,room_id,user_id,role,created_at").eq("user_id", currentUserId) : Promise.resolve({ data: [], error: null }),
+            // Canvas rooms are NOT loaded here — each one is fetched on
+            // demand (see openCanvasRoom) only when someone actually opens
+            // it, same reasoning as room_messages used to be.
             currentUserId ? sb.from("pets").select("*").eq("owner_id", currentUserId).maybeSingle() : Promise.resolve({ data: null, error: null })
         ]);
-        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, rooms, roomMembers, petRow];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, petRow];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -7376,9 +7681,7 @@ async function loadDB() {
             blocks: (blocks.data || []).map(row => ({ id: row.id, blockerId: row.blocker_id, blockedId: row.blocked_id })),
             stories: (stories.data || []).map(rowToStory),
             storyViews: (storyViews.data || []).map(row => ({ id: row.id, storyId: row.story_id, viewerId: row.viewer_id })),
-            rooms: (rooms.data || []).map(rowToRoom),
-            roomMembers: (roomMembers.data || []).map(rowToRoomMember),
-            roomMessages: [],
+            canvasItems: [],
             pet: petRow.data ? rowToPet(petRow.data) : null
         };
         // Catches the pet up on however long the app was closed for
@@ -7663,15 +7966,14 @@ function setupSocialRealtime() {
 }
 
 function teardownRealtime() {
-    [messagesChannel, friendRequestsChannel, notificationsChannel, typingChannel, socialChannel, roomMessagesChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
+    [messagesChannel, friendRequestsChannel, notificationsChannel, typingChannel, socialChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
     messagesChannel = null;
     friendRequestsChannel = null;
     notificationsChannel = null;
     typingChannel = null;
     typingChannelPartnerId = null;
     socialChannel = null;
-    roomMessagesChannel = null;
-    selectedRoomId = null;
+    selectedCanvasUserId = null;
     stopWatchingChatPartnerPresence();
 }
 
@@ -7875,6 +8177,10 @@ Object.assign(window,{
     setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,backfillAchievementsForAllUsers,togglePinPost,
     toggleMoreSheet,openMoreSheet,closeMoreSheet,
     loadMoreFeedPosts,
+    loadEarlierMessages,
+    openCanvasRoom,setCanvasBackground,addCanvasText,addCanvasImage,openCanvasMusicPicker,toggleCanvasItemMusic,
+    openGraffitiTool,clearGraffitiCanvas,saveGraffiti,
+    startCanvasItemDrag,selectCanvasItem,bringCanvasItemToFront,rotateCanvasItem,deleteCanvasItem,
     reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent,
     toggleBlockUser,
     addStoryPrompt,openStoryViewer,closeStoryViewer,storyViewerAdvance,deleteCurrentStory,
