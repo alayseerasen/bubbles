@@ -4599,3 +4599,228 @@ html::after{
 [data-theme="dark"] .room-message.mine .room-message-bubble{background:linear-gradient(135deg,rgba(24,78,95,.9),rgba(31,88,63,.8))}
 [data-theme="dark"] .room-composer{background:rgba(20,32,39,.88);border-color:rgba(84,130,142,.45)}
 [data-theme="dark"] .room-composer input{background:rgba(21,33,40,.95);color:#e8f9ff;border-color:#355966}
+
+/* ============================================================
+   CANVAS ROOMS — personal decorable "blank canvas" self-expression
+   space, replacing the old group-chat rooms above (whose CSS is left
+   in place, unused, rather than ripped out).
+   ============================================================ */
+
+.rooms-topbar{
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;
+    gap:10px;
+    flex-wrap:wrap;
+    margin-bottom:10px;
+}
+
+.room-description{
+    margin:2px 0 0;
+    color:var(--muted);
+    font-size:.92rem;
+}
+
+.canvas-toolbar{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+    margin-bottom:10px;
+}
+
+.canvas-upload-btn{
+    display:inline-flex;
+    align-items:center;
+    cursor:pointer;
+}
+
+.canvas-bg-picker{
+    display:flex;
+    gap:8px;
+    margin-bottom:14px;
+}
+
+.canvas-bg-swatch{
+    width:32px;
+    height:32px;
+    border-radius:50%;
+    border:2px solid rgba(255,255,255,.8);
+    box-shadow:0 2px 6px rgba(20,90,130,.2);
+    cursor:pointer;
+    padding:0;
+}
+
+.canvas-bg-swatch.active{
+    border-color:#168fd0;
+    box-shadow:0 0 0 3px rgba(79,201,245,.35);
+}
+
+.canvas-stage{
+    position:relative;
+    width:100%;
+    aspect-ratio:3/4;
+    border-radius:26px;
+    border:2px solid rgba(255,255,255,.8);
+    box-shadow:0 12px 30px rgba(20,90,130,.18), inset 0 0 40px rgba(255,255,255,.25);
+    overflow:hidden;
+    touch-action:none;
+}
+
+.canvas-empty{
+    position:absolute;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+    padding:30px;
+    color:rgba(20,60,80,.55);
+    font-weight:700;
+    font-size:.95rem;
+}
+
+.canvas-item{
+    position:absolute;
+    touch-action:none;
+    user-select:none;
+    cursor:grab;
+    max-width:46%;
+}
+
+.canvas-item-selected{
+    filter:drop-shadow(0 0 0 transparent);
+}
+
+.canvas-item-selected > *:first-child{
+    outline:2px dashed rgba(22,143,208,.7);
+    outline-offset:4px;
+    border-radius:12px;
+}
+
+.canvas-item-text{
+    font-weight:800;
+    font-size:1.15rem;
+    padding:8px 14px;
+    background:rgba(255,255,255,.85);
+    border-radius:14px;
+    box-shadow:0 6px 16px rgba(20,90,130,.2);
+    white-space:pre-wrap;
+    word-break:break-word;
+    text-align:center;
+}
+
+.canvas-item-photo{
+    padding:6px;
+    background:#fff;
+    border-radius:10px;
+    box-shadow:0 8px 18px rgba(20,90,130,.25);
+}
+
+.canvas-item-photo img{
+    display:block;
+    width:100%;
+    max-width:140px;
+    border-radius:6px;
+    object-fit:cover;
+}
+
+.canvas-item-doodle{
+    width:150px;
+    max-width:100%;
+    filter:drop-shadow(0 6px 10px rgba(20,90,130,.25));
+}
+
+.canvas-item-music{
+    width:56px;
+    height:56px;
+    border-radius:50%;
+    background:linear-gradient(135deg,#2b2b2b,#555);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:24px;
+    box-shadow:0 8px 18px rgba(20,90,130,.3);
+    cursor:pointer;
+}
+
+.canvas-item-toolbar{
+    position:absolute;
+    bottom:-38px;
+    left:50%;
+    transform:translateX(-50%);
+    display:flex;
+    gap:4px;
+    background:rgba(20,40,50,.85);
+    border-radius:999px;
+    padding:4px 6px;
+    white-space:nowrap;
+}
+
+.canvas-item-toolbar button{
+    background:none;
+    border:none;
+    color:#fff;
+    font-size:15px;
+    padding:4px 6px;
+    cursor:pointer;
+}
+
+/* Backgrounds referenced by JS (CANVAS_BACKGROUNDS) are applied inline
+   via style="background:...", so no per-theme classes are needed here. */
+
+/* GRAFFITI TOOL */
+
+.graffiti-canvas{
+    width:100%;
+    aspect-ratio:1/1;
+    border-radius:18px;
+    background:
+        linear-gradient(45deg,#eee 25%,transparent 25%),
+        linear-gradient(-45deg,#eee 25%,transparent 25%),
+        linear-gradient(45deg,transparent 75%,#eee 75%),
+        linear-gradient(-45deg,transparent 75%,#eee 75%);
+    background-size:20px 20px;
+    background-position:0 0,0 10px,10px -10px,-10px 0px;
+    border:2px solid #d5eef3;
+    touch-action:none;
+    margin-bottom:10px;
+}
+
+.graffiti-toolbar{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+    justify-content:center;
+    margin-bottom:10px;
+}
+
+.graffiti-swatch{
+    width:32px;
+    height:32px;
+    border-radius:50%;
+    border:2px solid rgba(0,0,0,.15);
+    cursor:pointer;
+    padding:0;
+}
+
+[data-theme="dark"] .canvas-stage{
+    border-color:rgba(84,130,142,.45);
+    box-shadow:0 12px 30px rgba(0,0,0,.35), inset 0 0 40px rgba(0,0,0,.15);
+}
+
+[data-theme="dark"] .canvas-empty{
+    color:rgba(200,230,240,.55);
+}
+
+[data-theme="dark"] .canvas-item-text{
+    background:rgba(24,38,46,.9);
+    color:#e8f9ff;
+}
+
+[data-theme="dark"] .canvas-item-photo{
+    background:#1c2a33;
+}
+
+[data-theme="dark"] .graffiti-canvas{
+    border-color:#355966;
+}
