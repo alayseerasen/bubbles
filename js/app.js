@@ -7067,6 +7067,20 @@ async function openCanvasRoom(userId) {
     canvasBackground = roomResult.data?.background || "sky";
     db.canvasItems = (itemsResult.data || []).map(rowToCanvasItem);
     renderRooms();
+    playRoomTheme();
+}
+
+// The "theme song" for a room is whichever music sticker the owner has
+// most recently brought to front (highest z-index) — with only one
+// track placed, which is the common case, that's simply the one they
+// added. Runs every time a room is freshly entered (see the
+// isFreshEntryToRooms guard in navigate()), same as walking into
+// someone's old Myspace profile and their song starts playing.
+function playRoomTheme() {
+    const musicItems = db.canvasItems.filter(it => it.type === "music" && it.content);
+    if (!musicItems.length) return;
+    const theme = musicItems.reduce((a, b) => (b.zIndex > a.zIndex ? b : a));
+    playMusic(theme.content);
 }
 
 function isOwnCanvas() {
@@ -7258,9 +7272,17 @@ function startCanvasItemDrag(event, itemId) {
     const stage = document.getElementById("canvasStage");
     const el = document.querySelector(`[data-canvas-item-id="${itemId}"]`);
     if (!stage || !el) return;
-    selectCanvasItem(itemId);
-    const rect = stage.getBoundingClientRect();
-    canvasDragState = { itemId, stageRect: rect, el };
+    // Deliberately NOT calling selectCanvasItem() here — it triggers a
+    // full renderRooms() (rebuilds the whole canvas DOM), which would
+    // instantly detach the very `stage`/`el` nodes just captured above,
+    // before a single pointermove could ever reach them. That was the
+    // actual bug: dragging silently did nothing because the listeners
+    // below were being attached to elements already ripped out of the
+    // document. Selection (if this turns out to be a tap, not a drag)
+    // is handled once in onCanvasItemDragEnd instead, after we're done
+    // touching the DOM ourselves.
+    const stageRect = stage.getBoundingClientRect();
+    canvasDragState = { itemId, el, stageRect, startX: event.clientX, startY: event.clientY, moved: false };
     el.setPointerCapture?.(event.pointerId);
     el.addEventListener("pointermove", onCanvasItemDragMove);
     el.addEventListener("pointerup", onCanvasItemDragEnd, { once: true });
@@ -7268,7 +7290,8 @@ function startCanvasItemDrag(event, itemId) {
 
 function onCanvasItemDragMove(event) {
     if (!canvasDragState) return;
-    const { stageRect, el, itemId } = canvasDragState;
+    const { stageRect, el, itemId, startX, startY } = canvasDragState;
+    if (Math.abs(event.clientX - startX) > 3 || Math.abs(event.clientY - startY) > 3) canvasDragState.moved = true;
     const item = db.canvasItems.find(it => it.id === itemId);
     if (!item) return;
     let x = ((event.clientX - stageRect.left) / stageRect.width) * 100;
@@ -7283,9 +7306,17 @@ function onCanvasItemDragMove(event) {
 
 async function onCanvasItemDragEnd(event) {
     if (!canvasDragState) return;
-    const { el, itemId } = canvasDragState;
+    const { el, itemId, moved } = canvasDragState;
     el.removeEventListener("pointermove", onCanvasItemDragMove);
     canvasDragState = null;
+
+    // No real movement — treat it as a plain tap: select the item to
+    // show its little toolbar, same as before, just now the ONLY place
+    // that happens (there used to also be a separate onclick on the
+    // element itself, which combined with this could select-then-
+    // immediately-deselect on every drag release).
+    if (!moved) { selectCanvasItem(itemId); return; }
+
     const item = db.canvasItems.find(it => it.id === itemId);
     if (!item) return;
     const { error } = await sb.from("canvas_items").update({ x: item.x, y: item.y }).eq("id", itemId);
@@ -7350,7 +7381,7 @@ function renderCanvasItem(item) {
     }
 
     return `
-        <div class="canvas-item ${selected ? "canvas-item-selected" : ""}" data-canvas-item-id="${item.id}" style="${baseStyle}" ${dragHandlers} ${owner ? `onclick="selectCanvasItem('${item.id}')"` : ""}>
+        <div class="canvas-item ${selected ? "canvas-item-selected" : ""}" data-canvas-item-id="${item.id}" style="${baseStyle}" ${dragHandlers}>
             ${inner}
             ${
                 owner && selected
