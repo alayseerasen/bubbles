@@ -758,6 +758,15 @@ let db = {
 let currentUserId = null;
 let currentPage = "feed";
 let selectedProfileId = null;
+// Starts expanded so landing directly on one of the tucked-away pages
+// (Поиск/Комната/Питомец/Bubbles+/Настройки) — e.g. via a deep link or
+// a button elsewhere in the app — doesn't hide its own nav highlight
+// behind a collapsed "Ещё" toggle.
+let sidebarMoreExpanded = ["search","rooms","pet","premium","edit"].includes(currentPage);
+function toggleSidebarMore(){
+    sidebarMoreExpanded = !sidebarMoreExpanded;
+    renderApp();
+}
 let profileMusicExpanded = false;
 let profileFriendsExpanded = false;
 let profileAchievementsExpanded = false;
@@ -1726,27 +1735,11 @@ function renderApp(){
 
                 <button
                     class="nav-btn"
-                    data-page="search"
-                    onclick="navigate('search')"
-                >
-                    🔎 Поиск
-                </button>
-
-                <button
-                    class="nav-btn"
                     data-page="messages"
                     onclick="navigate('messages')"
                 >
                     💬 Сообщения
                     <span id="messagesUnreadBadge" class="nav-badge hidden"></span>
-                </button>
-
-                <button
-                    class="nav-btn"
-                    data-page="rooms"
-                    onclick="navigate('rooms')"
-                >
-                    🎨 Комната
                 </button>
 
                 <button
@@ -1757,45 +1750,65 @@ function renderApp(){
                     🎵 Музыка
                 </button>
 
+                <!--
+                    The less-frequently-used pages fold under here instead
+                    of sitting alongside the 5 daily-driver ones above —
+                    same "5 primary + everything else tucked away" idea as
+                    the mobile bottom-nav's "Ещё" sheet, just as an inline
+                    accordion here since desktop has room to expand in
+                    place rather than needing a whole separate sheet.
+                    sidebarMoreExpanded starts true when you're already ON
+                    one of these pages, so the active tab is never hidden
+                    behind a collapsed toggle.
+                -->
                 <button
-                    class="nav-btn"
-                    data-page="pet"
-                    onclick="navigate('pet')"
+                    class="nav-btn sidebar-more-toggle"
+                    onclick="toggleSidebarMore()"
                 >
-                    🐣 Питомец
-                    <span id="petNeedsAttentionBadge" class="nav-badge hidden"></span>
+                    ${sidebarMoreExpanded ? "▾" : "▸"} Ещё
                 </button>
 
-                <button
-                    class="nav-btn"
-                    data-page="premium"
-                    onclick="navigate('premium')"
-                >
-                    💎 Bubbles+
-                </button>
-
-                <button
-                    class="nav-btn"
-                    data-page="edit"
-                    onclick="navigate('edit')"
-                >
-                    ⚙️ Настройки
-                </button>
-
-                <div class="back-button">
+                <div class="sidebar-more ${sidebarMoreExpanded ? "" : "hidden"}">
 
                     <button
                         class="nav-btn"
-                        onclick="location.href='https://alayseerasen.github.io/aeroworld/bubbling.html'"
+                        data-page="search"
+                        onclick="navigate('search')"
                     >
-                        🫧 Aero World
+                        🔎 Поиск
                     </button>
 
                     <button
                         class="nav-btn"
-                        onclick="logout()"
+                        data-page="rooms"
+                        onclick="navigate('rooms')"
                     >
-                        🚪 Выйти
+                        🎨 Комната
+                    </button>
+
+                    <button
+                        class="nav-btn"
+                        data-page="pet"
+                        onclick="navigate('pet')"
+                    >
+                        🐣 Питомец
+                        <span id="petNeedsAttentionBadge" class="nav-badge hidden"></span>
+                    </button>
+
+                    <button
+                        class="nav-btn"
+                        data-page="premium"
+                        onclick="navigate('premium')"
+                    >
+                        💎 Bubbles+
+                    </button>
+
+                    <button
+                        class="nav-btn"
+                        data-page="edit"
+                        onclick="navigate('edit')"
+                    >
+                        ⚙️ Настройки
                     </button>
 
                 </div>
@@ -1886,14 +1899,6 @@ function renderApp(){
                     ⚙️ Настройки
                 </button>
 
-                <button class="more-sheet-item" onclick="closeMoreSheet(); location.href='https://alayseerasen.github.io/aeroworld/bubbling.html'">
-                    🫧 Aero World
-                </button>
-
-                <button class="more-sheet-item more-sheet-danger" onclick="closeMoreSheet(); logout()">
-                    🚪 Выйти
-                </button>
-
             </div>
         </div>
 
@@ -1929,6 +1934,19 @@ function navigate(page, id = null){
     closeStoryViewer(); // it's a full-screen modal appended to <body>, outside the normal page — don't leave it floating over the newly navigated-to page
     closeMoreSheet();
     stopCallSettingsPreview(); // release any mic/camera test started from the Settings page before leaving it
+
+    // Keeps the desktop sidebar's collapsed "Ещё" section from hiding
+    // its own active tab when one of its pages is reached some other
+    // way than clicking it there directly — e.g. the "🎨 Комната"
+    // button on someone's profile. navigate() only ever rebuilds #page,
+    // not the sidebar itself, so the state flag alone wouldn't be
+    // reflected on screen without also touching the DOM directly here.
+    if (["search","rooms","pet","premium","edit"].includes(page) && !sidebarMoreExpanded) {
+        sidebarMoreExpanded = true;
+        document.querySelector(".sidebar-more")?.classList.remove("hidden");
+        const toggle = document.querySelector(".sidebar-more-toggle");
+        if (toggle) toggle.textContent = "▾ Ещё";
+    }
 
     document.querySelectorAll("[data-page]").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.page === page);
@@ -3687,6 +3705,24 @@ async function renderEditProfile(){
                 💾 Сохранить изменения
             </button>
 
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+            <strong>Аккаунт</strong>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+                <button
+                    class="secondary"
+                    onclick="location.href='https://alayseerasen.github.io/aeroworld/bubbling.html'"
+                >
+                    🫧 Aero World
+                </button>
+                <button
+                    class="secondary"
+                    onclick="logout()"
+                >
+                    🚪 Выйти
+                </button>
+            </div>
         </div>
 
     `;
@@ -8176,6 +8212,7 @@ Object.assign(window,{
     toggleProfileMusicExpanded,toggleProfileFriendsExpanded,toggleProfileAchievementsExpanded,
     setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,backfillAchievementsForAllUsers,togglePinPost,
     toggleMoreSheet,openMoreSheet,closeMoreSheet,
+    toggleSidebarMore,
     loadMoreFeedPosts,
     loadEarlierMessages,
     openCanvasRoom,setCanvasBackground,addCanvasText,addCanvasImage,openCanvasMusicPicker,toggleCanvasItemMusic,
