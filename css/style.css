@@ -4279,6 +4279,15 @@ html::after{
     color:var(--text);
 }
 
+/* Used all over (settings pages, captions, timestamps) but never
+   actually had a rule of its own — meaning it just inherited whatever
+   color happened to cascade down, with no guaranteed contrast against
+   either theme's background. This is what made text like the call
+   settings' explainer paragraphs unreadable on dark mode. */
+.muted{
+    color:var(--muted);
+}
+
 .call-settings-toggles{
     display:flex;
     flex-direction:column;
@@ -4286,6 +4295,33 @@ html::after{
     margin-top:10px;
     font-size:.9rem;
     color:var(--text);
+}
+
+.call-settings-boost-toggle{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-top:12px;
+    font-weight:700;
+    font-size:.95rem;
+    color:var(--text);
+}
+
+.call-settings-advanced{
+    margin-top:10px;
+}
+
+.call-settings-advanced summary{
+    cursor:pointer;
+    font-weight:700;
+    font-size:.85rem;
+    color:var(--muted);
+    padding:4px 0;
+}
+
+.call-settings-advanced[open] summary{
+    color:var(--text);
+    margin-bottom:4px;
 }
 
 .call-settings-test-row{
@@ -4582,6 +4618,7 @@ html::after{
 .profile-wall { margin-top: 8px; }
 .profile-wall-title-row { display:flex; align-items:center; gap:10px; }
 .wall-count { color:var(--muted); font-size:13px; }
+.wall-subtitle { color:var(--muted); font-size:12.5px; margin:0 0 12px; }
 .wall-composer { margin-bottom:16px; }
 .wall-composer-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
 .wall-composer-head small { display:block; color:var(--muted); margin-top:2px; }
