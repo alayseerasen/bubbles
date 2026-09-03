@@ -789,15 +789,31 @@ function callSettingsModalHtml(mics, cams, speakers) {
     `;
 }
 
-// Shared by the in-call settings modal and the standalone "📞 Звонки" card
-// on the main Settings page, so both stay in sync and there's one place
-// that defines what a device/quality/audio-processing picker looks like.
-// idPrefix keeps element ids from colliding if both were ever on screen
-// at once; onChangeCall is the function name to invoke on every change.
-function callSettingsFieldsHtml(mics, cams, speakers, idPrefix, onChangeCall) {
+// Shared by the in-call settings modal and the standalone "📞 Звонки"
+// card on the main Settings page, so both stay in sync and there's one
+// place that defines what a device/quality/audio-processing picker
+// looks like. idPrefix keeps element ids from colliding if both were
+// ever on screen at once; onChangeCall is the function name to invoke
+// on every change. `compact` collapses the four individual audio
+// checkboxes behind one "Улучшить качество" master toggle + a
+// "Расширенные настройки" disclosure — used on the standalone Settings
+// page, where four separate checkboxes (echo/noise/AGC/advanced) is a
+// lot to make sense of on a casual visit. The in-call modal keeps them
+// all visible directly (compact=false), since mid-call troubleshooting
+// benefits from getting straight to the specific knob that's wrong.
+function callSettingsFieldsHtml(mics, cams, speakers, idPrefix, onChangeCall, compact = false) {
     const opt = (list, selected, fallbackLabel) => list.map((d, i) =>
         `<option value="${d.deviceId}" ${d.deviceId === selected ? "selected" : ""}>${escapeHtml(d.label || `${fallbackLabel} ${i + 1}`)}</option>`
     ).join("");
+
+    const allBoosted = callSettings.echoCancellation && callSettings.noiseSuppression && callSettings.autoGainControl && callSettings.advancedNoiseReduction;
+
+    const toggles = `
+        <label><input type="checkbox" id="${idPrefix}Echo" ${callSettings.echoCancellation ? "checked" : ""} onchange="${onChangeCall}"> Подавление эха</label>
+        <label><input type="checkbox" id="${idPrefix}Noise" ${callSettings.noiseSuppression ? "checked" : ""} onchange="${onChangeCall}"> Шумоподавление (браузер)</label>
+        <label><input type="checkbox" id="${idPrefix}Agc" ${callSettings.autoGainControl ? "checked" : ""} onchange="${onChangeCall}"> Автогромкость микрофона</label>
+        <label><input type="checkbox" id="${idPrefix}Advanced" ${callSettings.advancedNoiseReduction ? "checked" : ""} onchange="${onChangeCall}"> Улучшенное шумоподавление (фильтр гула + компрессор)</label>
+    `;
 
     return `
         <label class="call-settings-label">Микрофон</label>
@@ -825,13 +841,32 @@ function callSettingsFieldsHtml(mics, cams, speakers, idPrefix, onChangeCall) {
             ${Object.entries(CALL_QUALITY_PRESETS).map(([key, p]) => `<option value="${key}" ${key === callSettings.quality ? "selected" : ""}>${p.label}</option>`).join("")}
         </select>
 
-        <div class="call-settings-toggles">
-            <label><input type="checkbox" id="${idPrefix}Echo" ${callSettings.echoCancellation ? "checked" : ""} onchange="${onChangeCall}"> Подавление эха</label>
-            <label><input type="checkbox" id="${idPrefix}Noise" ${callSettings.noiseSuppression ? "checked" : ""} onchange="${onChangeCall}"> Шумоподавление (браузер)</label>
-            <label><input type="checkbox" id="${idPrefix}Agc" ${callSettings.autoGainControl ? "checked" : ""} onchange="${onChangeCall}"> Автогромкость микрофона</label>
-            <label><input type="checkbox" id="${idPrefix}Advanced" ${callSettings.advancedNoiseReduction ? "checked" : ""} onchange="${onChangeCall}"> Улучшенное шумоподавление (фильтр гула + компрессор)</label>
-        </div>
+        ${
+            compact
+            ? `
+                <label class="call-settings-boost-toggle">
+                    <input type="checkbox" id="${idPrefix}Boost" ${allBoosted ? "checked" : ""} onchange="toggleCallQualityBoost('${idPrefix}', this.checked); ${onChangeCall}">
+                    🔊 Улучшить качество звука
+                </label>
+                <details class="call-settings-advanced">
+                    <summary>Расширенные настройки звука</summary>
+                    <div class="call-settings-toggles">${toggles}</div>
+                </details>
+              `
+            : `<div class="call-settings-toggles">${toggles}</div>`
+        }
     `;
+}
+
+// The single master toggle on the compact (Settings-page) view just
+// flips all four granular checkboxes together — if someone opens the
+// advanced disclosure afterward, it reflects the same on/off state
+// rather than looking out of sync with what the master toggle showed.
+function toggleCallQualityBoost(idPrefix, on) {
+    ["Echo", "Noise", "Agc", "Advanced"].forEach(suffix => {
+        const el = document.getElementById(`${idPrefix}${suffix}`);
+        if (el) el.checked = on;
+    });
 }
 
 function renderCallSettingsModalIfOpen() {
@@ -971,7 +1006,7 @@ async function renderCallSettingsPageSection() {
                 </button>
             ` : ""}
 
-            ${callSettingsFieldsHtml(mics, cams, speakers, "pageCallSetting", "applyCallSettingsFromPage()")}
+            ${callSettingsFieldsHtml(mics, cams, speakers, "pageCallSetting", "applyCallSettingsFromPage()", true)}
 
             <div class="call-settings-test-row">
                 <button id="pageCallMicTestBtn" class="secondary" type="button" onclick="testCallMic()">🎤 Проверить микрофон</button>

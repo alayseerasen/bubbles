@@ -525,6 +525,87 @@ function submitCreatePet() {
     createPet(speciesId, name);
 }
 
+// ------------------------------------------------------------
+// VISITING A FRIEND'S PET — the one social hook the pet had none of
+// before: you can look in on a friend's pet and top it up once a day
+// (see feed_friends_pet() in supabase.sql for the actual limit/boost,
+// enforced server-side, not just here). Doesn't touch db.pet (that's
+// always YOUR OWN pet, loaded once at login) — this fetches whichever
+// friend's pet on demand and renders a lightweight read-mostly view.
+// ------------------------------------------------------------
+async function visitFriendsPet(userId) {
+    if (userId === currentUserId) { navigate("pet"); return; }
+    currentPage = "pet";
+    selectedProfileId = userId;
+    document.querySelectorAll("[data-page]").forEach(btn => btn.classList.toggle("active", btn.dataset.page === "pet"));
+    const page = document.getElementById("page");
+    page.innerHTML = `<div class="empty">Заходим в гости…</div>`;
+    const { data, error } = await sb.from("pets").select("*").eq("owner_id", userId).maybeSingle();
+    if (error) { console.error(error); toast("Не удалось загрузить питомца."); navigate("profile", userId); return; }
+    if (!data) {
+        page.innerHTML = emptyState("🐣", "Питомца пока нет", "У этого человека ещё нет питомца.");
+        return;
+    }
+    renderFriendsPetView(userId, rowToPet(data));
+}
+
+function renderFriendsPetView(userId, pet) {
+    const owner = getUser(userId);
+    const page = document.getElementById("page");
+    const sick = isPetSick(pet);
+    page.innerHTML = `
+        <h2 class="section-title">🐣 Питомец ${escapeHtml(owner?.displayName || "")}</h2>
+        <div class="card pet-card">
+            <div class="pet-status-row">
+                <span class="pet-stage-badge">${petStageLabel(pet.stage)}</span>
+                ${pet.asleep ? `<span class="pet-flag asleep">💤 Спит</span>` : ""}
+                ${sick ? `<span class="pet-flag sick">🤒 Приболел</span>` : ""}
+            </div>
+            ${renderPetRoom(renderPetCreature(pet))}
+            <h3 class="pet-name">${escapeHtml(pet.name)}</h3>
+            <div id="friendsPetStats">
+                ${petStatBar("Сытость", "🍬", pet.hunger)}
+                ${petStatBar("Бодрость", "⚡", pet.energy)}
+                ${petStatBar("Радость", "💗", pet.happiness)}
+            </div>
+            <button id="feedFriendsPetBtn" class="primary full" onclick="feedFriendsPetAction('${userId}')">
+                😋 Покормить
+            </button>
+            <p class="pet-visit-note">Можно заходить раз в день — так у всех питомцев в сети есть шанс на гостей 🫧</p>
+        </div>
+        <button class="secondary" onclick="navigate('profile','${userId}')">← Назад в профиль</button>
+    `;
+}
+
+async function feedFriendsPetAction(userId) {
+    const btn = document.getElementById("feedFriendsPetBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Кормим…"; }
+    const { data, error } = await sb.rpc("feed_friends_pet", { target_owner_id: userId });
+    if (error) {
+        console.error(error);
+        toast(error.message?.includes("нет питомца") ? error.message : "Не удалось покормить питомца.");
+        if (btn) { btn.disabled = false; btn.textContent = "😋 Покормить"; }
+        return;
+    }
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) return;
+    const statsEl = document.getElementById("friendsPetStats");
+    if (statsEl) {
+        statsEl.innerHTML = `
+            ${petStatBar("Сытость", "🍬", row.hunger)}
+            ${petStatBar("Бодрость", "⚡", row.energy)}
+            ${petStatBar("Радость", "💗", row.happiness)}
+        `;
+    }
+    if (row.already_fed) {
+        toast("Уже заходил(а) сегодня — возвращайся завтра 🌙");
+        if (btn) { btn.disabled = true; btn.textContent = "Уже покормлен(а) сегодня"; }
+    } else {
+        toast("Спасибо от питомца! 🎉");
+        if (btn) { btn.disabled = true; btn.textContent = "Покормлен(а) на сегодня"; }
+    }
+}
+
 function renderPet() {
     const page = document.getElementById("page");
     if (!page) return;
@@ -2005,11 +2086,22 @@ function renderFeed(){
     // Pinned posts (max 2, enforced in the DB) always lead the feed,
     // most-recently-pinned first; everything else follows in normal
     // newest-first order.
-    const posts = [...db.posts].sort((a,b) => {
-        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-        if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
-        return b.createdAt - a.createdAt;
-    });
+    //
+    // Wall posts (someone writing directly on a FRIEND's wall, not
+    // their own) are deliberately excluded here — they used to show up
+    // in the main feed with no indication of what they actually were,
+    // indistinguishable from a normal post. The wall is its own place
+    // now (see the profile page); the main feed is just what people
+    // post about themselves. wallOwnerId defaults to authorId for
+    // regular/self posts (see rowToPost), so this check is simply
+    // "was this posted on someone else's wall".
+    const posts = [...db.posts]
+        .filter(p => (p.wallOwnerId || p.authorId) === p.authorId)
+        .sort((a,b) => {
+            if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+            if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
+            return b.createdAt - a.createdAt;
+        });
     const visible = posts.slice(0, feedVisibleCount);
     const hasMore = posts.length > visible.length;
 
@@ -3330,6 +3422,13 @@ function renderProfile(userId){
 
                                 <button
                                     class="secondary"
+                                    onclick="visitFriendsPet('${user.id}')"
+                                >
+                                    🐣 Питомец
+                                </button>
+
+                                <button
+                                    class="secondary"
                                     onclick="reportProfile('${user.id}')"
                                     title="Пожаловаться"
                                 >
@@ -3390,6 +3489,7 @@ function renderProfile(userId){
                 <h2 class="section-title">📝 Стена</h2>
                 <span class="wall-count">${wallPosts.length}</span>
             </div>
+            <p class="wall-subtitle">Видно только здесь, в профиле — в общую ленту не попадает.</p>
 
             ${
                 isBlockedByMe(user.id)
@@ -8247,6 +8347,7 @@ Object.assign(window,{
     loadMoreFeedPosts,
     loadEarlierMessages,
     openCanvasRoom,setCanvasBackground,addCanvasText,addCanvasImage,openCanvasMusicPicker,toggleCanvasItemMusic,
+    visitFriendsPet,feedFriendsPetAction,
     openGraffitiTool,clearGraffitiCanvas,saveGraffiti,
     startCanvasItemDrag,selectCanvasItem,bringCanvasItemToFront,rotateCanvasItem,deleteCanvasItem,
     reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent,
