@@ -1199,9 +1199,20 @@ create table if not exists public.pets (
 );
 alter table public.pets enable row level security;
 
+-- Visible to the owner always; visible to anyone else as long as
+-- neither has blocked the other — same openness as profiles/posts.
+-- Feeding/interacting with someone ELSE's pet does NOT go through the
+-- normal pets_update policy below (that stays owner-only) — it's only
+-- ever possible through feed_friends_pet(), a security-definer
+-- function further down that applies a small fixed boost and enforces
+-- a once-per-visitor-per-day limit, so a friend visiting can't be used
+-- to spam-max or otherwise mess with someone's pet stats.
 drop policy if exists pets_select on public.pets;
 create policy pets_select on public.pets for select
-using (auth.uid() = owner_id);
+using (
+    auth.uid() = owner_id
+    or (auth.uid() is not null and not public.is_blocked(owner_id, auth.uid()) and not public.is_blocked(auth.uid(), owner_id))
+);
 
 drop policy if exists pets_insert on public.pets;
 create policy pets_insert on public.pets for insert
@@ -1214,6 +1225,86 @@ using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
 drop policy if exists pets_delete on public.pets;
 create policy pets_delete on public.pets for delete
 using (auth.uid() = owner_id);
+
+-- One row per (visitor, pet owner, day) — the once-a-day limit for
+-- feed_friends_pet() below is enforced by the unique index, not just
+-- app-side logic, so it holds even against someone calling the RPC
+-- directly instead of through the UI.
+create table if not exists public.pet_visits (
+    id text primary key,
+    visitor_id uuid not null references public.profiles(id) on delete cascade,
+    pet_owner_id uuid not null references public.profiles(id) on delete cascade,
+    visit_date date not null default current_date,
+    created_at timestamptz not null default now()
+);
+create unique index if not exists pet_visits_unique on public.pet_visits(visitor_id, pet_owner_id, visit_date);
+alter table public.pet_visits enable row level security;
+drop policy if exists pet_visits_select on public.pet_visits;
+create policy pet_visits_select on public.pet_visits for select
+using (auth.uid() = visitor_id or auth.uid() = pet_owner_id);
+-- Deliberately no insert policy for pet_visits — rows are only ever
+-- written by feed_friends_pet() itself (security definer, bypasses
+-- RLS), never directly by a client.
+
+-- The actual "visit a friend and feed their pet" action. A small,
+-- fixed, capped boost — not a way to fully raise someone else's pet,
+-- just a friendly top-up, once per visitor per pet per day.
+create or replace function public.feed_friends_pet(target_owner_id uuid)
+returns table(hunger real, happiness real, energy real, already_fed boolean)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    v_already boolean;
+    v_hunger real;
+    v_happiness real;
+    v_energy real;
+begin
+    if target_owner_id = auth.uid() then
+        raise exception 'Это твой собственный питомец — покорми его как обычно.';
+    end if;
+    if public.is_banned() then
+        raise exception 'Аккаунт заблокирован.';
+    end if;
+    if public.is_blocked(target_owner_id, auth.uid()) or public.is_blocked(auth.uid(), target_owner_id) then
+        raise exception 'Недоступно.';
+    end if;
+
+    select exists(
+        select 1 from public.pet_visits
+        where visitor_id = auth.uid() and pet_owner_id = target_owner_id and visit_date = current_date
+    ) into v_already;
+
+    if v_already then
+        select p.hunger, p.happiness, p.energy into v_hunger, v_happiness, v_energy
+        from public.pets p where p.owner_id = target_owner_id;
+        if not found then
+            raise exception 'У этого пользователя ещё нет питомца.';
+        end if;
+        return query select v_hunger, v_happiness, v_energy, true;
+        return;
+    end if;
+
+    update public.pets
+    set hunger = least(100, hunger + 15),
+        happiness = least(100, happiness + 15),
+        energy = least(100, energy + 5)
+    where owner_id = target_owner_id
+    returning pets.hunger, pets.happiness, pets.energy into v_hunger, v_happiness, v_energy;
+
+    if not found then
+        raise exception 'У этого пользователя ещё нет питомца.';
+    end if;
+
+    insert into public.pet_visits(id, visitor_id, pet_owner_id)
+    values (gen_random_uuid()::text, auth.uid(), target_owner_id);
+
+    return query select v_hunger, v_happiness, v_energy, false;
+end;
+$$;
+
+grant execute on function public.feed_friends_pet(uuid) to authenticated;
 
 -- ------------------------------------------------------------
 -- STORAGE: public bucket for MP3 + covers
