@@ -22,7 +22,7 @@
 html,body{
     margin:0;
     min-height:100%;
-    font-family:Arial,Helvetica,sans-serif;
+    font-family:'Nunito',Arial,Helvetica,sans-serif;
     color:var(--text);
     /* Stops scrolling inside the app from chaining into the browser's
        own pull-to-refresh / back-swipe gesture once you hit the top or
@@ -125,9 +125,10 @@ a.nav-btn:active{
 
 .logo{
     text-align:center;
+    font-family:'Fredoka',sans-serif;
     font-size:54px;
-    font-weight:1000;
-    letter-spacing:-4px;
+    font-weight:700;
+    letter-spacing:-2px;
     color:#fff;
     text-shadow:
         0 3px 0 #34a9dc,
@@ -605,10 +606,30 @@ select:focus{
     min-width:0;
 }
 
+@keyframes pageFadeIn{
+    from{ opacity:0; transform:translateY(6px); }
+    to{ opacity:1; transform:translateY(0); }
+}
+
+.content.page-transition{
+    animation:pageFadeIn .22s ease;
+}
+
+@media(prefers-reduced-motion: reduce){
+    .content.page-transition{ animation:none; }
+}
+
 .section-title{
     margin:4px 0 16px;
+    font-family:'Fredoka',sans-serif;
     font-size:30px;
-    letter-spacing:-1px;
+    font-weight:600;
+    letter-spacing:-.5px;
+}
+
+h1,h2,h3{
+    font-family:'Fredoka',sans-serif;
+    font-weight:600;
 }
 
 /* CARDS */
@@ -4884,4 +4905,31 @@ html::after{
 
 [data-theme="dark"] .graffiti-canvas{
     border-color:#355966;
+}
+
+/* ============================================================
+   SKELETON LOADING — shimmering placeholders instead of a frozen/blank
+   screen during a network wait. Bubble-shaped highlight sweep to match
+   the rest of the aesthetic rather than a generic grey bar.
+   ============================================================ */
+
+@keyframes skeletonSweep{
+    0%{ background-position:-200% 0; }
+    100%{ background-position:200% 0; }
+}
+
+.skeleton{
+    background:linear-gradient(90deg,rgba(255,255,255,.35) 25%,rgba(255,255,255,.75) 50%,rgba(255,255,255,.35) 75%);
+    background-size:200% 100%;
+    animation:skeletonSweep 1.4s ease-in-out infinite;
+    border-radius:16px;
+}
+
+@media(prefers-reduced-motion: reduce){
+    .skeleton{ animation:none; opacity:.6; }
+}
+
+[data-theme="dark"] .skeleton{
+    background:linear-gradient(90deg,rgba(255,255,255,.05) 25%,rgba(255,255,255,.14) 50%,rgba(255,255,255,.05) 75%);
+    background-size:200% 100%;
 }
