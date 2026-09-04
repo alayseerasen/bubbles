@@ -654,6 +654,7 @@ async function recomputeAchievements() {
     const newlyUnlocked = [...newSet].filter(id => !me.unlockedAchievements.includes(id));
     if (!newlyUnlocked.length) return;
     await persistAchievements(me, [...newSet]);
+    haptic("achievement");
     newlyUnlocked.forEach(id => {
         const a = ACHIEVEMENTS.find(x => x.id === id);
         if (a) toast(`🏆 Новое достижение: ${a.icon} ${a.title}!`, 5000);
@@ -668,6 +669,7 @@ async function grantAchievement(userId, achievementId) {
     if (!me || me.unlockedAchievements.includes(achievementId)) return;
     const newList = [...me.unlockedAchievements, achievementId];
     await persistAchievements(me, newList);
+    haptic("achievement");
     const a = ACHIEVEMENTS.find(x => x.id === achievementId);
     if (a) toast(`🏆 Новое достижение: ${a.icon} ${a.title}!`, 5000);
 }
@@ -1284,6 +1286,18 @@ function timeAgo(timestamp) {
         return days + " д.";
     return new Date(timestamp)
         .toLocaleDateString("ru-RU");
+}
+
+// Short vibration on satisfying/confirming moments (like, send,
+// achievement unlock) — makes the app feel more like a native one on
+// phones that support it. Silently does nothing everywhere else
+// (desktop browsers, iOS Safari — neither implements the Vibration
+// API), so this is always safe to call without a feature check at the
+// call site. "tap"/"success"/"achievement" are just named intensities.
+function haptic(kind = "tap") {
+    if (!navigator.vibrate) return;
+    const patterns = { tap: 10, success: [12, 30, 12], achievement: [15, 40, 15, 40, 25] };
+    navigator.vibrate(patterns[kind] ?? patterns.tap);
 }
 
 function toast(text, duration = 3000) {
@@ -2046,8 +2060,13 @@ function navigate(page, id = null){
     // already sitting in a room (yours or a visited one) shouldn't
     // silently refetch and potentially flicker mid-edit. openCanvasRoom
     // renders itself once its fetch resolves, so the switch below just
-    // skips rendering rooms synchronously in that one case.
-    if (isFreshEntryToRooms) openCanvasRoom(currentUserId);
+    // skips rendering rooms synchronously in that one case. A skeleton
+    // goes up immediately so the screen doesn't just sit frozen on
+    // whatever page was open before while that fetch is in flight.
+    if (isFreshEntryToRooms) {
+        renderCanvasRoomSkeleton();
+        openCanvasRoom(currentUserId);
+    }
 
     switch(page){
         case "feed": renderFeed(); break;
@@ -2070,6 +2089,18 @@ function navigate(page, id = null){
 
     stopWatchingChatPartnerPresence();
     if (page === "messages" && selectedChatId) watchChatPartnerPresence(selectedChatId);
+
+    // Small fade+rise on every page switch — ties tab changes together
+    // visually instead of content just snapping into place. Retriggered
+    // by removing the class, forcing a reflow, then re-adding it, since
+    // a CSS animation won't restart on its own just because #page's
+    // innerHTML changed underneath it.
+    const pageEl = document.getElementById("page");
+    if (pageEl) {
+        pageEl.classList.remove("page-transition");
+        void pageEl.offsetWidth;
+        pageEl.classList.add("page-transition");
+    }
 
     updateNavBadges();
 }
@@ -2606,6 +2637,7 @@ async function createPost(targetWallId = null) {
         selectedComposerMusicId = null;
         wallTargetUserId = null;
         toast(targetWallId && targetWallId !== currentUserId ? "Пост опубликован на стене!" : "Пост опубликован!");
+        haptic("success");
         recomputeAchievements();
         if (targetWallId) renderProfile(targetWallId);
         else renderFeed();
@@ -2697,6 +2729,7 @@ async function toggleLike(postId) {
         ? post.likes.filter(id => id !== currentUserId)
         : [...post.likes, currentUserId];
     refreshPostInPlace(postId);
+    if (!wasLiked) haptic("tap");
 
     // Each person only ever inserts/deletes their OWN row here, which RLS
     // can safely allow on any post — unlike updating the whole post row,
@@ -5409,7 +5442,7 @@ function joinTypingChannel(partnerId) {
         .on("broadcast", { event: "stop_typing" }, (payload) => {
             if (payload.payload?.from === partnerId) hideTypingIndicator();
         })
-        .subscribe();
+        .subscribe(logRealtimeStatus("typing:" + partnerId));
 }
 
 function showTypingIndicator() {
@@ -5955,6 +5988,7 @@ async function sendMessage(event, userId) {
     const message = { id: uid("message"), from: currentUserId, to: userId, text, image, replyToId, createdAt: Date.now(), readAt: null, reactions: [] };
     db.messages.push(message);
     appendMessageToChat(message, userId);
+    haptic("tap");
 
     const row = await buildEncryptedMessageRow(message.id, userId, text, image, new Date(message.createdAt).toISOString(), replyToId);
 
@@ -7154,6 +7188,23 @@ const CANVAS_BACKGROUNDS = {
 // Everyone has exactly ONE room — themselves — so "opening a room" just
 // means "load this person's canvas_rooms row + canvas_items". Nothing
 // to join/leave/create the way the old group-chat rooms worked.
+// Shown the instant someone taps into the room tab, before the
+// fetch in openCanvasRoom() resolves — a rough silhouette of the real
+// layout (toolbar + canvas) rather than a spinner, so it reads as
+// "this is about to become the room" rather than a generic loading
+// screen.
+function renderCanvasRoomSkeleton() {
+    const page = document.getElementById("page");
+    if (!page) return;
+    page.innerHTML = `
+        <h1 class="section-title">🎨 Комната</h1>
+        <div class="canvas-toolbar">
+            ${Array.from({ length: 4 }).map(() => `<div class="skeleton" style="width:90px;height:38px;"></div>`).join("")}
+        </div>
+        <div class="skeleton" style="width:100%;aspect-ratio:3/4;border-radius:26px;"></div>
+    `;
+}
+
 async function openCanvasRoom(userId) {
     selectedCanvasUserId = userId;
     canvasSelectedItemId = null;
@@ -8019,7 +8070,7 @@ function setupMessagesRealtime() {
             message.reactions = (message.reactions || []).filter(r => r.userId !== row.user_id);
             refreshMessageBubbleInPlace(row.message_id);
         })
-        .subscribe();
+        .subscribe(logRealtimeStatus("messages"));
 }
 
 function applyRemoteReaction(payload) {
@@ -8051,7 +8102,7 @@ function setupNotificationsRealtime() {
             const panel = document.getElementById("notifPanel");
             if (panel && !panel.classList.contains("hidden")) panel.innerHTML = renderNotificationsPanel();
         })
-        .subscribe();
+        .subscribe(logRealtimeStatus("notifications"));
 }
 
 function setupFriendRequestsRealtime() {
@@ -8073,7 +8124,7 @@ function setupFriendRequestsRealtime() {
             if (currentPage === "friends") renderFriends();
             if (currentPage === "profile") renderProfile(selectedProfileId || currentUserId);
         })
-        .subscribe();
+        .subscribe(logRealtimeStatus("friend-requests"));
 }
 
 function setupSocialRealtime() {
@@ -8129,7 +8180,7 @@ function setupSocialRealtime() {
             if (currentPage === "feed") renderFeed();
             else if (currentPage === "profile" && selectedProfileId && (post.wallOwnerId || post.authorId) === selectedProfileId) renderProfile(selectedProfileId);
         })
-        .subscribe();
+        .subscribe(logRealtimeStatus("social"));
 }
 
 function teardownRealtime() {
@@ -8168,6 +8219,24 @@ function teardownRealtime() {
    ------------------------------------------------------------ */
 
 let lastRealtimeReconnectAt = 0;
+
+// Every .subscribe() call below used to fire blind — if a channel
+// failed to actually connect (CHANNEL_ERROR, TIMED_OUT) or got closed
+// server-side, nothing in the app would ever know: messages/likes/etc
+// would just silently stop arriving live with zero indication of why,
+// until a full reload rebuilt everything from scratch. This doesn't
+// fix a connection problem by itself, but it turns an invisible
+// failure into a visible one — check the console if realtime seems
+// stuck again; it'll now say exactly which channel dropped and why,
+// instead of just going quiet.
+function logRealtimeStatus(label) {
+    return (status, err) => {
+        if (status === "SUBSCRIBED") { console.log(`✅ realtime: ${label}`); return; }
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+            console.error(`❌ realtime [${label}] ${status}`, err || "");
+        }
+    };
+}
 
 function reconnectRealtime({ force = false } = {}) {
     if (!currentUserId || !sb?.realtime) return;
