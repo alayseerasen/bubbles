@@ -63,6 +63,7 @@ let callState = {
     remoteUserId: null,
     remoteName: "",
     remoteAvatar: "",
+    inviteRowId: null,
     channel: null,
     pc: null,
     polite: false,
@@ -116,6 +117,7 @@ function handleIncomingInvite(payload) {
     callState.remoteUserId = payload.from;
     callState.remoteName = payload.name || "Кто-то";
     callState.remoteAvatar = payload.avatar || "";
+    callState.inviteRowId = payload.inviteRowId || null;
 
     playRingtone();
     renderIncomingCallModal();
@@ -157,10 +159,22 @@ async function startDirectCall(partnerId) {
 
     joinCallChannel(callId, partnerId);
 
+    // Reaches the callee even if their app isn't open to receive the
+    // broadcast below — this insert fires a push notification via a
+    // Database Webhook (see supabase/functions/send-push). Fire-and-forget:
+    // a call ringing successfully in front of them right now shouldn't be
+    // held up by this. inviteRowId rides along in the broadcast payload
+    // too, so the CALLEE'S side can also update this same row's status
+    // (accept/decline) — they never inserted it themselves.
+    const inviteRowId = uid("callinvite");
+    callState.inviteRowId = inviteRowId;
+    sb.from("call_invites").insert({ id: inviteRowId, call_id: callId, caller_id: currentUserId, callee_id: partnerId })
+        .then(({ error }) => { if (error) console.error("call_invites insert failed:", error); });
+
     sb.channel("call-ring-" + partnerId).send({
         type: "broadcast",
         event: "invite",
-        payload: { callId, from: currentUserId, name: me?.displayName || "Кто-то", avatar: me?.avatar || "" }
+        payload: { callId, from: currentUserId, name: me?.displayName || "Кто-то", avatar: me?.avatar || "", inviteRowId }
     });
 
     renderOutgoingCallModal();
@@ -168,14 +182,24 @@ async function startDirectCall(partnerId) {
     callState.ringTimeout = setTimeout(() => {
         if (callState.status === "calling") {
             sb.channel("call-ring-" + partnerId).send({ type: "broadcast", event: "cancel", payload: { callId } });
+            markCallInviteStatus("missed");
             endCallLocally("Абонент не отвечает.");
         }
     }, CALL_RING_TIMEOUT_MS);
 }
 
+// Best-effort — the call itself never depends on this succeeding, it's
+// just for the push webhook / a future missed-calls list.
+function markCallInviteStatus(status) {
+    if (!callState.inviteRowId) return;
+    sb.from("call_invites").update({ status, resolved_at: new Date().toISOString() }).eq("id", callState.inviteRowId)
+        .then(({ error }) => { if (error) console.error("call_invites update failed:", error); });
+}
+
 function cancelOutgoingCall() {
     if (callState.status !== "calling") return;
     sb.channel("call-ring-" + callState.remoteUserId).send({ type: "broadcast", event: "cancel", payload: { callId: callState.callId } });
+    markCallInviteStatus("cancelled");
     endCallLocally();
 }
 
@@ -201,6 +225,7 @@ async function acceptIncomingCall() {
     callState.localStream = localStream;
     callState.polite = currentUserId > callState.remoteUserId;
     if (callState.ringTimeout) { clearTimeout(callState.ringTimeout); callState.ringTimeout = null; }
+    markCallInviteStatus("answered");
 
     joinCallChannel(callState.callId, callState.remoteUserId);
 }
@@ -208,6 +233,7 @@ async function acceptIncomingCall() {
 function declineIncomingCall() {
     if (callState.status !== "ringing") return;
     sb.channel("call-ring-" + callState.remoteUserId).send({ type: "broadcast", event: "decline", payload: { callId: callState.callId } });
+    markCallInviteStatus("declined");
     stopRingtone();
     closeBubblesModal();
     endCallLocally();
@@ -284,13 +310,80 @@ function setupPeerConnection() {
     };
 
     let connectedSoundPlayed = false;
+    let iceRestartAttempted = false;
+    let reconnectFailTimeout = null;
+
     pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "connected" && !connectedSoundPlayed) {
-            connectedSoundPlayed = true;
-            playSound("callConnect");
+        if (pc.connectionState === "connected") {
+            if (!connectedSoundPlayed) { connectedSoundPlayed = true; playSound("callConnect"); }
+            // A successful (re)connect means whatever dropped just got
+            // fixed — clear the "give up" timer and the reconnecting
+            // banner, and let a future drop retry again from scratch.
+            iceRestartAttempted = false;
+            if (reconnectFailTimeout) { clearTimeout(reconnectFailTimeout); reconnectFailTimeout = null; }
+            hideReconnectingBanner();
         }
-        if (pc.connectionState === "failed") toast("Связь со собеседником прервалась.");
+
+        if (pc.connectionState === "disconnected") {
+            // "disconnected" is often just a brief network blip (wifi to
+            // cellular handoff, a moment of packet loss) that resolves
+            // itself back to "connected" within a second or two — show a
+            // subtle banner rather than treating it as a dropped call yet.
+            showReconnectingBanner();
+        }
+
+        if (pc.connectionState === "failed") {
+            // Previously this just showed a toast and left the call UI
+            // sitting there looking normal — audio/video dead, timer
+            // still running, no indication anything was wrong beyond a
+            // notification that had already scrolled away. Now: try an
+            // ICE restart once (renegotiates fresh candidates, recovers
+            // a real subset of drops — e.g. a network change mid-call —
+            // without needing a whole new call), and if THAT doesn't
+            // recover within a few seconds either, actually end the call
+            // instead of leaving a zombie session.
+            showReconnectingBanner();
+            if (!iceRestartAttempted && callState.status === "connected") {
+                iceRestartAttempted = true;
+                attemptIceRestart(pc);
+                reconnectFailTimeout = setTimeout(() => {
+                    if (pc.connectionState !== "connected") {
+                        endCallLocally("Не удалось восстановить связь — звонок завершён.");
+                    }
+                }, 8000);
+            } else if (callState.status === "connected") {
+                endCallLocally("Связь со собеседником прервалась.");
+            }
+        }
     };
+}
+
+// Only the offer side actually needs to (and is allowed to) restart
+// ICE — asks setupPeerConnection's existing negotiationneeded handler
+// to include iceRestart, prompting fresh candidate gathering without
+// tearing down the whole RTCPeerConnection or replaying the ring flow.
+async function attemptIceRestart(pc) {
+    try {
+        if (pc.restartIce) { pc.restartIce(); return; }
+        // Older browsers without restartIce(): fall back to manually
+        // creating a re-offer with iceRestart set.
+        const offer = await pc.createOffer({ iceRestart: true });
+        await pc.setLocalDescription(offer);
+        sendSignal({ type: "offer", sdp: pc.localDescription });
+    } catch (e) {
+        console.error("ICE restart failed:", e);
+    }
+}
+
+function showReconnectingBanner() {
+    const bar = document.getElementById("callBar");
+    if (bar && !bar.querySelector(".call-reconnecting-badge")) {
+        bar.insertAdjacentHTML("afterbegin", `<div class="call-reconnecting-badge">🔄 Восстанавливаем связь…</div>`);
+    }
+}
+
+function hideReconnectingBanner() {
+    document.querySelector(".call-reconnecting-badge")?.remove();
 }
 
 function sendSignal(data) {
@@ -352,7 +445,7 @@ function endCallLocally(toastMessage) {
 
     const wasStatus = callState.status;
     callState = {
-        status: "idle", callId: null, remoteUserId: null, remoteName: "", remoteAvatar: "",
+        status: "idle", callId: null, remoteUserId: null, remoteName: "", remoteAvatar: "", inviteRowId: null,
         channel: null, pc: null, polite: false, makingOffer: false, ignoreOffer: false,
         localStream: null, screenStream: null, micOn: true, camOn: false, screenOn: false,
         remoteVideoOn: false, remoteScreenOn: false, expanded: false, ringTimeout: null, stopRingtone: null
