@@ -4933,3 +4933,39 @@ html::after{
     background:linear-gradient(90deg,rgba(255,255,255,.05) 25%,rgba(255,255,255,.14) 50%,rgba(255,255,255,.05) 75%);
     background-size:200% 100%;
 }
+
+/* ============================================================
+   CALL RECONNECTING BANNER — shown inside the call bar when the peer
+   connection drops (network blip or an ICE-restart-in-progress
+   recovery attempt), so a stalled call reads as "hang on, fixing it"
+   instead of silently going dead with no explanation.
+   ============================================================ */
+
+.call-reconnecting-badge{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:6px;
+    font-size:12px;
+    font-weight:800;
+    color:#a06a00;
+    background:rgba(255,214,102,.35);
+    border-radius:999px;
+    padding:4px 12px;
+    margin-bottom:6px;
+    animation:callReconnectPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes callReconnectPulse{
+    0%,100%{ opacity:.75; }
+    50%{ opacity:1; }
+}
+
+@media(prefers-reduced-motion: reduce){
+    .call-reconnecting-badge{ animation:none; }
+}
+
+[data-theme="dark"] .call-reconnecting-badge{
+    color:#ffd166;
+    background:rgba(207,154,43,.22);
+}
