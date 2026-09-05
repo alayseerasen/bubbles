@@ -281,7 +281,7 @@ create table if not exists public.bubbles_notifications (
     id text primary key,
     user_id uuid not null references public.profiles(id) on delete cascade,
     actor_id uuid not null references public.profiles(id) on delete cascade,
-    type text not null check (type in ('friend_request','friend_accept','post_like','post_comment')),
+    type text not null check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed')),
     post_id text references public.posts(id) on delete cascade,
     comment_id text references public.comments(id) on delete cascade,
     created_at timestamptz not null default now(),
@@ -290,6 +290,18 @@ create table if not exists public.bubbles_notifications (
 );
 
 create index if not exists bubbles_notifications_user_id_idx on public.bubbles_notifications(user_id, created_at desc);
+
+-- The table already exists on a live database from before wall posts,
+-- comment likes/replies, and pet-feeding could trigger a notification —
+-- "create table if not exists" above is a no-op there, so the OLD,
+-- narrower check constraint would otherwise silently stick around and
+-- reject every new notification type with a constraint-violation error.
+-- Unlike the self-healing block above (which drops the whole table),
+-- this just swaps the constraint in place — notification rows are
+-- fine to keep, there's no shape mismatch to fix here.
+alter table public.bubbles_notifications drop constraint if exists bubbles_notifications_type_check;
+alter table public.bubbles_notifications add constraint bubbles_notifications_type_check
+    check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed'));
 
 -- ------------------------------------------------------------
 -- FRIEND REQUESTS (new — pending/accepted/declined handshake)
