@@ -46,10 +46,10 @@ Edge Functions сам, руками их задавать не нужно.)
 уже лежит в `js/push-config.js` в самом проекте, это нормально, он
 для того и публичный.
 
-## 4. Подключи два Database Webhook
+## 4. Подключи три Database Webhook
 
 Dashboard → **Database** → **Webhooks** → **Create a new hook**, и так
-дважды:
+трижды:
 
 **Хук №1 — уведомления (лайки/комменты/заявки в друзья):**
 - Table: `bubbles_notifications`
@@ -63,12 +63,18 @@ Dashboard → **Database** → **Webhooks** → **Create a new hook**, и так
 - Type: **Supabase Edge Functions**
 - Edge Function: `send-push`
 
+**Хук №3 — звонки:**
+- Table: `call_invites`
+- Events: `Insert`
+- Type: **Supabase Edge Functions**
+- Edge Function: `send-push`
+
 ## 5. Проверка
 
 Зайди в Bubbles с телефона, разреши уведомления, когда спросит
 (при первом входе после обновления). Попроси кого-то лайкнуть твой
-пост или написать сообщение, пока вкладка Bubbles закрыта или
-телефон заблокирован — должно прилететь системное уведомление.
+пост, написать сообщение или позвонить, пока вкладка Bubbles закрыта
+или телефон заблокирован — должно прилететь системное уведомление.
 
 Если не приходит — Dashboard → Edge Functions → send-push → **Logs**
 покажет, что пошло не так (чаще всего: забытый секрет или webhook не
@@ -96,9 +102,9 @@ PWA.
    одинаковыми — это самая частая причина. См. раздел про секреты выше.
 2. **Функция вообще задеплоена?** Dashboard → Edge Functions — там
    должна быть `send-push` со статусом Active.
-3. **Оба вебхука подключены и на правильные таблицы?** Dashboard →
-   Database → Webhooks — должно быть два хука: на `bubbles_notifications`
-   и на `messages`, оба Insert, оба указывают на `send-push`.
+3. **Все вебхуки подключены и на правильные таблицы?** Dashboard →
+   Database → Webhooks — должно быть три хука: на `bubbles_notifications`,
+   `messages` и `call_invites`, все Insert, все указывают на `send-push`.
 4. **Логи.** Dashboard → Edge Functions → send-push → Logs — попроси
    кого-то лайкнуть пост или написать сообщение и сразу смотри сюда.
    Пусто в логах = проблема в шаге 2 или 3 (функция не вызывается

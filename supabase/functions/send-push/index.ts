@@ -1,20 +1,23 @@
 // BUBBLES — send-push Edge Function
 // ------------------------------------------------------------
-// Triggered by two Supabase Database Webhooks:
+// Triggered by three Supabase Database Webhooks:
 //   1) INSERT on public.bubbles_notifications  (likes, comments, friend requests/accepts)
 //   2) INSERT on public.messages               (new chat message)
+//   3) INSERT on public.call_invites           (someone started a call)
 //
-// Both webhooks point at THIS SAME function. Supabase's webhook payload
+// All three webhooks point at THIS SAME function. Supabase's webhook payload
 // includes a "table" field, so this figures out which one fired and
 // builds an appropriate title/body, then pushes it to every device
 // (row in push_subscriptions) the recipient has registered.
 //
-// Deliberately does NOT decrypt message text to put in the push body —
-// messages are end-to-end encrypted and this function only has the
-// service role key, not anyone's private key, so it couldn't even if
-// it wanted to. The push just says "new message from X"; the actual
-// content only ever gets decrypted client-side. See README.md in this
-// folder for how to deploy this + wire up the two webhooks.
+// Deliberately does NOT decrypt message text to put in the push body,
+// on purpose, independent of whatever the current message-encryption
+// scheme is: a push notification is the wrong place to put message
+// content regardless (it can land on a lock screen, gets logged by
+// the push service in transit, etc). The push just says "new message
+// from X"; the actual content only ever gets decrypted client-side.
+// See README.md in this folder for how to deploy this + wire up the
+// two webhooks.
 
 import webpush from "npm:web-push@3.6.7";
 
@@ -42,7 +45,11 @@ const NOTIF_TEXT: Record<string, string> = {
     friend_request: "отправил(а) тебе заявку в друзья 🫂",
     friend_accept: "принял(а) твою заявку в друзья 🎉",
     post_like: "оценил(а) твой пост ❤️",
-    post_comment: "прокомментировал(а) твой пост 💬"
+    post_comment: "прокомментировал(а) твой пост 💬",
+    comment_reply: "ответил(а) на твой комментарий 💬",
+    comment_like: "оценил(а) твой комментарий ❤️",
+    wall_post: "оставил(а) запись на твоей стене 🧱",
+    pet_fed: "покормил(а) твоего питомца 🍬"
 };
 
 async function buildPushForNotification(row: any) {
@@ -58,6 +65,15 @@ async function buildPushForMessage(row: any) {
     return { userId: row.receiver_id, title: name, body: "Новое сообщение 💬", tag: `msg-${row.sender_id}` };
 }
 
+async function buildPushForCallInvite(row: any) {
+    const [caller] = await db(`profiles?id=eq.${row.caller_id}&select=display_name,username`);
+    const name = caller?.display_name || caller?.username || "Кто-то";
+    // tag is deliberately NOT per-call — a second call from the same
+    // person while the first push is still showing should replace it,
+    // not stack a pile of "звонок от Х" notifications.
+    return { userId: row.callee_id, title: "📞 Входящий звонок", body: `${name} звонит тебе в Bubbles`, tag: `call-${row.caller_id}` };
+}
+
 Deno.serve(async (req) => {
     try {
         const payload = await req.json();
@@ -68,6 +84,7 @@ Deno.serve(async (req) => {
         let push: { userId: string; title: string; body: string; tag: string } | null = null;
         if (table === "bubbles_notifications") push = await buildPushForNotification(row);
         else if (table === "messages") push = await buildPushForMessage(row);
+        else if (table === "call_invites") push = await buildPushForCallInvite(row);
         if (!push) return new Response("unhandled table", { status: 200 });
 
         const subs = await db(`push_subscriptions?user_id=eq.${push.userId}&select=id,endpoint,p256dh,auth`);
