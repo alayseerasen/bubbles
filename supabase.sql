@@ -533,6 +533,151 @@ grant execute on function public.is_admin() to authenticated;
 grant execute on function public.is_banned() to authenticated;
 
 -- ------------------------------------------------------------
+-- PRIVACY SETTINGS — self-service visibility controls.
+-- everyone: no restriction beyond the usual blocks. friends: only
+-- people you're already friends with (public.are_friends below).
+-- nobody: only you (used for online status / incoming messages /
+-- incoming friend requests, where "friends only" would still be too
+-- open for someone who wants to go fully quiet).
+-- ------------------------------------------------------------
+alter table public.profiles add column if not exists show_online_status boolean not null default true;
+alter table public.profiles add column if not exists wall_visibility text not null default 'everyone' check (wall_visibility in ('everyone','friends'));
+alter table public.profiles add column if not exists music_visibility text not null default 'everyone' check (music_visibility in ('everyone','friends'));
+alter table public.profiles add column if not exists who_can_message text not null default 'everyone' check (who_can_message in ('everyone','friends','nobody'));
+alter table public.profiles add column if not exists who_can_friend_request text not null default 'everyone' check (who_can_friend_request in ('everyone','friends','nobody'));
+
+create or replace function public.are_friends(a uuid, b uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+    select exists(
+        select 1 from public.friendships
+        where (user1 = a and user2 = b) or (user1 = b and user2 = a)
+    );
+$$;
+
+grant execute on function public.are_friends(uuid, uuid) to authenticated, anon;
+
+-- Can `sender` message `target`, given target's who_can_message setting?
+create or replace function public.can_message(target uuid, sender uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+    select case
+        when target = sender then true
+        else coalesce((
+            select
+                case p.who_can_message
+                    when 'nobody' then false
+                    when 'friends' then public.are_friends(target, sender)
+                    else true
+                end
+            from public.profiles p where p.id = target
+        ), true)
+    end;
+$$;
+
+grant execute on function public.can_message(uuid, uuid) to authenticated;
+
+-- Can `sender` send a friend request to `target`, given target's
+-- who_can_friend_request setting?
+create or replace function public.can_friend_request(target uuid, sender uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+    select coalesce((
+        select
+            case p.who_can_friend_request
+                when 'nobody' then false
+                when 'friends' then false -- нельзя запросить дружбу у тех, с кем ты уже не друг, если стоит "friends"
+                else true
+            end
+        from public.profiles p where p.id = target
+    ), true);
+$$;
+
+grant execute on function public.can_friend_request(uuid, uuid) to authenticated;
+
+-- Masked view of profiles for reading OTHER people's data — last_seen
+-- comes back null when the owner turned show_online_status off and
+-- you're not that owner. Use this (not the raw profiles table) for
+-- any query that reads other users' data; reads of your OWN row can
+-- keep using the base table since you always see your own true value.
+create or replace view public.profiles_public
+with (security_invoker = true)
+as
+select
+    p.*,
+    case
+        when p.show_online_status or auth.uid() = p.id then p.last_seen
+        else null
+    end as visible_last_seen
+from public.profiles p;
+
+grant select on public.profiles_public to authenticated, anon;
+
+-- ------------------------------------------------------------
+-- RATE LIMITING — soft caps against flooding/mass-spam. These reuse
+-- data already in each table (no extra logging table needed) and are
+-- generous enough that a real person chatting/posting normally never
+-- notices them. security definer so the count itself bypasses RLS
+-- (otherwise counting "my own rows" would be fine, but keeping these
+-- simple and consistent with the other helper functions above).
+-- ------------------------------------------------------------
+create or replace function public.under_message_rate_limit(sender uuid)
+returns boolean language sql security definer set search_path = public stable as $$
+    select count(*) < 20 from public.messages
+    where sender_id = sender and created_at > now() - interval '10 seconds';
+$$;
+grant execute on function public.under_message_rate_limit(uuid) to authenticated;
+
+create or replace function public.under_post_rate_limit(author uuid)
+returns boolean language sql security definer set search_path = public stable as $$
+    select count(*) < 5 from public.posts
+    where author_id = author and created_at > now() - interval '60 seconds';
+$$;
+grant execute on function public.under_post_rate_limit(uuid) to authenticated;
+
+create or replace function public.under_comment_rate_limit(author uuid)
+returns boolean language sql security definer set search_path = public stable as $$
+    select count(*) < 20 from public.comments
+    where author_id = author and created_at > now() - interval '60 seconds';
+$$;
+grant execute on function public.under_comment_rate_limit(uuid) to authenticated;
+
+create or replace function public.under_friend_request_rate_limit(sender uuid)
+returns boolean language sql security definer set search_path = public stable as $$
+    select count(*) < 20 from public.friend_requests
+    where from_user = sender and created_at > now() - interval '60 seconds';
+$$;
+grant execute on function public.under_friend_request_rate_limit(uuid) to authenticated;
+
+create or replace function public.under_like_rate_limit(who uuid)
+returns boolean language sql security definer set search_path = public stable as $$
+    select (
+        (select count(*) from public.post_likes where user_id = who and created_at > now() - interval '60 seconds')
+        + (select count(*) from public.comment_likes where user_id = who and created_at > now() - interval '60 seconds')
+    ) < 120;
+$$;
+grant execute on function public.under_like_rate_limit(uuid) to authenticated;
+
+create or replace function public.under_reaction_rate_limit(who uuid)
+returns boolean language sql security definer set search_path = public stable as $$
+    select count(*) < 120 from public.message_reactions
+    where user_id = who and created_at > now() - interval '60 seconds';
+$$;
+grant execute on function public.under_reaction_rate_limit(uuid) to authenticated;
+
+-- ------------------------------------------------------------
 -- CALL INVITES
 -- The actual call signaling (offer/answer/ICE) all happens over an
 -- ephemeral Realtime broadcast channel — this table exists purely so a
@@ -570,6 +715,32 @@ drop policy if exists call_invites_update on public.call_invites;
 create policy call_invites_update on public.call_invites for update
 using (auth.uid() = caller_id or auth.uid() = callee_id)
 with check (auth.uid() = caller_id or auth.uid() = callee_id);
+
+-- Same tampering issue as messages_update above: without this, either
+-- party could rewrite call_id/caller_id/callee_id on a row they can
+-- already see. Only status/resolved_at should ever change post-insert.
+create or replace function public.call_invites_guard_update()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+    if new.call_id is distinct from old.call_id
+        or new.caller_id is distinct from old.caller_id
+        or new.callee_id is distinct from old.callee_id
+        or new.created_at is distinct from old.created_at
+    then
+        raise exception 'Эти поля звонка нельзя менять после создания';
+    end if;
+    return new;
+end;
+$$;
+
+drop trigger if exists call_invites_guard_update_trigger on public.call_invites;
+create trigger call_invites_guard_update_trigger
+before update on public.call_invites
+for each row execute function public.call_invites_guard_update();
 
 -- ------------------------------------------------------------
 -- CANVAS ROOMS — personal decorable space ("blank canvas" self-
@@ -982,11 +1153,19 @@ with check (public.is_admin());
  drop policy if exists posts_select on public.posts;
 create policy posts_select on public.posts for select
 using (
-    auth.uid() is null
-    or (not public.is_blocked(author_id, auth.uid()) and not public.is_blocked(auth.uid(), author_id))
+    (
+        auth.uid() is null
+        or (not public.is_blocked(author_id, auth.uid()) and not public.is_blocked(auth.uid(), author_id))
+    )
+    and (
+        auth.uid() = wall_owner_id
+        or auth.uid() = author_id
+        or (select coalesce(p.wall_visibility, 'everyone') from public.profiles p where p.id = posts.wall_owner_id) = 'everyone'
+        or (auth.uid() is not null and public.are_friends(wall_owner_id, auth.uid()))
+    )
 );
  drop policy if exists posts_insert on public.posts;
-create policy posts_insert on public.posts for insert with check (auth.uid() = author_id and not public.is_banned());
+create policy posts_insert on public.posts for insert with check (auth.uid() = author_id and not public.is_banned() and public.under_post_rate_limit(author_id));
  drop policy if exists posts_update on public.posts;
 create policy posts_update on public.posts for update using (auth.uid() = author_id) with check (auth.uid() = author_id);
  drop policy if exists posts_delete on public.posts;
@@ -1000,7 +1179,7 @@ using (
     or (not public.is_blocked(author_id, auth.uid()) and not public.is_blocked(auth.uid(), author_id))
 );
  drop policy if exists comments_insert on public.comments;
-create policy comments_insert on public.comments for insert with check (auth.uid() = author_id and not public.is_banned());
+create policy comments_insert on public.comments for insert with check (auth.uid() = author_id and not public.is_banned() and public.under_comment_rate_limit(author_id));
  drop policy if exists comments_update on public.comments;
 create policy comments_update on public.comments for update using (auth.uid() = author_id) with check (auth.uid() = author_id);
  drop policy if exists comments_delete on public.comments;
@@ -1010,7 +1189,7 @@ create policy comments_delete on public.comments for delete using (auth.uid() = 
  drop policy if exists post_likes_select on public.post_likes;
 create policy post_likes_select on public.post_likes for select using (true);
  drop policy if exists post_likes_insert on public.post_likes;
-create policy post_likes_insert on public.post_likes for insert with check (auth.uid() = user_id);
+create policy post_likes_insert on public.post_likes for insert with check (auth.uid() = user_id and public.under_like_rate_limit(user_id));
  drop policy if exists post_likes_delete on public.post_likes;
 create policy post_likes_delete on public.post_likes for delete using (auth.uid() = user_id);
 
@@ -1018,7 +1197,7 @@ create policy post_likes_delete on public.post_likes for delete using (auth.uid(
  drop policy if exists comment_likes_select on public.comment_likes;
 create policy comment_likes_select on public.comment_likes for select using (true);
  drop policy if exists comment_likes_insert on public.comment_likes;
-create policy comment_likes_insert on public.comment_likes for insert with check (auth.uid() = user_id);
+create policy comment_likes_insert on public.comment_likes for insert with check (auth.uid() = user_id and public.under_like_rate_limit(user_id));
  drop policy if exists comment_likes_delete on public.comment_likes;
 create policy comment_likes_delete on public.comment_likes for delete using (auth.uid() = user_id);
 
@@ -1044,6 +1223,8 @@ with check (
     auth.uid() = sender_id
     and not public.is_banned()
     and not public.is_blocked(receiver_id, sender_id)
+    and public.can_message(receiver_id, sender_id)
+    and public.under_message_rate_limit(sender_id)
 );
  drop policy if exists messages_update on public.messages;
 create policy messages_update on public.messages for update
@@ -1051,6 +1232,52 @@ using (auth.uid() = sender_id or auth.uid() = receiver_id)
 with check (auth.uid() = sender_id or auth.uid() = receiver_id);
  drop policy if exists messages_delete on public.messages;
 create policy messages_delete on public.messages for delete using (auth.uid() = sender_id);
+
+-- PRIVACY FIX: messages_update above only checks "is this person one of
+-- the two participants" — it does NOT stop the receiver from rewriting
+-- the sender's text/image/ciphertext once they can see the row. RLS
+-- alone can't restrict *which columns* an update is allowed to touch,
+-- so a trigger does that instead: the receiver may only ever flip
+-- read_at (marking a message as read), and the sender may only ever
+-- touch content columns (text/image/encrypted/iv/img_iv/reply_to_id) —
+-- never sender_id, receiver_id, created_at, or read_at.
+create or replace function public.messages_guard_update()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+    if auth.uid() = new.receiver_id and auth.uid() <> new.sender_id then
+        if new.sender_id is distinct from old.sender_id
+            or new.receiver_id is distinct from old.receiver_id
+            or new.text is distinct from old.text
+            or new.image is distinct from old.image
+            or new.encrypted is distinct from old.encrypted
+            or new.iv is distinct from old.iv
+            or new.img_iv is distinct from old.img_iv
+            or new.created_at is distinct from old.created_at
+            or new.reply_to_id is distinct from old.reply_to_id
+        then
+            raise exception 'Получатель может только отметить сообщение прочитанным';
+        end if;
+    elsif auth.uid() = new.sender_id then
+        if new.sender_id is distinct from old.sender_id
+            or new.receiver_id is distinct from old.receiver_id
+            or new.created_at is distinct from old.created_at
+            or new.read_at is distinct from old.read_at
+        then
+            raise exception 'Отправитель не может менять эти поля сообщения';
+        end if;
+    end if;
+    return new;
+end;
+$$;
+
+drop trigger if exists messages_guard_update_trigger on public.messages;
+create trigger messages_guard_update_trigger
+before update on public.messages
+for each row execute function public.messages_guard_update();
 
 -- Message reactions — visible/addable only to the two people in that
 -- conversation, checked via the parent message row each time.
@@ -1066,6 +1293,7 @@ create policy message_reactions_select on public.message_reactions for select us
 create policy message_reactions_insert on public.message_reactions for insert with check (
     auth.uid() = user_id
     and not public.is_banned()
+    and public.under_reaction_rate_limit(user_id)
     and exists (
         select 1 from public.messages m
         where m.id = message_id
@@ -1098,18 +1326,53 @@ create policy friend_requests_select on public.friend_requests for select
 using (auth.uid() = from_user or auth.uid() = to_user);
  drop policy if exists friend_requests_insert on public.friend_requests;
 create policy friend_requests_insert on public.friend_requests for insert
-with check (auth.uid() = from_user and not public.is_blocked(to_user, from_user));
+with check (
+    auth.uid() = from_user
+    and not public.is_blocked(to_user, from_user)
+    and public.can_friend_request(to_user, from_user)
+    and public.under_friend_request_rate_limit(from_user)
+);
  drop policy if exists friend_requests_update on public.friend_requests;
 create policy friend_requests_update on public.friend_requests for update
 using (auth.uid() = from_user or auth.uid() = to_user)
 with check (auth.uid() = from_user or auth.uid() = to_user);
+
+-- Only to_user ever legitimately updates a friend request (accept/
+-- decline), and only status/responded_at. Without this, either side
+-- could otherwise rewrite from_user/to_user/created_at on a row they
+-- can already see.
+create or replace function public.friend_requests_guard_update()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+    if new.from_user is distinct from old.from_user
+        or new.to_user is distinct from old.to_user
+        or new.created_at is distinct from old.created_at
+    then
+        raise exception 'Эти поля заявки в друзья нельзя менять';
+    end if;
+    return new;
+end;
+$$;
+
+drop trigger if exists friend_requests_guard_update_trigger on public.friend_requests;
+create trigger friend_requests_guard_update_trigger
+before update on public.friend_requests
+for each row execute function public.friend_requests_guard_update();
  drop policy if exists friend_requests_delete on public.friend_requests;
 create policy friend_requests_delete on public.friend_requests for delete
 using (auth.uid() = from_user or auth.uid() = to_user);
 
 -- Music
  drop policy if exists music_select on public.music;
-create policy music_select on public.music for select using (true);
+create policy music_select on public.music for select using (
+    auth.uid() = author_id
+    or (select coalesce(p.music_visibility, 'everyone') from public.profiles p where p.id = music.author_id) = 'everyone'
+    or (auth.uid() is not null and public.are_friends(author_id, auth.uid()))
+);
  drop policy if exists music_insert on public.music;
 create policy music_insert on public.music for insert with check (auth.uid() = author_id and not public.is_banned());
  drop policy if exists music_update on public.music;
@@ -1348,9 +1611,12 @@ grant execute on function public.feed_friends_pet(uuid) to authenticated;
 -- ------------------------------------------------------------
 -- STORAGE: public bucket for MP3 + covers
 -- ------------------------------------------------------------
-insert into storage.buckets (id, name, public)
-values ('music', 'music', true)
-on conflict (id) do update set public = true;
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('music', 'music', true, 30 * 1024 * 1024, array['audio/mpeg','audio/mp3','audio/wav','audio/ogg','audio/mp4','audio/x-m4a','image/png','image/jpeg','image/webp'])
+on conflict (id) do update set
+    public = true,
+    file_size_limit = 30 * 1024 * 1024,
+    allowed_mime_types = array['audio/mpeg','audio/mp3','audio/wav','audio/ogg','audio/mp4','audio/x-m4a','image/png','image/jpeg','image/webp'];
 
  drop policy if exists music_storage_select on storage.objects;
 create policy music_storage_select
@@ -1396,9 +1662,12 @@ using (
 -- query that touched those tables dragged the full image bytes along
 -- for the ride even when nothing on screen needed them. Storage +
 -- a plain URL column fixes that — the row just points at the file.
-insert into storage.buckets (id, name, public)
-values ('images', 'images', true)
-on conflict (id) do update set public = true;
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('images', 'images', true, 12 * 1024 * 1024, array['image/png','image/jpeg','image/webp','image/gif'])
+on conflict (id) do update set
+    public = true,
+    file_size_limit = 12 * 1024 * 1024,
+    allowed_mime_types = array['image/png','image/jpeg','image/webp','image/gif'];
 
  drop policy if exists images_storage_select on storage.objects;
 create policy images_storage_select
