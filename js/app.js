@@ -3730,6 +3730,53 @@ async function renderEditProfile(){
         ${callSettingsSection}
 
 
+        <div class="card" style="margin-bottom:16px;">
+            <strong>🔒 Приватность</strong>
+
+            <label class="autoplay-toggle" style="margin-top:10px;">
+                <input type="checkbox" ${user.showOnlineStatus ? "checked" : ""} onchange="setPrivacySetting('show_online_status', this.checked)">
+                Показывать статус "онлайн" другим людям
+            </label>
+
+            <div class="form-group" style="margin-top:14px;">
+                <label>Кто видит мою стену</label>
+                <select id="privacyWallVisibility" onchange="setPrivacySetting('wall_visibility', this.value)">
+                    <option value="everyone" ${user.wallVisibility === "everyone" ? "selected" : ""}>Все</option>
+                    <option value="friends" ${user.wallVisibility === "friends" ? "selected" : ""}>Только друзья</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>Кто видит мою музыку</label>
+                <select id="privacyMusicVisibility" onchange="setPrivacySetting('music_visibility', this.value)">
+                    <option value="everyone" ${user.musicVisibility === "everyone" ? "selected" : ""}>Все</option>
+                    <option value="friends" ${user.musicVisibility === "friends" ? "selected" : ""}>Только друзья</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>Кто может писать мне сообщения</label>
+                <select id="privacyWhoCanMessage" onchange="setPrivacySetting('who_can_message', this.value)">
+                    <option value="everyone" ${user.whoCanMessage === "everyone" ? "selected" : ""}>Все</option>
+                    <option value="friends" ${user.whoCanMessage === "friends" ? "selected" : ""}>Только друзья</option>
+                    <option value="nobody" ${user.whoCanMessage === "nobody" ? "selected" : ""}>Никто</option>
+                </select>
+            </div>
+
+            <div class="form-group" style="margin-bottom:0;">
+                <label>Кто может отправлять мне заявки в друзья</label>
+                <select id="privacyWhoCanFriendRequest" onchange="setPrivacySetting('who_can_friend_request', this.value)">
+                    <option value="everyone" ${user.whoCanFriendRequest === "everyone" ? "selected" : ""}>Все</option>
+                    <option value="nobody" ${user.whoCanFriendRequest === "nobody" ? "selected" : ""}>Никто</option>
+                </select>
+            </div>
+
+            <div class="muted" style="font-size:12px;margin-top:10px;line-height:1.4;">
+                Посты и лайки/комментарии от друзей на твою стену видят те же люди, кому видна сама стена.
+            </div>
+        </div>
+
+
         <div class="card">
 
             <div class="edit-preview">
@@ -3858,6 +3905,17 @@ async function renderEditProfile(){
             </div>
         </div>
 
+        <div class="card" style="margin-top:16px;border:1px solid #e5544f55;">
+            <strong style="color:#e5544f;">⚠️ Удаление аккаунта</strong>
+            <div class="muted" style="font-size:12px;margin:8px 0 12px;line-height:1.4;">
+                Удаляет профиль, посты, комментарии, друзей, музыку и файлы без возврата.
+                Сообщения между тобой и другими людьми также удаляются с обеих сторон.
+            </div>
+            <button class="secondary" style="color:#e5544f;" onclick="confirmDeleteAccount()">
+                🗑️ Удалить аккаунт навсегда
+            </button>
+        </div>
+
     `;
     updatePushSettingsUI(false);
     // If permission was already granted, restore/register the subscription
@@ -3917,6 +3975,60 @@ async function onCoverFileChosen(input){
     const preview = document.getElementById("editCoverPreview");
     preview.src = URL.createObjectURL(blob);
     preview.style.display = "";
+}
+
+// Each privacy toggle saves itself immediately on change (same pattern
+// as the sound settings above) — no separate "save" button, so a
+// setting can never be left un-persisted if someone navigates away.
+const PRIVACY_SETTING_KEYS = {
+    show_online_status: "showOnlineStatus",
+    wall_visibility: "wallVisibility",
+    music_visibility: "musicVisibility",
+    who_can_message: "whoCanMessage",
+    who_can_friend_request: "whoCanFriendRequest"
+};
+async function setPrivacySetting(column, value) {
+    const user = getCurrentUser();
+    if (!user) return;
+    const { error } = await sb.from("profiles").update({ [column]: value }).eq("id", user.id);
+    if (error) {
+        console.error(error);
+        toast("Не удалось сохранить настройку приватности.");
+        return;
+    }
+    const localKey = PRIVACY_SETTING_KEYS[column];
+    if (localKey) user[localKey] = value;
+    toast("Сохранено ✅");
+}
+
+// Deletes the account for real (via the delete-account Edge Function —
+// see supabase/functions/delete-account/README.md for the one-time
+// deploy step this depends on). Double confirmation because this is
+// irreversible: the first confirm() is a normal "are you sure", the
+// second requires typing the exact word "удалить" so a stray tap on
+// the button can never actually delete anything by accident.
+async function confirmDeleteAccount() {
+    if (!confirm("Аккаунт и все данные будут удалены без возврата. Продолжить?")) return;
+    const typed = prompt('Чтобы подтвердить, напиши слово "удалить" (без кавычек):');
+    if ((typed || "").trim().toLowerCase() !== "удалить") {
+        toast("Отменено — слово не совпало.");
+        return;
+    }
+    try {
+        const { data: { session } } = await sb.auth.getSession();
+        if (!session) { toast("Сессия не найдена, попробуй войти снова."); return; }
+        const res = await fetch(`${window.BUBBLES_SUPABASE_URL}/functions/v1/delete-account`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${session.access_token}` }
+        });
+        if (!res.ok) throw new Error(await res.text());
+        toast("Аккаунт удалён.");
+        await sb.auth.signOut();
+        location.reload();
+    } catch (e) {
+        console.error(e);
+        toast("Не удалось удалить аккаунт. Попробуй позже.");
+    }
 }
 
 async function saveProfile() {
@@ -7095,7 +7207,17 @@ function rowToUser(row){
         avatar: row.avatar || defaultAvatar(),
         cover: row.cover || "",
         bio: row.bio || "",
-        lastSeen: row.last_seen || null,
+        // visible_last_seen comes from the profiles_public view — it's
+        // already null when this person turned show_online_status off
+        // and it isn't your own row. Falls back to last_seen for the
+        // rare direct-table read (e.g. your own profile) that doesn't
+        // go through the view.
+        lastSeen: (row.visible_last_seen !== undefined ? row.visible_last_seen : row.last_seen) || null,
+        showOnlineStatus: row.show_online_status !== undefined ? !!row.show_online_status : true,
+        wallVisibility: row.wall_visibility || "everyone",
+        musicVisibility: row.music_visibility || "everyone",
+        whoCanMessage: row.who_can_message || "everyone",
+        whoCanFriendRequest: row.who_can_friend_request || "everyone",
         currentTrack: row.current_track || "",
         currentArtist: row.current_artist || "",
         role: row.role || "user",
@@ -7850,7 +7972,7 @@ async function loadDB() {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
         const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, petRow] = await Promise.all([
-            sb.from("profiles").select("id,username,display_name,gender,avatar,cover,bio,last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,created_at").order("created_at", { ascending: true }),
+            sb.from("profiles_public").select("id,username,display_name,gender,avatar,cover,bio,visible_last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,created_at,show_online_status,wall_visibility,music_visibility,who_can_message,who_can_friend_request").order("created_at", { ascending: true }),
             sb.from("posts").select("id,author_id,wall_owner_id,text,image,music_id,shared_post_id,likes,pinned,pinned_at,created_at").order("created_at", { ascending: false }).limit(150),
             sb.from("comments").select("id,post_id,author_id,parent_comment_id,text,created_at").order("created_at", { ascending: true }).limit(1000),
             sb.from("post_likes").select("post_id,user_id"),
@@ -8008,10 +8130,10 @@ function watchChatPartnerPresence(userId) {
     stopWatchingChatPartnerPresence();
     const refresh = async () => {
         if(document.visibilityState !== "visible") return;
-        const { data, error } = await sb.from("profiles").select("last_seen").eq("id", userId).maybeSingle();
+        const { data, error } = await sb.from("profiles_public").select("visible_last_seen").eq("id", userId).maybeSingle();
         if (error || !data) return;
         const user = getUser(userId);
-        if (user) user.lastSeen = data.last_seen;
+        if (user) user.lastSeen = data.visible_last_seen;
         const el = document.getElementById("chatPartnerStatus");
         if (el) el.textContent = isUserOnline(data.last_seen) ? "🟢 Онлайн" : "⚪ Не в сети";
     };
