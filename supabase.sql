@@ -533,6 +533,45 @@ grant execute on function public.is_admin() to authenticated;
 grant execute on function public.is_banned() to authenticated;
 
 -- ------------------------------------------------------------
+-- CALL INVITES
+-- The actual call signaling (offer/answer/ICE) all happens over an
+-- ephemeral Realtime broadcast channel — this table exists purely so a
+-- call can reach someone whose app ISN'T currently open to receive
+-- that broadcast. Inserting a row here fires a Database Webhook (see
+-- supabase/functions/send-push) that pushes "📞 Входящий звонок от X"
+-- to their devices, the same way a new message does. status just
+-- tracks how the invite was resolved — no UI reads it yet, but it's
+-- there for a future "missed calls" list without a schema change.
+-- ------------------------------------------------------------
+create table if not exists public.call_invites (
+    id text primary key,
+    call_id text not null,
+    caller_id uuid not null references public.profiles(id) on delete cascade,
+    callee_id uuid not null references public.profiles(id) on delete cascade,
+    status text not null default 'ringing' check (status in ('ringing','answered','declined','missed','cancelled')),
+    created_at timestamptz not null default now(),
+    resolved_at timestamptz,
+    constraint call_invites_not_self check (caller_id <> callee_id)
+);
+
+create index if not exists call_invites_callee_idx on public.call_invites(callee_id, created_at desc);
+
+alter table public.call_invites enable row level security;
+
+drop policy if exists call_invites_select on public.call_invites;
+create policy call_invites_select on public.call_invites for select
+using (auth.uid() = caller_id or auth.uid() = callee_id);
+
+drop policy if exists call_invites_insert on public.call_invites;
+create policy call_invites_insert on public.call_invites for insert
+with check (auth.uid() = caller_id and not public.is_banned() and not public.is_blocked(callee_id, caller_id));
+
+drop policy if exists call_invites_update on public.call_invites;
+create policy call_invites_update on public.call_invites for update
+using (auth.uid() = caller_id or auth.uid() = callee_id)
+with check (auth.uid() = caller_id or auth.uid() = callee_id);
+
+-- ------------------------------------------------------------
 -- CANVAS ROOMS — personal decorable space ("blank canvas" self-
 -- expression), replacing the old group-chat "Комнаты". Each person has
 -- exactly ONE room — their own — so there's no table of joinable rooms
