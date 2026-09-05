@@ -603,6 +603,7 @@ async function feedFriendsPetAction(userId) {
     } else {
         toast("Спасибо от питомца! 🎉");
         if (btn) { btn.disabled = true; btn.textContent = "Покормлен(а) на сегодня"; }
+        createNotification({ userId, type: "pet_fed" });
     }
 }
 
@@ -2639,7 +2640,7 @@ async function createPost(targetWallId = null) {
         toast(targetWallId && targetWallId !== currentUserId ? "Пост опубликован на стене!" : "Пост опубликован!");
         haptic("success");
         recomputeAchievements();
-        if (targetWallId) renderProfile(targetWallId);
+        if (targetWallId) { createNotification({ userId: targetWallId, type: "wall_post", postId }); renderProfile(targetWallId); }
         else renderFeed();
     } finally {
         isCreatingPost = false;
@@ -2772,7 +2773,9 @@ async function toggleCommentLike(postId, commentId) {
         comment.likes = wasLiked ? [...comment.likes, currentUserId] : comment.likes.filter(id => id !== currentUserId);
         refreshPostInPlace(postId);
         toast("Не удалось поставить лайк.");
+        return;
     }
+    if (!wasLiked) createNotification({ userId: comment.authorId, type: "comment_like", postId, commentId });
 }
 
 // parentId (when given) is always the *top-level* comment id — replies to
@@ -2806,6 +2809,17 @@ async function addComment(postId, parentId = null) {
 
     const post = db.posts.find(p => p.id === postId);
     if (post) createNotification({ userId: post.authorId, type: "post_comment", postId, commentId: comment.id });
+    // Replies additionally notify whoever's top-level comment is being
+    // replied to — otherwise only the POST's author ever finds out about
+    // new activity in a thread, and someone two replies deep in a
+    // conversation with a stranger on someone else's post would never
+    // know they got a reply at all.
+    if (parentId) {
+        const parentComment = db.comments.find(c => c.id === parentId);
+        if (parentComment && parentComment.authorId !== post?.authorId) {
+            createNotification({ userId: parentComment.authorId, type: "comment_reply", postId, commentId: comment.id });
+        }
+    }
 }
 
 function focusComment(postId){
@@ -4502,6 +4516,14 @@ function notificationLine(n) {
             return { text: `${name} оценил(а) ваш пост ❤️`, onclick: `goToPost('${n.postId}')` };
         case "post_comment":
             return { text: `${name} прокомментировал(а) ваш пост 💬`, onclick: `goToPost('${n.postId}')` };
+        case "comment_reply":
+            return { text: `${name} ответил(а) на ваш комментарий 💬`, onclick: `goToPost('${n.postId}')` };
+        case "comment_like":
+            return { text: `${name} оценил(а) ваш комментарий ❤️`, onclick: `goToPost('${n.postId}')` };
+        case "wall_post":
+            return { text: `${name} оставил(а) запись на вашей стене 🧱`, onclick: `goToPost('${n.postId}')` };
+        case "pet_fed":
+            return { text: `${name} покормил(а) вашего питомца 🍬`, onclick: `navigate('pet')` };
         default:
             return { text: name, onclick: "" };
     }
@@ -4640,7 +4662,16 @@ async function markAllNotificationsRead() {
 // deleted, or belong to someone whose posts aren't shown here, so this
 // fails quietly if the element never shows up.
 function goToPost(postId) {
-    navigate("feed");
+    const post = db.posts.find(p => p.id === postId);
+    // Wall posts don't appear in the main feed (see renderFeed's filter) —
+    // used to send you there anyway, which meant every like/comment/reply
+    // notification on a wall post led to a dead end with nothing to
+    // scroll to. Route those to the wall itself instead.
+    if (post && post.wallOwnerId && post.wallOwnerId !== post.authorId) {
+        navigate("profile", post.wallOwnerId);
+    } else {
+        navigate("feed");
+    }
     setTimeout(() => {
         const el = document.querySelector(`[data-bubbles-post-id="${postId}"]`);
         if (!el) return;
