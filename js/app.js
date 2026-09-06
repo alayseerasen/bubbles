@@ -2030,6 +2030,7 @@ function navigate(page, id = null){
     closeStoryViewer(); // it's a full-screen modal appended to <body>, outside the normal page — don't leave it floating over the newly navigated-to page
     closeMoreSheet();
     stopCallSettingsPreview(); // release any mic/camera test started from the Settings page before leaving it
+    stopTelegramLinkPolling(); // stop polling for a Telegram link confirmation if we're navigating away from Settings
 
     // Keeps the desktop sidebar's collapsed "Ещё" section from hiding
     // its own active tab when one of its pages is reached some other
@@ -3706,6 +3707,7 @@ async function renderEditProfile(){
     pendingAvatarExt = "jpg";
     pendingCoverBlob = null;
     const callSettingsSection = await renderCallSettingsPageSection();
+    const telegramSettingsSection = await renderTelegramSettingsSection();
 
     document.getElementById("page").innerHTML = `
 
@@ -3742,6 +3744,9 @@ async function renderEditProfile(){
 
 
         ${callSettingsSection}
+
+
+        ${telegramSettingsSection}
 
 
         <div class="card" style="margin-bottom:16px;">
