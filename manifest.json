@@ -4,6 +4,7 @@
     "description": "Маленькая социальная сеть с большим количеством пузырьков",
     "start_url": "./index.html",
     "scope": "./",
+    "id": "./",
     "display": "standalone",
     "background_color": "#eaf6fb",
     "theme_color": "#64d9fa",
