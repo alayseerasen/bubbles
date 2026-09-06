@@ -4969,3 +4969,34 @@ html::after{
     color:#ffd166;
     background:rgba(207,154,43,.22);
 }
+
+/* ------------------------------------------------------------
+   TELEGRAM LINKING — code display boxes on the Settings page
+   ------------------------------------------------------------ */
+.telegram-code-box{
+    font-family:"Courier New",monospace;
+    font-size:20px;
+    font-weight:700;
+    letter-spacing:1px;
+    color:var(--text);
+    background:rgba(191,245,255,.55);
+    border:2px dashed var(--blue);
+    border-radius:14px;
+    padding:12px 14px;
+    text-align:center;
+    cursor:pointer;
+    user-select:all;
+    word-break:break-all;
+}
+
+.telegram-code-command{
+    font-size:15px;
+    font-weight:600;
+    letter-spacing:0;
+    cursor:text;
+    user-select:all;
+}
+
+[data-theme="dark"] .telegram-code-box{
+    background:rgba(191,245,255,.08);
+}
