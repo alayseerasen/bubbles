@@ -7844,14 +7844,14 @@ async function rowToMessage(row) {
         if (sharedKey) {
             if (text) {
                 const decrypted = await BubblesCrypto.decryptString(sharedKey, text, row.iv);
-                text = decrypted === null ? "🔒 Не удалось расшифровать сообщение" : decrypted;
+                text = decrypted === null ? "🔒 Сообщение недоступно (старое шифрование)" : decrypted;
             }
             if (image) {
                 const decryptedImage = await BubblesCrypto.decryptString(sharedKey, image, row.img_iv);
                 image = decryptedImage === null ? "" : decryptedImage;
             }
         } else {
-            text = text ? "🔒 Не удалось расшифровать сообщение" : "";
+            text = text ? "🔒 Сообщение недоступно (старое шифрование)" : "";
             image = "";
         }
     }

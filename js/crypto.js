@@ -135,6 +135,8 @@ const BubblesCrypto = (() => {
         return { ciphertext: bufToBase64(ciphertext), iv: bufToBase64(iv) };
     }
 
+    let loggedLegacyDecryptNotice = false;
+
     async function decryptString(key, ciphertextB64, ivB64) {
         try {
             const plainBuf = await crypto.subtle.decrypt(
@@ -144,7 +146,14 @@ const BubblesCrypto = (() => {
             );
             return new TextDecoder().decode(plainBuf);
         } catch (e) {
-            console.error("Не удалось расшифровать сообщение:", e);
+            // Messages encrypted under the old (pre-conversation_keys) scheme
+            // can never decrypt with today's key — that's expected, not a
+            // fresh bug, so we note it once per session instead of spamming
+            // a full stack trace for every legacy message.
+            if (!loggedLegacyDecryptNotice) {
+                loggedLegacyDecryptNotice = true;
+                console.info("Некоторые старые сообщения зашифрованы прошлой схемой и не расшифровываются — это ожидаемо, не ошибка.");
+            }
             return null;
         }
     }
