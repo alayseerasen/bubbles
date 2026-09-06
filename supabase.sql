@@ -408,6 +408,11 @@ create table if not exists public.stories (
     expires_at timestamptz not null default (now() + interval '24 hours')
 );
 
+-- Tracks whether the "твоя история почти исчезнет" reminder push has
+-- already gone out for this story, so the cron job in
+-- supabase/functions/send-story-reminders/ doesn't send it twice.
+alter table public.stories add column if not exists reminder_sent boolean not null default false;
+
 create index if not exists stories_author_created_idx on public.stories(author_id, created_at);
 
 -- Who's seen which story — lets the author see a view count and lets a
