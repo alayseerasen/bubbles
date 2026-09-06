@@ -8378,6 +8378,48 @@ function teardownRealtime() {
 
 let lastRealtimeReconnectAt = 0;
 
+// Mobile browsers (iOS Safari especially, and anything running as a
+// Home Screen PWA) aggressively suspend a page's WebSocket the moment
+// it's backgrounded — switching to another app, locking the phone,
+// even just switching tabs. reconnectRealtime() below re-subscribes
+// the channels once the page is visible again, but a fresh
+// subscription only delivers events from that moment forward — any
+// message that arrived WHILE disconnected is simply gone as far as
+// realtime is concerned. That's the actual cause of "have to refresh
+// to see new messages": nothing is broken, the live channel is just
+// blind to a gap it was never told about. This fetches anything
+// newer than the newest message we already have and folds it in the
+// same way a live INSERT would, so a reconnect catches up instead of
+// silently staying stale until a full reload calls loadDB() again.
+async function catchUpMessages() {
+    if (!currentUserId) return;
+    const newestKnown = db.messages.reduce((max, m) => Math.max(max, m.createdAt || 0), 0);
+    try {
+        const { data, error } = await sb.from("messages")
+            .select("id,sender_id,receiver_id,text,image,created_at,read_at,encrypted,iv,img_iv,reply_to_id")
+            .or(`sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`)
+            .gt("created_at", new Date(newestKnown || 0).toISOString())
+            .order("created_at", { ascending: true });
+        if (error || !data || !data.length) return;
+        for (const row of data) {
+            if (db.messages.some(m => m.id === row.id)) continue; // already have it (our own optimistic send, or a live event beat us here)
+            const message = await rowToMessage(row);
+            db.messages.push(message);
+            if (message.from === currentUserId) continue; // sent from elsewhere under our own account — no popup needed
+            if (currentPage === "messages" && selectedChatId === message.from) {
+                appendMessageToChat(message, message.from);
+                markChatAsRead(message.from);
+            } else {
+                if (currentPage === "messages") refreshConversationPreview(message.from);
+                showNewMessagePopup(message);
+            }
+        }
+        updateNavBadges();
+    } catch (e) {
+        console.error("catchUpMessages failed:", e);
+    }
+}
+
 // Every .subscribe() call below used to fire blind — if a channel
 // failed to actually connect (CHANNEL_ERROR, TIMED_OUT) or got closed
 // server-side, nothing in the app would ever know: messages/likes/etc
@@ -8415,6 +8457,7 @@ function reconnectRealtime({ force = false } = {}) {
     setupNotificationsRealtime();
     setupFriendRequestsRealtime();
     setupSocialRealtime();
+    catchUpMessages(); // backfill anything sent while this tab was backgrounded/disconnected
     // Re-join the open chat's typing/presence channel too, if there is one —
     // joinTypingChannel() already no-ops if it's somehow still alive.
     if (typingChannelPartnerId) {
