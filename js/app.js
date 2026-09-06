@@ -133,7 +133,9 @@ const ACHIEVEMENTS = [
     { id: "veteran_30", icon: "🕰️", title: "Ветеран", description: "Аккаунту 30 дней",
         check: (id) => { const u = getUser(id); return !!u && (Date.now() - u.createdAt) >= 30 * 86400000; } },
     { id: "veteran_180", icon: "🏛️", title: "Старожил", description: "Аккаунту 180 дней",
-        check: (id) => { const u = getUser(id); return !!u && (Date.now() - u.createdAt) >= 180 * 86400000; } }
+        check: (id) => { const u = getUser(id); return !!u && (Date.now() - u.createdAt) >= 180 * 86400000; } },
+    { id: "aero_visitor", icon: "🌐", title: "Гость Aero World", description: "Зашёл в Aero World под тем же аккаунтом" }, // manual — из aero-account.js
+    { id: "aero_konami", icon: "🕹️", title: "Секретный код", description: "Нашёл пасхалку в Aero World" } // manual — из aero-account.js
 ];
 
 // Ordered low → high; whichever's the LAST one your unlocked count
