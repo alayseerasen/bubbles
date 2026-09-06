@@ -8187,7 +8187,7 @@ function stopWatchingChatPartnerPresence() {
 }
 
 function setupMessagesRealtime() {
-    if (messagesChannel) sb.removeChannel(messagesChannel);
+    removeChannelQuietly(messagesChannel, "messages");
     messagesChannel = sb.channel("bubbles-messages-" + currentUserId)
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, async (payload) => {
             const row = payload.new;
@@ -8245,7 +8245,7 @@ function applyRemoteReaction(payload) {
 }
 
 function setupNotificationsRealtime() {
-    if (notificationsChannel) sb.removeChannel(notificationsChannel);
+    removeChannelQuietly(notificationsChannel, "notifications");
     notificationsChannel = sb.channel("bubbles-notifications-" + currentUserId)
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "bubbles_notifications" }, (payload) => {
             const row = payload.new;
@@ -8266,7 +8266,7 @@ function setupNotificationsRealtime() {
 }
 
 function setupFriendRequestsRealtime() {
-    if (friendRequestsChannel) sb.removeChannel(friendRequestsChannel);
+    removeChannelQuietly(friendRequestsChannel, "friend-requests");
     friendRequestsChannel = sb.channel("bubbles-friend-requests-" + currentUserId)
         .on("postgres_changes", { event: "*", schema: "public", table: "friend_requests" }, (payload) => {
             const row = payload.new || payload.old;
@@ -8288,7 +8288,7 @@ function setupFriendRequestsRealtime() {
 }
 
 function setupSocialRealtime() {
-    if (socialChannel) sb.removeChannel(socialChannel);
+    removeChannelQuietly(socialChannel, "social");
     socialChannel = sb.channel("bubbles-social-" + currentUserId)
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "post_likes" }, (payload) => {
             const post = db.posts.find(p => p.id === payload.new.post_id);
@@ -8344,7 +8344,11 @@ function setupSocialRealtime() {
 }
 
 function teardownRealtime() {
-    [messagesChannel, friendRequestsChannel, notificationsChannel, typingChannel, socialChannel].forEach(ch => { if (ch) sb.removeChannel(ch); });
+    removeChannelQuietly(messagesChannel, "messages");
+    removeChannelQuietly(friendRequestsChannel, "friend-requests");
+    removeChannelQuietly(notificationsChannel, "notifications");
+    removeChannelQuietly(socialChannel, "social");
+    if (typingChannel) sb.removeChannel(typingChannel);
     messagesChannel = null;
     friendRequestsChannel = null;
     notificationsChannel = null;
@@ -8431,9 +8435,28 @@ async function catchUpMessages() {
 // failure into a visible one — check the console if realtime seems
 // stuck again; it'll now say exactly which channel dropped and why,
 // instead of just going quiet.
+//
+// reconnectRealtime() and teardownRealtime() both call removeChannel()
+// on purpose (to rebuild a fresh channel, or on logout) — Supabase
+// reports that as a "CLOSED" status just like an unexpected server-side
+// drop would, so without this the console filled up with a fake ❌ for
+// every single planned reconnect. removeChannelQuietly() marks the
+// closure as expected so logRealtimeStatus can tell the two apart.
+const expectedRealtimeCloses = new Set();
+
+function removeChannelQuietly(channel, label) {
+    if (!channel) return;
+    expectedRealtimeCloses.add(label);
+    sb.removeChannel(channel);
+}
+
 function logRealtimeStatus(label) {
     return (status, err) => {
         if (status === "SUBSCRIBED") { console.log(`✅ realtime: ${label}`); return; }
+        if (status === "CLOSED" && expectedRealtimeCloses.has(label)) {
+            expectedRealtimeCloses.delete(label);
+            return; // we closed this one on purpose while reconnecting/logging out — not an error
+        }
         if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
             console.error(`❌ realtime [${label}] ${status}`, err || "");
         }
