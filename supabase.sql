@@ -1751,3 +1751,175 @@ begin
         alter publication supabase_realtime add table public.room_messages;
     end if;
 end $$;
+
+-- ============================================================
+-- TELEGRAM LINKING
+-- Connects a Bubbles account to a Telegram chat via a short-lived,
+-- one-time code, so the existing notification events (rows inserted
+-- into bubbles_notifications and messages) can also be delivered
+-- through Telegram. Unlike push notifications (supabase/functions/
+-- send-push/, an in-repo Supabase Edge Function), the Telegram side
+-- is a SEPARATE, independently-hosted Python service — see
+-- telegram-bot/ at the repo root. That service holds the service
+-- role key and talks to Postgres over the same REST API the browser
+-- uses, so it bypasses RLS entirely; the policies below only govern
+-- what the Bubbles web client itself may do directly.
+-- ============================================================
+
+-- One row per Bubbles account that has linked a Telegram chat. Both
+-- columns are unique — one Bubbles account points at exactly one
+-- Telegram chat and vice versa, so re-linking always REPLACES the
+-- existing row rather than adding a second one. telegram_chat_id is
+-- a bigint (not text) because that's the type Telegram's API itself
+-- uses for chat ids, and it's what telegram-bot/bot.py sends/reads.
+create table if not exists public.telegram_links (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    telegram_chat_id bigint not null,
+    telegram_username text,
+    enabled boolean not null default true,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+-- Self-healing for anyone who ran an earlier draft of this feature
+-- where telegram_chat_id was text — convert in place rather than
+-- dropping the table (no data to lose yet in practice, but this is
+-- the same "never destroy an existing column" discipline as the rest
+-- of this file).
+do $$
+begin
+    if exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'telegram_links'
+          and column_name = 'telegram_chat_id' and data_type <> 'bigint'
+    ) then
+        alter table public.telegram_links
+            alter column telegram_chat_id type bigint using telegram_chat_id::bigint;
+    end if;
+end $$;
+
+create unique index if not exists telegram_links_user_unique on public.telegram_links(user_id);
+create unique index if not exists telegram_links_chat_unique on public.telegram_links(telegram_chat_id);
+
+alter table public.telegram_links enable row level security;
+
+-- A person can read and delete their OWN link row directly (same
+-- "client acts on its own row under RLS" pattern as removeFriend()
+-- elsewhere in this app) — that's all the "🔕 Отключить Telegram"
+-- button needs. There is deliberately NO insert/update policy here:
+-- creating or repointing a link only ever happens inside the
+-- telegram-bot/ service, using the service role key, which is what
+-- stops a person from writing an arbitrary user_id into this table
+-- themselves and hijacking someone else's chat, or vice versa.
+drop policy if exists telegram_links_select on public.telegram_links;
+create policy telegram_links_select on public.telegram_links for select using (auth.uid() = user_id);
+
+drop policy if exists telegram_links_delete on public.telegram_links;
+create policy telegram_links_delete on public.telegram_links for delete using (auth.uid() = user_id);
+
+-- One-time linking codes ("BUB-XXXXXX"). This table intentionally has
+-- NO select/insert/update/delete policies for anon/authenticated — the
+-- only ways to touch it are the security-definer function below
+-- (which can only ever generate a code for auth.uid(), never anyone
+-- else) and telegram-bot/'s service-role key (which looks up and
+-- deletes a code during /start or /link). A code is "used" the moment
+-- its row is deleted, which is what keeps it single-use without
+-- needing a separate boolean flag that something could forget to set.
+create table if not exists public.telegram_link_tokens (
+    token text primary key,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    expires_at timestamptz not null,
+    created_at timestamptz not null default now()
+);
+
+create index if not exists telegram_link_tokens_user_idx on public.telegram_link_tokens(user_id);
+
+alter table public.telegram_link_tokens enable row level security;
+-- (deliberately no policies — see comment above)
+
+-- Per-account toggles for which event categories get relayed to
+-- Telegram (the "⚙️ Настройки уведомлений" button in the bot). Rows
+-- are created on demand (see telegram-bot/bot.py's settings_for())
+-- the first time someone opens /settings, defaulting everything on.
+create table if not exists public.notification_settings (
+    user_id uuid primary key references public.profiles(id) on delete cascade,
+    messages_enabled boolean not null default true,
+    comments_enabled boolean not null default true,
+    likes_enabled boolean not null default true,
+    friends_enabled boolean not null default true,
+    updated_at timestamptz not null default now()
+);
+
+alter table public.notification_settings enable row level security;
+
+drop policy if exists notification_settings_select on public.notification_settings;
+create policy notification_settings_select on public.notification_settings for select using (auth.uid() = user_id);
+
+drop policy if exists notification_settings_insert on public.notification_settings;
+create policy notification_settings_insert on public.notification_settings for insert with check (auth.uid() = user_id);
+
+drop policy if exists notification_settings_update on public.notification_settings;
+create policy notification_settings_update on public.notification_settings for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- Lets telegram-bot/bot.py tell whether it has already relayed a
+-- given row to Telegram, so a webhook retry (Supabase Database
+-- Webhooks retry on a non-2xx response) or a temporary bot outage
+-- can never result in the same like/comment/message being sent
+-- twice. Nullable and additive — doesn't touch push notifications or
+-- anything else that reads these tables.
+alter table public.bubbles_notifications add column if not exists telegram_sent_at timestamptz;
+alter table public.messages add column if not exists telegram_sent_at timestamptz;
+
+-- Generates a fresh code for whoever calls it. The user_id always
+-- comes from auth.uid() — never a parameter — so the client can never
+-- request a code "for" someone else (same "server derives identity"
+-- pattern as can_message()/can_friend_request() above). Calling this
+-- again retires any of the caller's still-unused codes first, so only
+-- the most recently generated code is ever valid — exactly what the
+-- "🔄 Новый код" / re-link button in the UI relies on. Named
+-- create_telegram_link_token() (matching telegram-bot/'s own naming)
+-- rather than something Bubbles-specific, since the token table and
+-- this function belong conceptually to the bot integration, not to
+-- Bubbles' own schema.
+create or replace function public.create_telegram_link_token()
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    alphabet text := 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; -- no 0/O/1/I/L — easy to misread out loud or by hand
+    new_code text;
+    attempt int := 0;
+    i int;
+begin
+    if auth.uid() is null then
+        raise exception 'not authenticated';
+    end if;
+
+    delete from public.telegram_link_tokens
+    where user_id = auth.uid() or expires_at < now();
+
+    loop
+        attempt := attempt + 1;
+        new_code := 'BUB-';
+        for i in 1..6 loop
+            new_code := new_code || substr(alphabet, 1 + (get_byte(gen_random_bytes(1), 0) % length(alphabet)), 1);
+        end loop;
+
+        begin
+            insert into public.telegram_link_tokens (token, user_id, expires_at)
+            values (new_code, auth.uid(), now() + interval '10 minutes');
+            return new_code;
+        exception when unique_violation then
+            if attempt >= 10 then
+                raise exception 'could not generate a unique telegram link code, try again';
+            end if;
+            -- extremely unlikely collision — loop again with a fresh code
+        end;
+    end loop;
+end;
+$$;
+
+grant execute on function public.create_telegram_link_token() to authenticated;
