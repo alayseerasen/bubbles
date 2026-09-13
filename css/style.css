@@ -732,6 +732,179 @@ h1,h2,h3{
     background:#ffe8ee;
 }
 
+.action-btn.saved{
+    color:#c99a00;
+    background:#fff6d9;
+}
+
+/* POST REACTIONS — same tapback pattern/markup as .message-reactions,
+   just styled as pills that sit inside .post-actions instead of under a
+   chat bubble. */
+.post-reactions{
+    position:relative;
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:5px;
+}
+
+.post-reaction-pill{
+    display:flex;
+    align-items:center;
+    gap:3px;
+    border:0;
+    background:#effcff;
+    color:#4a8499;
+    padding:8px 10px;
+    border-radius:13px;
+    font-weight:800;
+    font-size:14px;
+    line-height:1;
+}
+
+.post-reaction-pill span{
+    font-size:11px;
+}
+
+.post-reaction-pill.mine{
+    color:#ef5877;
+    background:#ffe8ee;
+}
+
+.post-reaction-add-btn{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border:1px dashed #b8dde5;
+    background:transparent;
+    border-radius:50%;
+    width:30px;
+    height:30px;
+    padding:0;
+    font-size:14px;
+    line-height:1;
+    opacity:.65;
+}
+
+.post-reaction-add-btn:hover{
+    opacity:1;
+}
+
+.post-reaction-picker{
+    position:absolute;
+    bottom:calc(100% + 6px);
+    left:0;
+    display:flex;
+    gap:4px;
+    background:#fff;
+    border:2px solid #d5eef3;
+    border-radius:16px;
+    padding:5px 7px;
+    box-shadow:0 6px 18px rgba(20,60,70,.15);
+    z-index:5;
+}
+
+.post-reaction-picker.hidden{
+    display:none;
+}
+
+.post-reaction-picker button{
+    border:0;
+    background:transparent;
+    font-size:20px;
+    cursor:pointer;
+    padding:3px 5px;
+    border-radius:8px;
+}
+
+.post-reaction-picker button:hover{
+    background:#eef9fb;
+}
+
+/* POLLS */
+.poll-card{
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+    margin-top:12px;
+}
+
+.poll-option{
+    position:relative;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    border:2px solid #d6edf2;
+    background:#f7fdff;
+    color:#3d6e7f;
+    border-radius:14px;
+    padding:10px 14px;
+    font-weight:700;
+    text-align:left;
+    overflow:hidden;
+    cursor:pointer;
+}
+
+.poll-option.mine{
+    border-color:#7fd4e8;
+    color:#1f7a94;
+}
+
+.poll-option-fill{
+    position:absolute;
+    inset:0;
+    width:0;
+    background:linear-gradient(90deg,#d7f4fb,#c3ecf9);
+    transition:width .35s ease;
+    z-index:0;
+}
+
+.poll-option-text,
+.poll-option-pct{
+    position:relative;
+    z-index:1;
+}
+
+.poll-option-pct{
+    flex-shrink:0;
+    font-weight:800;
+}
+
+.poll-meta{
+    color:#7899a7;
+    font-size:12px;
+    margin-top:2px;
+}
+
+/* Poll composer builder — mirrors the look of the other composer
+   controls (secondary buttons, plain inputs) rather than inventing a
+   new visual language just for this one panel. */
+.poll-composer-builder{
+    margin-top:10px;
+    padding-top:10px;
+    border-top:1px solid #d6edf2;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+}
+
+.poll-composer-builder.hidden{
+    display:none;
+}
+
+#pollOptionInputs{
+    display:flex;
+    flex-direction:column;
+    gap:7px;
+}
+
+.poll-composer-actions{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+}
+
 .comment-list{
     margin-top:10px;
 }
@@ -3054,6 +3227,41 @@ html::after{
     color:#ff8fa3;
     background:rgba(239,88,119,.15);
 }
+
+[data-theme="dark"] .action-btn.saved{
+    color:#f0ce5c;
+    background:rgba(240,206,92,.15);
+}
+
+[data-theme="dark"] .post-reaction-pill{
+    background:rgba(79,201,245,.1);
+    color:#7fc4e0;
+}
+[data-theme="dark"] .post-reaction-pill.mine{
+    color:#ff8fa3;
+    background:rgba(239,88,119,.15);
+}
+[data-theme="dark"] .post-reaction-add-btn{ border-color:#2b4150; }
+[data-theme="dark"] .post-reaction-picker{
+    background:#16232b;
+    border-color:#233542;
+}
+[data-theme="dark"] .post-reaction-picker button:hover{ background:rgba(79,201,245,.15); }
+
+[data-theme="dark"] .poll-option{
+    background:rgba(255,255,255,.04);
+    border-color:#233542;
+    color:#9fc2cf;
+}
+[data-theme="dark"] .poll-option.mine{
+    border-color:#4fc9f5;
+    color:#8fe0f7;
+}
+[data-theme="dark"] .poll-option-fill{
+    background:linear-gradient(90deg,rgba(79,201,245,.18),rgba(79,201,245,.28));
+}
+[data-theme="dark"] .poll-meta{ color:#7d97a4; }
+[data-theme="dark"] .poll-composer-builder{ border-top-color:#233542; }
 
 [data-theme="dark"] .comment{ background:rgba(255,255,255,.05); }
 [data-theme="dark"] .comment strong{ color:#8fe0f7; }
