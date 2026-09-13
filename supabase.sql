@@ -135,6 +135,15 @@ create table if not exists public.post_likes (
     primary key (post_id, user_id)
 );
 
+-- Multiple reaction types (❤️ 🫧 ✨ 😂 😮), tapback-style like
+-- message_reactions: one row per (post,user), reacting again with a
+-- different emoji replaces it (upsert on the same primary key), tapping
+-- your own current emoji again removes the row. Existing rows default to
+-- ❤️ so nothing already liked silently loses its reaction. No RLS/index/
+-- realtime changes needed — post_likes already has all three and none of
+-- them reference this column.
+alter table public.post_likes add column if not exists emoji text not null default '❤️';
+
 -- ------------------------------------------------------------
 -- COMMENT LIKES — same one-row-per-(comment,user) pattern as post_likes.
 -- ------------------------------------------------------------
@@ -471,6 +480,61 @@ create table if not exists public.music_saves (
     created_at timestamptz not null default now(),
     primary key (music_id, user_id)
 );
+
+-- ------------------------------------------------------------
+-- POST SAVES
+-- One row per (post, user) — bookmarking a post to your own private
+-- "Сохранённое" list. Same one-row-per-pair shape as post_likes/
+-- music_saves, but unlike those, select is scoped to your own rows only
+-- (see RLS below) — a bookmark is personal, not something the post's
+-- author or anyone else needs to see or be notified about.
+-- ------------------------------------------------------------
+create table if not exists public.post_saves (
+    post_id text not null references public.posts(id) on delete cascade,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    created_at timestamptz not null default now(),
+    primary key (post_id, user_id)
+);
+
+create index if not exists post_saves_user_id_idx on public.post_saves(user_id);
+
+-- ------------------------------------------------------------
+-- POLLS
+-- One poll per post (post_id is unique below), 2-5 options, one vote per
+-- (poll,user) — tapping a different option moves your vote (upsert on
+-- the same primary key), tapping your own current option again removes
+-- it, same tapback semantics as reactions/message_reactions elsewhere in
+-- this file. RLS mirrors comments/post_likes' existing convention here
+-- (select using(true), not re-deriving the parent post's full privacy
+-- rules) rather than inventing a stricter model just for polls.
+-- ------------------------------------------------------------
+create table if not exists public.polls (
+    id text primary key,
+    post_id text not null references public.posts(id) on delete cascade,
+    created_at timestamptz not null default now()
+);
+
+create unique index if not exists polls_post_id_idx on public.polls(post_id);
+
+create table if not exists public.poll_options (
+    id text primary key,
+    poll_id text not null references public.polls(id) on delete cascade,
+    text text not null,
+    position int not null default 0
+);
+
+create index if not exists poll_options_poll_id_idx on public.poll_options(poll_id);
+
+create table if not exists public.poll_votes (
+    poll_id text not null references public.polls(id) on delete cascade,
+    option_id text not null references public.poll_options(id) on delete cascade,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    created_at timestamptz not null default now(),
+    primary key (poll_id, user_id)
+);
+
+create index if not exists poll_votes_option_id_idx on public.poll_votes(option_id);
+create index if not exists poll_votes_poll_id_idx on public.poll_votes(poll_id);
 
 -- ------------------------------------------------------------
 -- ADMIN / MODERATION
@@ -1149,6 +1213,10 @@ alter table public.friend_requests enable row level security;
 alter table public.post_likes enable row level security;
 alter table public.comment_likes enable row level security;
 alter table public.music_saves enable row level security;
+alter table public.post_saves enable row level security;
+alter table public.polls enable row level security;
+alter table public.poll_options enable row level security;
+alter table public.poll_votes enable row level security;
 
 -- Profiles
  drop policy if exists profiles_select on public.profiles;
@@ -1207,6 +1275,13 @@ create policy comments_delete on public.comments for delete using (auth.uid() = 
 create policy post_likes_select on public.post_likes for select using (true);
  drop policy if exists post_likes_insert on public.post_likes;
 create policy post_likes_insert on public.post_likes for insert with check (auth.uid() = user_id and public.under_like_rate_limit(user_id));
+-- Needed for toggleReaction's upsert: changing your emoji on a post you
+-- already reacted to hits this UPDATE path, not INSERT, since
+-- (post_id,user_id) is the primary key post_likes upserts on.
+ drop policy if exists post_likes_update on public.post_likes;
+create policy post_likes_update on public.post_likes for update
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
  drop policy if exists post_likes_delete on public.post_likes;
 create policy post_likes_delete on public.post_likes for delete using (auth.uid() = user_id);
 
@@ -1405,6 +1480,58 @@ create policy music_saves_insert on public.music_saves for insert with check (au
  drop policy if exists music_saves_delete on public.music_saves;
 create policy music_saves_delete on public.music_saves for delete using (auth.uid() = user_id);
 
+-- Post saves — select restricted to your own rows (unlike music_saves'
+-- public select above), since a bookmark is private: nobody else should
+-- be able to tell what you've saved.
+ drop policy if exists post_saves_select on public.post_saves;
+create policy post_saves_select on public.post_saves for select using (auth.uid() = user_id);
+ drop policy if exists post_saves_insert on public.post_saves;
+create policy post_saves_insert on public.post_saves for insert with check (auth.uid() = user_id);
+ drop policy if exists post_saves_delete on public.post_saves;
+create policy post_saves_delete on public.post_saves for delete using (auth.uid() = user_id);
+
+-- Polls — only the post's author can attach a poll/options to it, and
+-- only at post-creation time (no update policy: a published poll's
+-- question/options don't change, same as everywhere else in this app
+-- that treats "posted" as final for that kind of content).
+ drop policy if exists polls_select on public.polls;
+create policy polls_select on public.polls for select using (true);
+ drop policy if exists polls_insert on public.polls;
+create policy polls_insert on public.polls for insert with check (
+    exists (select 1 from public.posts p where p.id = post_id and p.author_id = auth.uid())
+);
+ drop policy if exists polls_delete on public.polls;
+create policy polls_delete on public.polls for delete using (
+    exists (select 1 from public.posts p where p.id = polls.post_id and p.author_id = auth.uid())
+    or public.is_admin()
+);
+
+ drop policy if exists poll_options_select on public.poll_options;
+create policy poll_options_select on public.poll_options for select using (true);
+ drop policy if exists poll_options_insert on public.poll_options;
+create policy poll_options_insert on public.poll_options for insert with check (
+    exists (
+        select 1 from public.polls pl
+        join public.posts p on p.id = pl.post_id
+        where pl.id = poll_id and p.author_id = auth.uid()
+    )
+);
+
+-- Poll votes — same one-row-per-(poll,user) pattern as post_likes.
+ drop policy if exists poll_votes_select on public.poll_votes;
+create policy poll_votes_select on public.poll_votes for select using (true);
+ drop policy if exists poll_votes_insert on public.poll_votes;
+create policy poll_votes_insert on public.poll_votes for insert with check (auth.uid() = user_id and public.under_like_rate_limit(user_id));
+-- Needed for voteInPoll's upsert: switching your vote to a different
+-- option hits this UPDATE path, since (poll_id,user_id) is the primary
+-- key poll_votes upserts on.
+ drop policy if exists poll_votes_update on public.poll_votes;
+create policy poll_votes_update on public.poll_votes for update
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+ drop policy if exists poll_votes_delete on public.poll_votes;
+create policy poll_votes_delete on public.poll_votes for delete using (auth.uid() = user_id);
+
 -- ------------------------------------------------------------
 -- REALTIME — make sure Supabase actually broadcasts changes on
 -- these tables. Without this, live messages / friend requests /
@@ -1460,6 +1587,12 @@ begin
         where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'comment_likes'
     ) then
         alter publication supabase_realtime add table public.comment_likes;
+    end if;
+    if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'poll_votes'
+    ) then
+        alter publication supabase_realtime add table public.poll_votes;
     end if;
     -- Public keys (profiles.public_key) previously only ever loaded once at
     -- page load, with nothing to refresh them afterwards. If a partner sets
