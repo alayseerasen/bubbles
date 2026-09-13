@@ -664,7 +664,10 @@ async function recomputeAchievements() {
     haptic("achievement");
     newlyUnlocked.forEach(id => {
         const a = ACHIEVEMENTS.find(x => x.id === id);
-        if (a) toast(`🏆 Новое достижение: ${a.icon} ${a.title}!`, 5000);
+        if (a) {
+            toast(`🏆 Новое достижение: ${a.icon} ${a.title}!`, 5000);
+            pushSystemNotification(`Новое достижение: ${a.icon} ${a.title}`, "🏆");
+        }
     });
 }
 
@@ -678,7 +681,10 @@ async function grantAchievement(userId, achievementId) {
     await persistAchievements(me, newList);
     haptic("achievement");
     const a = ACHIEVEMENTS.find(x => x.id === achievementId);
-    if (a) toast(`🏆 Новое достижение: ${a.icon} ${a.title}!`, 5000);
+    if (a) {
+        toast(`🏆 Новое достижение: ${a.icon} ${a.title}!`, 5000);
+        pushSystemNotification(`Новое достижение: ${a.icon} ${a.title}`, "🏆");
+    }
 }
 
 async function persistAchievements(user, unlockedIds) {
@@ -693,7 +699,10 @@ async function persistAchievements(user, unlockedIds) {
     const newTierCount = STATUS_TIERS.filter(t => unlockedIds.length >= t.min).length;
     if (newTierCount > oldTierCount) {
         const tier = getStatusTier(user);
-        if (tier) toast(`${tier.icon} Новый статус: ${tier.title}!`, 6000);
+        if (tier) {
+            toast(`${tier.icon} Новый статус: ${tier.title}!`, 6000);
+            pushSystemNotification(`Новый статус: ${tier.title}`, tier.icon);
+        }
     }
     if (currentPage === "profile" && selectedProfileId === user.id) renderProfile(user.id);
 }
@@ -861,6 +870,14 @@ let profileMusicExpanded = false;
 let profileFriendsExpanded = false;
 let profileAchievementsExpanded = false;
 let lastProfileRenderId = null;
+let profileTab = "posts"; // "posts" | "music" | "friends" | "media"
+let notifFilterTab = "all"; // "all" | "social" | "messages" | "system"
+// Session-only, not persisted — achievement unlocks already toast once
+// (see recomputeAchievements); this just keeps that moment visible in
+// the "Система" tab for a bit afterwards too, in case the toast was
+// missed. Doesn't need to survive a refresh the way social notifications
+// (their own DB table) do.
+let systemNotifications = [];
 let selectedChatId = null;
 let selectedCanvasUserId = null; // whose canvas room is currently open — see openCanvasRoom
 let canvasBackground = "sky";
@@ -981,6 +998,69 @@ function isFriend(userId) {
 }
 
 /* ------------------------------------------------------------
+   FOLLOWS — separate, one-directional, no accept step (see friend
+   requests above for the handshake-based relationship instead).
+   ------------------------------------------------------------ */
+function isFollowing(userId) {
+    return db.follows.some(f => f.followerId === currentUserId && f.followedId === userId);
+}
+
+function followersOf(userId) {
+    return db.follows.filter(f => f.followedId === userId).map(f => f.followerId);
+}
+
+function followingOf(userId) {
+    return db.follows.filter(f => f.followerId === userId).map(f => f.followedId);
+}
+
+async function toggleFollow(userId) {
+    if (!userId || userId === currentUserId) return;
+    const wasFollowing = isFollowing(userId);
+
+    // Optimistic update, same pattern as toggleReaction/toggleSavePost —
+    // reconciled from the server on failure below.
+    if (wasFollowing) db.follows = db.follows.filter(f => !(f.followerId === currentUserId && f.followedId === userId));
+    else db.follows.push({ followerId: currentUserId, followedId: userId });
+    if (currentPage === "profile") renderProfile(selectedProfileId || currentUserId);
+
+    const { error } = wasFollowing
+        ? await sb.from("follows").delete().eq("follower_id", currentUserId).eq("followed_id", userId)
+        : await sb.from("follows").insert({ follower_id: currentUserId, followed_id: userId });
+
+    if (error) {
+        console.error(error);
+        if (wasFollowing) db.follows.push({ followerId: currentUserId, followedId: userId });
+        else db.follows = db.follows.filter(f => !(f.followerId === currentUserId && f.followedId === userId));
+        if (currentPage === "profile") renderProfile(selectedProfileId || currentUserId);
+        toast("Не удалось подписаться.");
+        return;
+    }
+
+    if (!wasFollowing) createNotification({ userId, type: "new_follower" });
+}
+
+// Followers/following lists — reuses the same friendCard + friend-grid
+// markup as the friends tab and search results, just filtered to one
+// side of the follow graph instead of the friendships table.
+function openFollowListModal(userId, kind) {
+    const user = getUser(userId);
+    if (!user) return;
+    const ids = kind === "followers" ? followersOf(userId) : followingOf(userId);
+    const users = ids.map(getUser).filter(Boolean);
+    showBubblesModal(`
+        <div class="modal-header">
+            <h3>${kind === "followers" ? "Подписчики" : "Подписки"}</h3>
+            <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
+        </div>
+        ${
+            users.length
+            ? `<div class="friend-grid" onclick="closeBubblesModal()">${users.map(friendCard).join("")}</div>`
+            : emptyState("🔔", kind === "followers" ? "Пока нет подписчиков" : "Пока никто не выбран", "")
+        }
+    `);
+}
+
+/* ------------------------------------------------------------
    BLOCKING
    ------------------------------------------------------------
    One-way and personal — not moderation. Blocking someone hides them
@@ -1024,6 +1104,16 @@ async function toggleBlockUser(userId) {
             await sb.from("friendships").delete().eq("id", friendship.id);
             db.friends = db.friends.filter(f => f.id !== friendship.id);
         }
+        // Same reasoning for follows in either direction — no point
+        // staying in each other's followers/following lists once blocked.
+        await Promise.all([
+            sb.from("follows").delete().eq("follower_id", currentUserId).eq("followed_id", userId),
+            sb.from("follows").delete().eq("follower_id", userId).eq("followed_id", currentUserId)
+        ]);
+        db.follows = db.follows.filter(f =>
+            !(f.followerId === currentUserId && f.followedId === userId) &&
+            !(f.followerId === userId && f.followedId === currentUserId)
+        );
         if (selectedChatId === userId) selectedChatId = null;
         toast(`${user.displayName} заблокирован(-а).`);
     }
@@ -1730,6 +1820,17 @@ function startApp(){
     setupSocialRealtime();
     setupNotificationsRealtime();
     initCallSignaling();
+    // Resolve a shared profile link (#u-<username>), if present, before
+    // the initial render — see shareProfile. Left un-cleared afterwards
+    // so refreshing the page keeps working, same as any other deep link.
+    const sharedMatch = location.hash.match(/^#u-(.+)$/);
+    if (sharedMatch) {
+        const sharedUser = db.users.find(u => u.username === decodeURIComponent(sharedMatch[1]));
+        if (sharedUser) {
+            currentPage = "profile";
+            selectedProfileId = sharedUser.id;
+        }
+    }
     renderApp();
     startOnlineCountPolling();
     // On iPhone/iPad, Web Push permission MUST be requested from a direct
@@ -3686,6 +3787,7 @@ function renderProfile(userId){
         profileMusicExpanded = false;
         profileFriendsExpanded = false;
         profileAchievementsExpanded = false;
+        profileTab = "posts";
         lastProfileRenderId = userId;
     }
     const posts = db.posts.filter(p => p.authorId === user.id).sort((a,b) => b.createdAt - a.createdAt);
@@ -3701,6 +3803,11 @@ function renderProfile(userId){
     const music = db.music.filter(m => m.authorId === user.id || savedIds.has(m.id));
     const isMe = user.id === currentUserId;
     const friend = isFriend(user.id);
+    // Media tab — every wall post (own wall + posts left on it) that has
+    // an image, newest first. Uses wallPosts (not the narrower `posts`)
+    // so a photo someone else posted on this profile's wall still shows
+    // up here, matching how the wall itself already works.
+    const mediaPosts = wallPosts.filter(p => p.image);
 
     document.getElementById("page").innerHTML = `
 
@@ -3766,6 +3873,14 @@ function renderProfile(userId){
                                 >
                                     🎨 Моя комната
                                 </button>
+
+                                <button
+                                    class="secondary"
+                                    onclick="shareProfile('${user.id}')"
+                                    title="Поделиться профилем"
+                                >
+                                    ↗ Поделиться
+                                </button>
                             `
                             : isBlockedByMe(user.id)
                             ? `
@@ -3778,6 +3893,13 @@ function renderProfile(userId){
                             `
                             : `
                                 ${friendActionButtons(user.id)}
+
+                                <button
+                                    class="secondary${isFollowing(user.id) ? " following" : ""}"
+                                    onclick="toggleFollow('${user.id}')"
+                                >
+                                    ${isFollowing(user.id) ? "✓ Подписан(а)" : "➕ Подписаться"}
+                                </button>
 
                                 ${
                                     friend
@@ -3804,6 +3926,14 @@ function renderProfile(userId){
                                     onclick="visitFriendsPet('${user.id}')"
                                 >
                                     🐣 Питомец
+                                </button>
+
+                                <button
+                                    class="secondary"
+                                    onclick="shareProfile('${user.id}')"
+                                    title="Поделиться профилем"
+                                >
+                                    ↗ Поделиться
                                 </button>
 
                                 <button
@@ -3848,9 +3978,24 @@ function renderProfile(userId){
                         <span>друзей</span>
                     </div>
 
+                    <div class="stat" style="cursor:pointer" onclick="openFollowListModal('${user.id}','followers')">
+                        <strong>${followersOf(user.id).length}</strong>
+                        <span>подписчиков</span>
+                    </div>
+
+                    <div class="stat" style="cursor:pointer" onclick="openFollowListModal('${user.id}','following')">
+                        <strong>${followingOf(user.id).length}</strong>
+                        <span>подписок</span>
+                    </div>
+
                     <div class="stat">
                         <strong>${music.length}</strong>
                         <span>треков</span>
+                    </div>
+
+                    <div class="stat">
+                        <strong>${mediaPosts.length}</strong>
+                        <span>медиа</span>
                     </div>
 
                 </div>
@@ -3863,11 +4008,15 @@ function renderProfile(userId){
 
         ${renderAchievementsGrid(user)}
 
+        <div class="profile-tabs">
+            <button type="button" class="profile-tab${profileTab === 'posts' ? ' active' : ''}" onclick="setProfileTab('posts')">📝 Посты</button>
+            <button type="button" class="profile-tab${profileTab === 'music' ? ' active' : ''}" onclick="setProfileTab('music')">🎵 Музыка</button>
+            <button type="button" class="profile-tab${profileTab === 'friends' ? ' active' : ''}" onclick="setProfileTab('friends')">🫂 Друзья</button>
+            <button type="button" class="profile-tab${profileTab === 'media' ? ' active' : ''}" onclick="setProfileTab('media')">🖼 Медиа</button>
+        </div>
+
+        ${profileTab === 'posts' ? `
         <section class="profile-wall">
-            <div class="profile-wall-title-row">
-                <h2 class="section-title">📝 Стена</h2>
-                <span class="wall-count">${wallPosts.length}</span>
-            </div>
             <p class="wall-subtitle">Видно только здесь, в профиле — в общую ленту не попадает.</p>
 
             ${
@@ -3897,22 +4046,19 @@ function renderProfile(userId){
                 ${wallPosts.length ? wallPosts.map(renderPost).join("") : emptyState("🫧", "Стена пустая", isMe ? "Напиши первый пост." : "Оставь первый пост на стене этого пользователя.")}
             </div>
         </section>
+        ` : ''}
 
-        <h2 class="section-title">
-            🎵 Музыка
-        </h2>
-
-
+        ${profileTab === 'music' ? `
         ${
             music.length
             ? `
                 ${
-                    (profileMusicExpanded ? music : music.slice(0, 3))
+                    (profileMusicExpanded ? music : music.slice(0, 12))
                         .map(musicProfileCard)
                         .join("")
                 }
                 ${
-                    music.length > 3
+                    music.length > 12
                     ? `
                         <button class="secondary full profile-expand-btn" onclick="toggleProfileMusicExpanded()">
                             ${profileMusicExpanded ? "Свернуть ↑" : `Все ${music.length} →`}
@@ -3929,20 +4075,16 @@ function renderProfile(userId){
                 : "Пользователь ещё ничего не публиковал."
             )
         }
+        ` : ''}
 
-
-        <h2 class="section-title">
-            🫂 Друзья
-        </h2>
-
-
+        ${profileTab === 'friends' ? `
         ${
             friends.length
             ? `
                 <div class="friend-grid">
 
                     ${
-                        (profileFriendsExpanded ? friends : friends.slice(0, 3))
+                        friends
                         .map(f => {
 
                             const id =
@@ -3965,15 +4107,6 @@ function renderProfile(userId){
                     }
 
                 </div>
-                ${
-                    friends.length > 3
-                    ? `
-                        <button class="secondary full profile-expand-btn" onclick="toggleProfileFriendsExpanded()">
-                            ${profileFriendsExpanded ? "Свернуть ↑" : `Все ${friends.length} →`}
-                        </button>
-                    `
-                    : ""
-                }
             `
             : emptyState(
                 "🫂",
@@ -3981,6 +4114,34 @@ function renderProfile(userId){
                 "Здесь появятся друзья пользователя."
             )
         }
+        ` : ''}
+
+        ${profileTab === 'media' ? `
+        ${
+            mediaPosts.length
+            ? `
+                <div class="profile-media-grid">
+                    ${
+                        mediaPosts.map(p => `
+                            <button
+                                type="button"
+                                class="profile-media-thumb"
+                                onclick="goToProfileMedia('${p.id}','${user.id}')"
+                            >
+                                <img loading="lazy" decoding="async" src="${p.image}">
+                            </button>
+                        `).join("")
+                    }
+                </div>
+            `
+            : emptyState(
+                "🖼",
+                "Здесь пока ничего нет 🫧",
+                isMe ? "Посты с фото появятся тут." : "Пользователь ещё не публиковал фото."
+            )
+        }
+        ` : ''}
+
 
 
     `;
@@ -4836,6 +4997,63 @@ function unreadNotificationsCount() {
     return db.notifications.filter(n => !n.readAt).length;
 }
 
+// See the systemNotifications declaration above for why these are
+// session-only rather than a DB table — capped at 30 so a very long
+// session doesn't grow this unbounded.
+function pushSystemNotification(text, icon) {
+    systemNotifications.unshift({ id: uid("sysnotif"), text, icon: icon || "🔔", createdAt: Date.now(), read: false });
+    systemNotifications = systemNotifications.slice(0, 30);
+    updateNavBadges();
+}
+
+// Which of the notification center's 4 tabs a given DB notification
+// type belongs to — every type currently created (see createNotification
+// call sites) is a social/friend-graph event, so this only really
+// exists so a future type has somewhere obvious to be routed.
+function notificationCategory(type) {
+    return "social";
+}
+
+// "Сообщения" tab content — not its own stored notification type at
+// all, just a read of the chat system's own existing unread state
+// (messages already track read_at, see markChatAsRead), grouped by
+// sender so it reads as "N unread from X" rather than one row per
+// message.
+// Same three-way Russian pluralization as pluralPeople/pluralVotes
+// above, for "сообщение/сообщения/сообщений" (unread message counts).
+function pluralMessages(n){
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return "новое сообщение";
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return "новых сообщения";
+    return "новых сообщений";
+}
+
+function unreadMessageSenders() {
+    if (!currentUserId || !Array.isArray(db.messages)) return [];
+    const bySender = new Map();
+    db.messages.forEach(m => {
+        if (m.to !== currentUserId || m.readAt) return;
+        if (!bySender.has(m.from)) bySender.set(m.from, { userId: m.from, count: 0, lastAt: 0 });
+        const entry = bySender.get(m.from);
+        entry.count++;
+        entry.lastAt = Math.max(entry.lastAt, m.createdAt);
+    });
+    return [...bySender.values()].sort((a, b) => b.lastAt - a.lastAt);
+}
+
+async function markNotificationRead(id) {
+    const n = db.notifications.find(x => x.id === id);
+    if (!n || n.readAt) return;
+    n.readAt = Date.now();
+    updateNavBadges();
+    const { error } = await sb.from("bubbles_notifications")
+        .update({ read_at: new Date(n.readAt).toISOString() })
+        .eq("id", id)
+        .eq("user_id", currentUserId);
+    if (error) console.error("❌ Не удалось отметить уведомление прочитанным:", error);
+}
+
 // One line of copy + a click target per notification type. Likes and
 // comments both just take you back to the post (comments render inline
 // under it, so there's no separate page to jump to); friend events go
@@ -4860,41 +5078,123 @@ function notificationLine(n) {
             return { text: `${name} оставил(а) запись на вашей стене 🧱`, onclick: `goToPost('${n.postId}')` };
         case "pet_fed":
             return { text: `${name} покормил(а) вашего питомца 🍬`, onclick: `navigate('pet')` };
+        case "new_follower":
+            return { text: `${name} подписался(ась) на вас 🔔`, onclick: `navigate('profile','${n.actorId}')` };
         default:
             return { text: name, onclick: "" };
     }
 }
 
+const NOTIF_TABS = [
+    { id: "all", label: "Все" },
+    { id: "social", label: "Социальные" },
+    { id: "messages", label: "Сообщения" },
+    { id: "system", label: "Система" }
+];
+
 function renderNotificationsPanel() {
-    const items = [...db.notifications].sort((a, b) => b.createdAt - a.createdAt);
+    const socialItems = [...db.notifications].sort((a, b) => b.createdAt - a.createdAt);
+    const messageSenders = unreadMessageSenders();
+    const sysItems = systemNotifications;
+
+    const showSocial = notifFilterTab === "all" || notifFilterTab === "social";
+    const showMessages = notifFilterTab === "all" || notifFilterTab === "messages";
+    const showSystem = notifFilterTab === "all" || notifFilterTab === "system";
+
+    const totalUnread = unreadNotificationsCount() + messageSenders.length + sysItems.filter(s => !s.read).length;
+
+    const socialHtml = !showSocial ? "" : socialItems.filter(n => notificationCategory(n.type) === "social").map(n => {
+        const { text, onclick } = notificationLine(n);
+        const actor = getUser(n.actorId);
+        return `
+            <div class="notif-item${n.readAt ? "" : " unread"}" onclick="markNotificationRead('${n.id}');${onclick};closeNotificationsPanel();">
+                <img loading="lazy" decoding="async" class="mini-avatar" src="${actor?.avatar || defaultAvatar()}">
+                <div class="notif-item-body">
+                    <span>${text}</span>
+                    <small>${new Date(n.createdAt).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</small>
+                </div>
+                ${n.readAt ? "" : `<button type="button" class="notif-mark-read-btn" onclick="event.stopPropagation();markNotificationRead('${n.id}');this.closest('.notif-item').classList.remove('unread');this.remove();" title="Отметить прочитанным">✓</button>`}
+            </div>
+        `;
+    }).join("");
+
+    const messagesHtml = !showMessages ? "" : messageSenders.map(entry => {
+        const user = getUser(entry.userId);
+        return `
+            <div class="notif-item unread" onclick="openChat('${entry.userId}');closeNotificationsPanel();">
+                <img loading="lazy" decoding="async" class="mini-avatar" src="${user?.avatar || defaultAvatar()}">
+                <div class="notif-item-body">
+                    <span>${escapeHtml(user?.displayName || "Пользователь")}: ${entry.count} ${pluralMessages(entry.count)} 💬</span>
+                    <small>${new Date(entry.lastAt).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</small>
+                </div>
+            </div>
+        `;
+    }).join("");
+
+    const systemHtml = !showSystem ? "" : sysItems.map(s => `
+        <div class="notif-item${s.read ? "" : " unread"}">
+            <span class="notif-item-icon">${s.icon}</span>
+            <div class="notif-item-body">
+                <span>${escapeHtml(s.text)}</span>
+                <small>${new Date(s.createdAt).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</small>
+            </div>
+        </div>
+    `).join("");
+
+    const combinedHtml = socialHtml + messagesHtml + systemHtml;
+
     return `
-        <div class="notif-panel-header">Уведомления</div>
-        <div class="notif-panel-list">
+        <div class="notif-panel-header">
+            <span>Уведомления</span>
+            ${totalUnread ? `<button type="button" class="notif-mark-all-btn" onclick="markAllNotificationsRead()">✓✓ Прочитать всё</button>` : ""}
+        </div>
+        <div class="notif-panel-tabs">
             ${
-                items.length
-                ? items.map(n => {
-                    const { text, onclick } = notificationLine(n);
-                    const actor = getUser(n.actorId);
-                    return `
-                        <div class="notif-item${n.readAt ? "" : " unread"}" onclick="${onclick};closeNotificationsPanel();">
-                            <img loading="lazy" decoding="async" class="mini-avatar" src="${actor?.avatar || defaultAvatar()}">
-                            <div class="notif-item-body">
-                                <span>${text}</span>
-                                <small>${new Date(n.createdAt).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</small>
-                            </div>
-                        </div>
-                    `;
-                }).join("")
-                : `<div class="empty notif-empty">Пока ничего нет.</div>`
+                NOTIF_TABS.map(t => `
+                    <button type="button" class="notif-panel-tab${notifFilterTab === t.id ? " active" : ""}" onclick="setNotifFilterTab('${t.id}')">
+                        ${t.label}
+                    </button>
+                `).join("")
             }
+        </div>
+        <div class="notif-panel-list">
+            ${combinedHtml || `<div class="empty notif-empty">Пока ничего нет.</div>`}
         </div>
     `;
 }
 
-// Opens/closes the bell dropdown and, on open, marks everything read —
-// same "clears when you look at it" behaviour as most notification
-// bells. stopPropagation keeps the outside-click listener below from
-// closing it on the same click that opened it.
+function setNotifFilterTab(tab) {
+    notifFilterTab = tab;
+    const panel = document.getElementById("notifPanel");
+    if (panel) panel.innerHTML = renderNotificationsPanel();
+}
+
+// Marks every social notification AND every session-local system one
+// read; messages aren't included here — they're only ever marked read
+// by actually opening that chat (markChatAsRead), same as everywhere
+// else in the app, so there's no separate bulk action for them.
+async function markAllNotificationsRead() {
+    systemNotifications.forEach(s => { s.read = true; });
+    const unread = db.notifications.filter(n => !n.readAt);
+    if (unread.length) {
+        const readAt = new Date().toISOString();
+        unread.forEach(n => { n.readAt = Date.parse(readAt); });
+        const { error } = await sb
+            .from("bubbles_notifications")
+            .update({ read_at: readAt })
+            .in("id", unread.map(n => n.id))
+            .eq("user_id", currentUserId);
+        if (error) console.error("❌ Не удалось отметить уведомления прочитанными:", error);
+    }
+    updateNavBadges();
+    const panel = document.getElementById("notifPanel");
+    if (panel && !panel.classList.contains("hidden")) panel.innerHTML = renderNotificationsPanel();
+}
+
+// Opens/closes the bell dropdown. Unlike before, opening no longer
+// silently marks everything read — with per-item ✓ buttons and an
+// explicit "Прочитать всё" now available, seeing the list shouldn't be
+// the same action as dismissing it.
 function toggleNotificationsPanel(event) {
     event.stopPropagation();
     const panel = document.getElementById("notifPanel");
@@ -4904,10 +5204,10 @@ function toggleNotificationsPanel(event) {
         closeNotificationsPanel();
         return;
     }
+    notifFilterTab = "all";
     panel.innerHTML = renderNotificationsPanel();
     panel.classList.remove("hidden");
     positionNotificationsPanel(panel);
-    markAllNotificationsRead();
 }
 
 // The bell isn't the last icon in the topbar (theme toggle + avatar +
@@ -4977,22 +5277,6 @@ window.addEventListener("resize", () => {
     if (panel && !panel.classList.contains("hidden")) positionNotificationsPanel(panel);
 });
 
-async function markAllNotificationsRead() {
-    const unread = db.notifications.filter(n => !n.readAt);
-    if (!unread.length) return;
-    const readAt = new Date().toISOString();
-    unread.forEach(n => { n.readAt = Date.parse(readAt); });
-    setNavBadge("notifBadge", 0);
-
-    const { error } = await sb
-        .from("bubbles_notifications")
-        .update({ read_at: readAt })
-        .in("id", unread.map(n => n.id))
-        .eq("user_id", currentUserId);
-
-    if (error) console.error("❌ Не удалось отметить уведомления прочитанными:", error);
-}
-
 // Jumps to the feed and scrolls/highlights one post — used by post_like
 // and post_comment notifications. The post might have scrolled off, been
 // deleted, or belong to someone whose posts aren't shown here, so this
@@ -5015,6 +5299,48 @@ function goToPost(postId) {
         el.classList.add("post-highlight");
         setTimeout(() => el.classList.remove("post-highlight"), 1600);
     }, 50);
+}
+
+function setProfileTab(tab) {
+    profileTab = tab;
+    renderProfile(selectedProfileId || currentUserId);
+}
+
+// Media tab thumbnails link back into the Посты tab of the same profile,
+// scrolled to that post — same scroll-and-highlight as goToPost above,
+// just always routed through the profile (media only ever exists on a
+// wall, never the main feed).
+function goToProfileMedia(postId, userId) {
+    profileTab = "posts";
+    navigate("profile", userId);
+    setTimeout(() => {
+        const el = document.querySelector(`[data-bubbles-post-id="${postId}"]`);
+        if (!el) return;
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("post-highlight");
+        setTimeout(() => el.classList.remove("post-highlight"), 1600);
+    }, 50);
+}
+
+// Shares a deep link to a profile — #u-<username> is read once at boot
+// (see the hash check near startApp) and opens straight to that profile.
+// navigator.share gives the native share sheet on iOS/Android where
+// available; clipboard is the fallback everywhere else.
+function shareProfile(userId) {
+    const user = getUser(userId);
+    if (!user) return;
+    const url = `${location.origin}${location.pathname}#u-${encodeURIComponent(user.username)}`;
+    if (navigator.share) {
+        navigator.share({ title: user.displayName, url }).catch(() => {});
+        return;
+    }
+    if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(url)
+            .then(() => toast("Ссылка на профиль скопирована 🔗"))
+            .catch(() => toast(url, 8000));
+        return;
+    }
+    toast(url, 8000);
 }
 
 /* ============================================================
@@ -8292,7 +8618,7 @@ function setNavBadge(ids, count) {
 function updateNavBadges() {
     setNavBadge(["messagesUnreadBadge","messagesUnreadBadgeMobile"], getUnreadMessagesCount());
     setNavBadge(["friendRequestsBadge","friendRequestsBadgeMobile"], myIncomingRequests().length);
-    setNavBadge("notifBadge", unreadNotificationsCount());
+    setNavBadge("notifBadge", unreadNotificationsCount() + systemNotifications.filter(s => !s.read).length);
     // There's no separate "Admin" nav item any more — moderation lives on
     // your own profile page (see renderProfile), so this badge on
     // "Профиль" is the only hint an admin gets that reports OR pending
@@ -8339,7 +8665,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, reports, subscriptionRequests, blocks, stories, storyViews, petRow] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, reports, subscriptionRequests, blocks, stories, storyViews, petRow] = await Promise.all([
             sb.from("profiles_public").select("id,username,display_name,gender,avatar,cover,bio,visible_last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,created_at,show_online_status,wall_visibility,music_visibility,who_can_message,who_can_friend_request").order("created_at", { ascending: true }),
             sb.from("posts").select("id,author_id,wall_owner_id,text,image,music_id,shared_post_id,likes,pinned,pinned_at,created_at").order("created_at", { ascending: false }).limit(150),
             sb.from("comments").select("id,post_id,author_id,parent_comment_id,text,created_at").order("created_at", { ascending: true }).limit(1000),
@@ -8358,6 +8684,7 @@ async function loadDB() {
             sb.from("polls").select("id,post_id,created_at"),
             sb.from("poll_options").select("id,poll_id,text,position").order("position", { ascending: true }),
             sb.from("poll_votes").select("poll_id,option_id,user_id").limit(20000),
+            sb.from("follows").select("follower_id,followed_id"),
             // RLS only ever actually returns rows here for the reporter or an
             // admin, so this is cheap/empty for a regular user and only an
             // admin's own profile page ends up showing anything from it.
@@ -8377,7 +8704,7 @@ async function loadDB() {
             // it, same reasoning as room_messages used to be.
             currentUserId ? sb.from("pets").select("*").eq("owner_id", currentUserId).maybeSingle() : Promise.resolve({ data: null, error: null })
         ]);
-        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, reports, subscriptionRequests, blocks, stories, storyViews, petRow];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, reports, subscriptionRequests, blocks, stories, storyViews, petRow];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -8397,6 +8724,7 @@ async function loadDB() {
             storyViews: (storyViews.data || []).map(row => ({ id: row.id, storyId: row.story_id, viewerId: row.viewer_id })),
             polls: (polls.data || []).map(row => ({ id: row.id, postId: row.post_id, createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
             pollOptions: (pollOptions.data || []).map(row => ({ id: row.id, pollId: row.poll_id, text: row.text, position: row.position || 0, votes: [] })),
+            follows: (follows.data || []).map(row => ({ followerId: row.follower_id, followedId: row.followed_id })),
             canvasItems: [],
             pet: petRow.data ? rowToPet(petRow.data) : null
         };
@@ -8730,6 +9058,25 @@ function setupSocialRealtime() {
             if (option) option.votes = option.votes.filter(id => id !== payload.old.user_id);
             if (poll) refreshPostInPlace(poll.postId);
         })
+        // Follows — purely local-state + a re-render if you're currently
+        // looking at either side of the relationship; nothing on the
+        // post/feed side needs to react to this.
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "follows" }, (payload) => {
+            if (!db.follows.some(f => f.followerId === payload.new.follower_id && f.followedId === payload.new.followed_id)) {
+                db.follows.push({ followerId: payload.new.follower_id, followedId: payload.new.followed_id });
+            }
+            const viewedId = selectedProfileId || currentUserId;
+            if (currentPage === "profile" && (viewedId === payload.new.follower_id || viewedId === payload.new.followed_id)) {
+                renderProfile(viewedId);
+            }
+        })
+        .on("postgres_changes", { event: "DELETE", schema: "public", table: "follows" }, (payload) => {
+            db.follows = db.follows.filter(f => !(f.followerId === payload.old.follower_id && f.followedId === payload.old.followed_id));
+            const viewedId2 = selectedProfileId || currentUserId;
+            if (currentPage === "profile" && (viewedId2 === payload.old.follower_id || viewedId2 === payload.old.followed_id)) {
+                renderProfile(viewedId2);
+            }
+        })
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "posts" }, (payload) => {
             if (payload.new.author_id === currentUserId) return;
             if (db.posts.some(p => p.id === payload.new.id)) return;
@@ -9032,10 +9379,12 @@ Object.assign(window,{
     saveProfile,onAvatarFileChosen,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
     toggleMessageReaction,toggleReactionPicker,
     startReplyToMessage,cancelReplyToMessage,scrollToMessage,
-    toggleNotificationsPanel,goToPost,
+    toggleNotificationsPanel,goToPost,setNotifFilterTab,markNotificationRead,markAllNotificationsRead,
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
+    toggleFollow,openFollowListModal,
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
     toggleProfileMusicExpanded,toggleProfileFriendsExpanded,toggleProfileAchievementsExpanded,
+    setProfileTab,goToProfileMedia,shareProfile,
     toggleSavePost,renderSaved,
     setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,backfillAchievementsForAllUsers,togglePinPost,
     toggleMoreSheet,openMoreSheet,closeMoreSheet,
