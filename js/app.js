@@ -8,6 +8,10 @@ const MAX_COVER_SIZE = 5 * 1024 * 1024;
 const MUSIC_BUCKET = "music";
 const IMAGES_BUCKET = "images";
 const QUICK_REACTIONS = ["❤️", "😂", "👍", "😮", "😢"];
+// Post reactions are a fixed, non-Bubbles+-gated set (see spec) — deliberately
+// a separate constant from the chat's QUICK_REACTIONS/PLUS_REACTIONS since
+// there's no reason the two surfaces need to share the exact same emoji.
+const POST_REACTIONS = ["❤️", "🫧", "✨", "😂", "😮"];
 
 /* ============================================================
    BUBBLES+ — subscription config
@@ -848,7 +852,7 @@ let selectedProfileId = null;
 // (Поиск/Комната/Питомец/Bubbles+/Настройки) — e.g. via a deep link or
 // a button elsewhere in the app — doesn't hide its own nav highlight
 // behind a collapsed "Ещё" toggle.
-let sidebarMoreExpanded = ["search","rooms","pet","premium","edit"].includes(currentPage);
+let sidebarMoreExpanded = ["search","rooms","saved","pet","premium","edit"].includes(currentPage);
 function toggleSidebarMore(){
     sidebarMoreExpanded = !sidebarMoreExpanded;
     renderApp();
@@ -899,6 +903,7 @@ let pendingAvatarExt = "jpg"; // "jpg" (прошёл через кроппер) 
 let pendingCoverBlob = null;
 let pendingMusicCoverBlob = null;
 let mySavedMusicIds = new Set(); // tracks (by others) I've added to my library
+let mySavedPostIds = new Set(); // posts I've bookmarked to my private "Сохранённое" list
 let savesByUser = new Map();     // userId -> Set(musicId), for everyone (profile counts)
 
 /* Comment reply state — which comment threads currently have their reply
@@ -1434,6 +1439,16 @@ function pluralPeople(n){
     return "человек";
 }
 
+// Same three-way Russian pluralization as pluralPeople above, just for
+// "голос/голоса/голосов" (poll vote counts) instead of "человек".
+function pluralVotes(n){
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return "голос";
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return "голоса";
+    return "голосов";
+}
+
 // Polls everyone's last_seen periodically so the "N онлайн" badge (topbar
 // + landing screen) stays roughly live without needing a dedicated
 // realtime presence channel. Computes the count straight from the query
@@ -1886,6 +1901,14 @@ function renderApp(){
 
                     <button
                         class="nav-btn"
+                        data-page="saved"
+                        onclick="navigate('saved')"
+                    >
+                        🔖 Сохранённое
+                    </button>
+
+                    <button
+                        class="nav-btn"
                         data-page="pet"
                         onclick="navigate('pet')"
                     >
@@ -1984,6 +2007,10 @@ function renderApp(){
                     🎨 Комната
                 </button>
 
+                <button class="more-sheet-item" data-page="saved" onclick="navigate('saved'); closeMoreSheet();">
+                    🔖 Сохранённое
+                </button>
+
                 <button class="more-sheet-item" data-page="pet" onclick="navigate('pet'); closeMoreSheet();">
                     🐣 Питомец
                     <span id="petNeedsAttentionBadgeMobile" class="nav-badge hidden"></span>
@@ -2040,7 +2067,7 @@ function navigate(page, id = null){
     // button on someone's profile. navigate() only ever rebuilds #page,
     // not the sidebar itself, so the state flag alone wouldn't be
     // reflected on screen without also touching the DOM directly here.
-    if (["search","rooms","pet","premium","edit"].includes(page) && !sidebarMoreExpanded) {
+    if (["search","rooms","saved","pet","premium","edit"].includes(page) && !sidebarMoreExpanded) {
         sidebarMoreExpanded = true;
         document.querySelector(".sidebar-more")?.classList.remove("hidden");
         const toggle = document.querySelector(".sidebar-more-toggle");
@@ -2088,6 +2115,7 @@ function navigate(page, id = null){
         case "premium": renderPremium(); break;
         case "edit": renderEditProfile(); break;
         case "search": renderSearchResults((id != null ? id : userSearchQuery).trim().toLowerCase()); break;
+        case "saved": renderSaved(); break;
         default: renderFeed();
     }
 
@@ -2185,6 +2213,14 @@ function renderFeed(){
                 </button>
 
                 <button
+                    type="button"
+                    class="secondary"
+                    onclick="togglePollComposer()"
+                >
+                    📊 Опрос
+                </button>
+
+                <button
                     id="createPostBtn"
                     class="primary"
                     onclick="createPost()"
@@ -2195,6 +2231,20 @@ function renderFeed(){
             </div>
 
             <div id="composerMusicChip"></div>
+
+            <div id="pollComposerBuilder" class="poll-composer-builder hidden">
+
+                <div id="pollOptionInputs">
+                    <input class="poll-option-input" maxlength="80" placeholder="Вариант 1">
+                    <input class="poll-option-input" maxlength="80" placeholder="Вариант 2">
+                </div>
+
+                <div class="poll-composer-actions">
+                    <button type="button" class="secondary" onclick="addPollOptionInput()">+ Вариант</button>
+                    <button type="button" class="secondary" onclick="togglePollComposer()">✕ Убрать опрос</button>
+                </div>
+
+            </div>
 
         </div>
 
@@ -2378,10 +2428,49 @@ function renderReplyBox(postId, threadId){
     `;
 }
 
+// Renders one poll's options as tap-to-vote bars — percentage fill grows
+// once votes exist, "mine" gets a highlighted border, and the count/%
+// only appear once at least one vote has been cast (before that it's
+// just a plain list of choices, nothing to compare yet).
+function renderPollCard(poll, options){
+    const totalVotes = options.reduce((sum, o) => sum + o.votes.length, 0);
+    const myOptionId = options.find(o => o.votes.includes(currentUserId))?.id || null;
+    return `
+        <div class="poll-card">
+            ${
+                options.map(option => {
+                    const pct = totalVotes ? Math.round((option.votes.length / totalVotes) * 100) : 0;
+                    const mine = option.id === myOptionId;
+                    return `
+                        <button
+                            type="button"
+                            class="poll-option${mine ? " mine" : ""}"
+                            onclick="voteInPoll('${poll.id}','${option.id}')"
+                        >
+                            <div class="poll-option-fill" style="width:${pct}%"></div>
+                            <span class="poll-option-text">${mine ? "✓ " : ""}${escapeHtml(option.text)}</span>
+                            ${totalVotes ? `<span class="poll-option-pct">${pct}%</span>` : ""}
+                        </button>
+                    `;
+                }).join("")
+            }
+            <div class="poll-meta">${totalVotes} ${pluralVotes(totalVotes)}</div>
+        </div>
+    `;
+}
+
 function renderPost(post){
     const author = getUser(post.authorId);
     if(!author) return "";
-    const liked = post.likes?.includes(currentUserId);
+    // Group the flat reactions list (one row per person) into
+    // emoji -> [userIds], same trick as messageBubble's grouping, so two
+    // people reacting with the same emoji show as one pill with a count.
+    const reactions = post.reactions || [];
+    const groupedReactions = new Map();
+    reactions.forEach(r => {
+        if (!groupedReactions.has(r.emoji)) groupedReactions.set(r.emoji, []);
+        groupedReactions.get(r.emoji).push(r.userId);
+    });
     const allComments = db.comments.filter(c => c.postId === post.id).sort((a,b) => a.createdAt - b.createdAt);
     const topComments = allComments.filter(c => !c.parentId);
     const repliesByParent = new Map();
@@ -2390,6 +2479,8 @@ function renderPost(post){
         repliesByParent.get(c.parentId).push(c);
     });
     const comments = allComments; // total count (incl. replies) for the 💬 button
+    const poll = db.polls.find(p => p.postId === post.id);
+    const pollOptions = poll ? db.pollOptions.filter(o => o.pollId === poll.id).sort((a, b) => a.position - b.position) : [];
 
     return `
 
@@ -2440,6 +2531,9 @@ function renderPost(post){
             }
 
 
+            ${poll ? renderPollCard(poll, pollOptions) : ""}
+
+
             ${
                 post.image
                 ? `
@@ -2469,13 +2563,42 @@ function renderPost(post){
 
             <div class="post-actions">
 
-                <button
-                    class="action-btn ${liked ? "liked" : ""}"
-                    onclick="toggleLike('${post.id}')"
-                >
-                    ${liked ? "♥" : "♡"}
-                    ${post.likes?.length || 0}
-                </button>
+                <div class="post-reactions">
+
+                    ${
+                        [...groupedReactions.entries()].map(([emoji, userIds]) => `
+                            <button
+                                type="button"
+                                class="post-reaction-pill${userIds.includes(currentUserId) ? " mine" : ""}"
+                                onclick="toggleReaction('${post.id}','${emoji}')"
+                                title="${userIds.length}"
+                            >
+                                ${emoji}${userIds.length > 1 ? `<span>${userIds.length}</span>` : ""}
+                            </button>
+                        `).join("")
+                    }
+
+                    <button
+                        type="button"
+                        class="post-reaction-add-btn"
+                        onclick="togglePostReactionPicker(event,'${post.id}')"
+                        title="Добавить реакцию"
+                    >🙂</button>
+
+                    <div class="post-reaction-picker hidden">
+                        ${
+                            POST_REACTIONS.map(emoji => `
+                                <button
+                                    type="button"
+                                    onclick="toggleReaction('${post.id}','${emoji}');closeReactionPickers();"
+                                >
+                                    ${emoji}
+                                </button>
+                            `).join("")
+                        }
+                    </div>
+
+                </div>
 
 
                 <button
@@ -2491,6 +2614,15 @@ function renderPost(post){
                     onclick="openSharePicker('${post.id}')"
                 >
                     ↗ Поделиться
+                </button>
+
+
+                <button
+                    class="action-btn ${mySavedPostIds.has(post.id) ? "saved" : ""}"
+                    onclick="toggleSavePost('${post.id}')"
+                    title="${mySavedPostIds.has(post.id) ? "Убрать из сохранённого" : "Сохранить"}"
+                >
+                    🔖
                 </button>
 
 
@@ -2603,8 +2735,13 @@ async function createPost(targetWallId = null) {
     if (isCreatingPost) return; // guards against a double-tap firing this twice while the upload/insert is still in flight — would otherwise post it twice
     const text = document.getElementById("postText")?.value.trim() || "";
     const file = document.getElementById("postImage")?.files[0];
-    if (!text && !file && !selectedComposerMusicId) {
-        toast("Добавь текст, изображение или музыку.");
+    const pollOptionsText = readPollOptionsFromComposer();
+    if (pollOptionsText.length === 1) {
+        toast("Добавь ещё хотя бы один вариант ответа для опроса.");
+        return;
+    }
+    if (!text && !file && !selectedComposerMusicId && pollOptionsText.length < 2) {
+        toast("Добавь текст, изображение, музыку или опрос.");
         return;
     }
     isCreatingPost = true;
@@ -2627,7 +2764,7 @@ async function createPost(targetWallId = null) {
         }
         const musicId = selectedComposerMusicId || null;
         const wallOwnerId = targetWallId || currentUserId;
-        const post = { id: postId, authorId: currentUserId, wallOwnerId, text, image, musicId, sharedPostId: null, likes: [], createdAt: Date.now() };
+        const post = { id: postId, authorId: currentUserId, wallOwnerId, text, image, musicId, sharedPostId: null, likes: [], reactions: [], createdAt: Date.now() };
         db.posts.unshift(post);
         const { error } = await sb.from("posts").insert({
             id: post.id, author_id: post.authorId, wall_owner_id: post.wallOwnerId, text: post.text, image: post.image, music_id: post.musicId, likes: [], created_at: new Date(post.createdAt).toISOString()
@@ -2638,6 +2775,31 @@ async function createPost(targetWallId = null) {
             toast("Не удалось опубликовать пост.");
             return;
         }
+        if (pollOptionsText.length >= 2) {
+            const pollId = uid("poll");
+            const { error: pollError } = await sb.from("polls").insert({ id: pollId, post_id: postId });
+            if (pollError) {
+                // The post itself is already live at this point — losing just
+                // the poll attachment isn't worth rolling the whole post back
+                // for, so this only warns rather than deleting post.
+                console.error(pollError);
+                toast("Пост опубликован, но не удалось добавить опрос.");
+            } else {
+                const optionRows = pollOptionsText.map((optText, i) => ({ id: uid("plopt"), poll_id: pollId, text: optText, position: i }));
+                const { error: optionsError } = await sb.from("poll_options").insert(optionRows);
+                if (optionsError) {
+                    console.error(optionsError);
+                    toast("Пост опубликован, но не удалось добавить варианты опроса.");
+                } else {
+                    db.polls.push({ id: pollId, postId, createdAt: Date.now() });
+                    db.pollOptions.push(...optionRows.map(row => ({ id: row.id, pollId: row.poll_id, text: row.text, position: row.position, votes: [] })));
+                }
+            }
+        }
+        // Hide + reset the builder if it was used (leaves it alone,
+        // still hidden, if this post never touched it).
+        document.getElementById("pollComposerBuilder")?.classList.add("hidden");
+        resetPollComposerInputs();
         selectedComposerMusicId = null;
         wallTargetUserId = null;
         toast(targetWallId && targetWallId !== currentUserId ? "Пост опубликован на стене!" : "Пост опубликован!");
@@ -2677,7 +2839,7 @@ async function createWallPost(userId){
             if (file.size > 20 * 1024 * 1024){ toast("Изображение слишком большое. Максимум 20 МБ."); return; }
             image = await uploadImageToStorage(file, `${currentUserId}/post-${postId}.jpg`, 1600);
         }
-        const post = { id: postId, authorId: currentUserId, wallOwnerId: userId, text, image, musicId: musicId || null, sharedPostId: null, likes: [], createdAt: Date.now() };
+        const post = { id: postId, authorId: currentUserId, wallOwnerId: userId, text, image, musicId: musicId || null, sharedPostId: null, likes: [], reactions: [], createdAt: Date.now() };
         const { error } = await sb.from("posts").insert({
             id: post.id, author_id: post.authorId, wall_owner_id: post.wallOwnerId, text: post.text, image: post.image, music_id: post.musicId, likes: [], created_at: new Date(post.createdAt).toISOString()
         });
@@ -2717,41 +2879,74 @@ function refreshPostInPlace(postId) {
     el.replaceWith(wrapper.firstElementChild);
 }
 
-async function toggleLike(postId) {
+// Generalized like/reaction: tapping an emoji you haven't picked yet sets
+// it (replacing any previous emoji of yours on this post), tapping your
+// own current emoji again removes it — same tapback semantics as
+// toggleMessageReaction. post.likes stays "everyone who reacted, any
+// emoji" so achievements and anything else counting engagement keeps
+// working unchanged; post.reactions carries the per-person emoji detail
+// for the reaction bar.
+async function toggleReaction(postId, emoji = "❤️") {
     const post = db.posts.find(p => p.id === postId);
-    if (!post)
-        return;
+    if (!post) return;
     if (!post.likes) post.likes = [];
+    if (!post.reactions) post.reactions = [];
+
+    const mine = post.reactions.find(r => r.userId === currentUserId);
+    const removing = !!mine && mine.emoji === emoji;
 
     // Update the screen immediately — don't wait on a network round trip
-    // first. If someone else likes the same post at nearly the same
+    // first. If someone else reacts to the same post at nearly the same
     // moment, the live post_likes subscription (setupSocialRealtime)
     // reconciles it a moment later, so this stays correct without
     // feeling slow.
-    const wasLiked = post.likes.includes(currentUserId);
-    post.likes = wasLiked
+    const prevReactions = post.reactions;
+    const prevLikes = post.likes;
+    post.reactions = post.reactions.filter(r => r.userId !== currentUserId);
+    if (!removing) post.reactions.push({ userId: currentUserId, emoji });
+    post.likes = removing
         ? post.likes.filter(id => id !== currentUserId)
-        : [...post.likes, currentUserId];
+        : (post.likes.includes(currentUserId) ? post.likes : [...post.likes, currentUserId]);
     refreshPostInPlace(postId);
-    if (!wasLiked) haptic("tap");
+    if (!removing) haptic("tap");
 
-    // Each person only ever inserts/deletes their OWN row here, which RLS
-    // can safely allow on any post — unlike updating the whole post row,
-    // which only the post's author is allowed to do.
-    const { error } = wasLiked
+    // Each person only ever upserts/deletes their OWN row here (post_id,
+    // user_id primary key), which RLS can safely allow on any post —
+    // unlike updating the whole post row, which only the post's author
+    // is allowed to do. upsert covers both "first reaction" (insert) and
+    // "changed emoji" (update) in one call.
+    const { error } = removing
         ? await sb.from("post_likes").delete().eq("post_id", postId).eq("user_id", currentUserId)
-        : await sb.from("post_likes").insert({ post_id: postId, user_id: currentUserId });
+        : await sb.from("post_likes").upsert(
+            { post_id: postId, user_id: currentUserId, emoji },
+            { onConflict: "post_id,user_id" }
+        );
 
     if (error) {
         console.error(error);
         // roll back on failure
-        post.likes = wasLiked ? [...post.likes, currentUserId] : post.likes.filter(id => id !== currentUserId);
+        post.reactions = prevReactions;
+        post.likes = prevLikes;
         refreshPostInPlace(postId);
-        toast("Не удалось поставить лайк.");
+        toast("Не удалось поставить реакцию.");
         return;
     }
 
-    if (!wasLiked) createNotification({ userId: post.authorId, type: "post_like", postId });
+    if (!removing) createNotification({ userId: post.authorId, type: "post_like", postId });
+}
+
+// Kept as a thin alias — old callers (or any stale cached HTML from
+// before this change) tapping a plain "like" still just react with ❤️.
+function toggleLike(postId) { return toggleReaction(postId, "❤️"); }
+
+function togglePostReactionPicker(event, postId) {
+    event.stopPropagation();
+    const article = document.querySelector(`[data-bubbles-post-id="${postId}"]`);
+    const picker = article?.querySelector(".post-reaction-picker");
+    if (!picker) return;
+    const wasOpen = !picker.classList.contains("hidden");
+    closeReactionPickers();
+    if (!wasOpen) picker.classList.remove("hidden");
 }
 
 async function toggleCommentLike(postId, commentId) {
@@ -2964,7 +3159,7 @@ async function shareToProfile(postId){
     const original = db.posts.find(p => p.id === postId);
     if(!original) return;
     const caption = document.getElementById("shareCaptionInput")?.value.trim() || "";
-    const post = { id: uid("post"), authorId: currentUserId, wallOwnerId: currentUserId, text: caption, image: "", musicId: null, sharedPostId: postId, likes: [], createdAt: Date.now() };
+    const post = { id: uid("post"), authorId: currentUserId, wallOwnerId: currentUserId, text: caption, image: "", musicId: null, sharedPostId: postId, likes: [], reactions: [], createdAt: Date.now() };
     db.posts.unshift(post);
     const { error } = await sb.from("posts").insert({
         id: post.id, author_id: post.authorId, wall_owner_id: post.wallOwnerId, text: post.text, image: "", music_id: null, shared_post_id: postId, likes: [], created_at: new Date(post.createdAt).toISOString()
@@ -3114,6 +3309,54 @@ function selectComposerMusic(musicId, context){
         if (context === "wall") renderWallComposerMusicChip();
         else renderComposerMusicChip();
     }
+}
+
+// Poll builder is plain DOM manipulation (not a re-render) so opening it
+// never wipes out whatever text/image the person already staged in the
+// composer above it — same reasoning as renderComposerMusicChip using
+// direct DOM updates instead of calling renderFeed().
+function togglePollComposer(){
+    const box = document.getElementById("pollComposerBuilder");
+    if (!box) return;
+    box.classList.toggle("hidden");
+    if (box.classList.contains("hidden")) resetPollComposerInputs();
+}
+
+// Resets the builder's inputs back to the two blank defaults — used both
+// by "✕ Убрать опрос" (via togglePollComposer above) and after a
+// successful post, so a submitted poll's text doesn't linger in a
+// hidden builder for next time.
+function resetPollComposerInputs(){
+    const container = document.getElementById("pollOptionInputs");
+    if (!container) return;
+    container.innerHTML = `
+        <input class="poll-option-input" maxlength="80" placeholder="Вариант 1">
+        <input class="poll-option-input" maxlength="80" placeholder="Вариант 2">
+    `;
+}
+
+function addPollOptionInput(){
+    const container = document.getElementById("pollOptionInputs");
+    if (!container) return;
+    const current = container.querySelectorAll(".poll-option-input").length;
+    if (current >= 5) { toast("Максимум 5 вариантов."); return; }
+    const input = document.createElement("input");
+    input.className = "poll-option-input";
+    input.maxLength = 80;
+    input.placeholder = `Вариант ${current + 1}`;
+    container.appendChild(input);
+}
+
+// Reads whatever's currently typed into the poll builder, trimmed and
+// with blanks dropped — this is the composer's single source of truth
+// for poll options, same "read straight from the DOM at submit time" as
+// postText/postImage above.
+function readPollOptionsFromComposer(){
+    const box = document.getElementById("pollComposerBuilder");
+    if (!box || box.classList.contains("hidden")) return [];
+    return [...document.querySelectorAll(".poll-option-input")]
+        .map(input => input.value.trim())
+        .filter(Boolean);
 }
 
 function renderComposerMusicChip(){
@@ -3293,6 +3536,13 @@ async function deletePost(postId) {
     }
     db.posts = db.posts.filter(p => p.id !== postId);
     db.comments = db.comments.filter(c => c.postId !== postId);
+    // Cascades in the DB (poll -> options -> votes); mirror that locally too.
+    const removedPoll = db.polls.find(p => p.postId === postId);
+    if (removedPoll) {
+        db.polls = db.polls.filter(p => p.postId !== postId);
+        db.pollOptions = db.pollOptions.filter(o => o.pollId !== removedPoll.id);
+    }
+    mySavedPostIds.delete(postId);
     if (currentPage === "profile" && selectedProfileId) renderProfile(selectedProfileId);
     else renderFeed();
 }
@@ -3326,6 +3576,85 @@ async function togglePinPost(postId) {
     post.pinnedAt = data.pinned_at ? Date.parse(data.pinned_at) : null;
     toast(post.pinned ? "Пост закреплён 📌" : "Пост откреплён.");
     renderFeed();
+}
+
+// Bookmarking, same optimistic-update-then-reconcile pattern as
+// toggleMusicSave — purely personal (post_saves' RLS only ever lets you
+// see/touch your own rows), so nothing here needs to notify the author
+// or reconcile via realtime.
+async function toggleSavePost(postId) {
+    const wasSaved = mySavedPostIds.has(postId);
+    if (wasSaved) mySavedPostIds.delete(postId); else mySavedPostIds.add(postId);
+    refreshPostInPlace(postId);
+    // On the "Сохранённое" page itself, unsaving should drop the post
+    // from the list rather than leave it sitting there un-bookmarked.
+    if (currentPage === "saved") renderSaved();
+
+    const { error } = wasSaved
+        ? await sb.from("post_saves").delete().eq("post_id", postId).eq("user_id", currentUserId)
+        : await sb.from("post_saves").insert({ post_id: postId, user_id: currentUserId });
+
+    if (error) {
+        console.error(error);
+        if (wasSaved) mySavedPostIds.add(postId); else mySavedPostIds.delete(postId);
+        refreshPostInPlace(postId);
+        if (currentPage === "saved") renderSaved();
+        toast("Не удалось сохранить пост.");
+    }
+}
+
+// Tapback-style voting, same semantics as toggleReaction: picking an
+// option you haven't picked replaces any previous vote of yours on this
+// poll, tapping your own current option again removes it.
+async function voteInPoll(pollId, optionId) {
+    const options = db.pollOptions.filter(o => o.pollId === pollId);
+    if (!options.length) return;
+    const poll = db.polls.find(p => p.id === pollId);
+    if (!poll) return;
+
+    const mine = options.find(o => o.votes.includes(currentUserId));
+    const removing = !!mine && mine.id === optionId;
+
+    // Update the screen immediately, reconcile from the server on
+    // failure — same optimistic pattern as toggleReaction/toggleLike.
+    const prevVotes = options.map(o => [...o.votes]);
+    options.forEach(o => { o.votes = o.votes.filter(id => id !== currentUserId); });
+    if (!removing) {
+        const target = options.find(o => o.id === optionId);
+        if (target) target.votes.push(currentUserId);
+    }
+    refreshPostInPlace(poll.postId);
+    if (!removing) haptic("tap");
+
+    const { error } = removing
+        ? await sb.from("poll_votes").delete().eq("poll_id", pollId).eq("user_id", currentUserId)
+        : await sb.from("poll_votes").upsert(
+            { poll_id: pollId, option_id: optionId, user_id: currentUserId },
+            { onConflict: "poll_id,user_id" }
+        );
+
+    if (error) {
+        console.error(error);
+        options.forEach((o, i) => { o.votes = prevVotes[i]; });
+        refreshPostInPlace(poll.postId);
+        toast("Не удалось проголосовать.");
+    }
+}
+
+function renderSaved() {
+    const page = document.getElementById("page");
+    const posts = [...db.posts]
+        .filter(p => mySavedPostIds.has(p.id))
+        .sort((a, b) => b.createdAt - a.createdAt);
+
+    page.innerHTML = `
+        <h1 class="section-title">🔖 Сохранённое</h1>
+        ${
+            posts.length
+            ? posts.map(renderPost).join("")
+            : emptyState("🔖", "Здесь пока ничего нет", "Нажимай 🔖 под постом, чтобы сохранить его сюда.")
+        }
+    `;
 }
 
 /* ============================================================
@@ -5382,7 +5711,7 @@ function toggleReactionPicker(event, messageId) {
 }
 
 function closeReactionPickers() {
-    document.querySelectorAll(".reaction-picker").forEach(el => el.classList.add("hidden"));
+    document.querySelectorAll(".reaction-picker, .post-reaction-picker").forEach(el => el.classList.add("hidden"));
 }
 
 // Clicking anywhere outside an open picker closes it — same idea as
@@ -7284,6 +7613,7 @@ function rowToPost(row) {
         musicId: row.music_id || null,
         sharedPostId: row.shared_post_id || null,
         likes: Array.isArray(row.likes) ? row.likes : [],
+        reactions: [],
         pinned: !!row.pinned,
         pinnedAt: row.pinned_at ? Date.parse(row.pinned_at) : null,
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
@@ -8009,11 +8339,11 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, petRow] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, reports, subscriptionRequests, blocks, stories, storyViews, petRow] = await Promise.all([
             sb.from("profiles_public").select("id,username,display_name,gender,avatar,cover,bio,visible_last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,created_at,show_online_status,wall_visibility,music_visibility,who_can_message,who_can_friend_request").order("created_at", { ascending: true }),
             sb.from("posts").select("id,author_id,wall_owner_id,text,image,music_id,shared_post_id,likes,pinned,pinned_at,created_at").order("created_at", { ascending: false }).limit(150),
             sb.from("comments").select("id,post_id,author_id,parent_comment_id,text,created_at").order("created_at", { ascending: true }).limit(1000),
-            sb.from("post_likes").select("post_id,user_id"),
+            sb.from("post_likes").select("post_id,user_id,emoji"),
             sb.from("comment_likes").select("comment_id,user_id"),
             currentUserId ? sb.from("friendships").select("*") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("friend_requests").select("*").eq("status", "pending") : Promise.resolve({ data: [], error: null }),
@@ -8022,6 +8352,12 @@ async function loadDB() {
             currentUserId ? sb.from("message_reactions").select("message_id,user_id,emoji") : Promise.resolve({ data: [], error: null }),
             sb.from("music").select("id,author_id,title,artist,cover_url,audio_url,audio_path,cover_path,created_at").order("created_at", { ascending: false }).limit(200),
             sb.from("music_saves").select("music_id,user_id"),
+            // RLS already restricts this to your own rows (see supabase.sql),
+            // so this is naturally just your own bookmarks — nobody else's.
+            currentUserId ? sb.from("post_saves").select("post_id").eq("user_id", currentUserId) : Promise.resolve({ data: [], error: null }),
+            sb.from("polls").select("id,post_id,created_at"),
+            sb.from("poll_options").select("id,poll_id,text,position").order("position", { ascending: true }),
+            sb.from("poll_votes").select("poll_id,option_id,user_id").limit(20000),
             // RLS only ever actually returns rows here for the reporter or an
             // admin, so this is cheap/empty for a regular user and only an
             // admin's own profile page ends up showing anything from it.
@@ -8041,7 +8377,7 @@ async function loadDB() {
             // it, same reasoning as room_messages used to be.
             currentUserId ? sb.from("pets").select("*").eq("owner_id", currentUserId).maybeSingle() : Promise.resolve({ data: null, error: null })
         ]);
-        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, reports, subscriptionRequests, blocks, stories, storyViews, petRow];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, reports, subscriptionRequests, blocks, stories, storyViews, petRow];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -8059,9 +8395,19 @@ async function loadDB() {
             blocks: (blocks.data || []).map(row => ({ id: row.id, blockerId: row.blocker_id, blockedId: row.blocked_id })),
             stories: (stories.data || []).map(rowToStory),
             storyViews: (storyViews.data || []).map(row => ({ id: row.id, storyId: row.story_id, viewerId: row.viewer_id })),
+            polls: (polls.data || []).map(row => ({ id: row.id, postId: row.post_id, createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
+            pollOptions: (pollOptions.data || []).map(row => ({ id: row.id, pollId: row.poll_id, text: row.text, position: row.position || 0, votes: [] })),
             canvasItems: [],
             pet: petRow.data ? rowToPet(petRow.data) : null
         };
+        // Attach each poll option's votes from poll_votes, same
+        // two-step attach as post/comment likes above.
+        const votesByOption = new Map();
+        (pollVotes.data || []).forEach(row => {
+            if (!votesByOption.has(row.option_id)) votesByOption.set(row.option_id, []);
+            votesByOption.get(row.option_id).push(row.user_id);
+        });
+        db.pollOptions.forEach(option => { option.votes = votesByOption.get(option.id) || []; });
         // Catches the pet up on however long the app was closed for
         // (see tickPet's comment for why this — not the 30s heartbeat —
         // is what applies the slower "away" decay rate), then starts
@@ -8090,15 +8436,25 @@ async function loadDB() {
         });
         if (currentUserId && !savesByUser.has(currentUserId)) savesByUser.set(currentUserId, new Set());
         mySavedMusicIds = savesByUser.get(currentUserId) || new Set();
+        mySavedPostIds = new Set((postSaves.data || []).map(row => row.post_id));
 
         // Attach each post's likes from the post_likes table (the source of
-        // truth) rather than the old posts.likes jsonb column.
+        // truth) rather than the old posts.likes jsonb column. post.likes
+        // stays "everyone who reacted, any emoji" (achievements/old code
+        // just count engagement); post.reactions carries the actual emoji
+        // per person for the reaction bar, same shape as message.reactions.
         const likesByPost = new Map();
+        const reactionsByPost = new Map();
         (postLikes.data || []).forEach(row => {
             if (!likesByPost.has(row.post_id)) likesByPost.set(row.post_id, []);
             likesByPost.get(row.post_id).push(row.user_id);
+            if (!reactionsByPost.has(row.post_id)) reactionsByPost.set(row.post_id, []);
+            reactionsByPost.get(row.post_id).push({ userId: row.user_id, emoji: row.emoji || "❤️" });
         });
-        db.posts.forEach(post => { post.likes = likesByPost.get(post.id) || []; });
+        db.posts.forEach(post => {
+            post.likes = likesByPost.get(post.id) || [];
+            post.reactions = reactionsByPost.get(post.id) || [];
+        });
 
         // Same pattern for comment likes, from the comment_likes table.
         const likesByComment = new Map();
@@ -8293,13 +8649,30 @@ function setupSocialRealtime() {
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "post_likes" }, (payload) => {
             const post = db.posts.find(p => p.id === payload.new.post_id);
             if (!post) return;
+            if (!post.reactions) post.reactions = [];
             if (!post.likes.includes(payload.new.user_id)) post.likes.push(payload.new.user_id);
+            if (!post.reactions.some(r => r.userId === payload.new.user_id)) {
+                post.reactions.push({ userId: payload.new.user_id, emoji: payload.new.emoji || "❤️" });
+            }
+            refreshPostInPlace(post.id);
+        })
+        // Fires when someone already reacted swaps their emoji — upsert()
+        // hits this same-row UPDATE path, not INSERT, since (post_id,user_id)
+        // is the primary key.
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "post_likes" }, (payload) => {
+            const post = db.posts.find(p => p.id === payload.new.post_id);
+            if (!post) return;
+            if (!post.reactions) post.reactions = [];
+            const mine = post.reactions.find(r => r.userId === payload.new.user_id);
+            if (mine) mine.emoji = payload.new.emoji || "❤️";
+            else post.reactions.push({ userId: payload.new.user_id, emoji: payload.new.emoji || "❤️" });
             refreshPostInPlace(post.id);
         })
         .on("postgres_changes", { event: "DELETE", schema: "public", table: "post_likes" }, (payload) => {
             const post = db.posts.find(p => p.id === payload.old.post_id);
             if (!post) return;
             post.likes = post.likes.filter(id => id !== payload.old.user_id);
+            if (post.reactions) post.reactions = post.reactions.filter(r => r.userId !== payload.old.user_id);
             refreshPostInPlace(post.id);
         })
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "comments" }, (payload) => {
@@ -8331,11 +8704,38 @@ function setupSocialRealtime() {
             comment.likes = comment.likes.filter(id => id !== payload.old.user_id);
             refreshPostInPlace(comment.postId);
         })
+        // Poll votes — same INSERT/UPDATE/DELETE trio as post_likes above,
+        // since poll_votes upserts on (poll_id,user_id) too (switching your
+        // vote is an UPDATE, not a fresh INSERT).
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "poll_votes" }, (payload) => {
+            const option = db.pollOptions.find(o => o.id === payload.new.option_id);
+            if (!option) return;
+            if (!option.votes.includes(payload.new.user_id)) option.votes.push(payload.new.user_id);
+            const poll = db.polls.find(p => p.id === payload.new.poll_id);
+            if (poll) refreshPostInPlace(poll.postId);
+        })
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "poll_votes" }, (payload) => {
+            const poll = db.polls.find(p => p.id === payload.new.poll_id);
+            if (!poll) return;
+            db.pollOptions
+                .filter(o => o.pollId === payload.new.poll_id)
+                .forEach(o => { o.votes = o.votes.filter(id => id !== payload.new.user_id); });
+            const option = db.pollOptions.find(o => o.id === payload.new.option_id);
+            if (option && !option.votes.includes(payload.new.user_id)) option.votes.push(payload.new.user_id);
+            refreshPostInPlace(poll.postId);
+        })
+        .on("postgres_changes", { event: "DELETE", schema: "public", table: "poll_votes" }, (payload) => {
+            const poll = db.polls.find(p => p.id === payload.old.poll_id);
+            const option = db.pollOptions.find(o => o.id === payload.old.option_id);
+            if (option) option.votes = option.votes.filter(id => id !== payload.old.user_id);
+            if (poll) refreshPostInPlace(poll.postId);
+        })
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "posts" }, (payload) => {
             if (payload.new.author_id === currentUserId) return;
             if (db.posts.some(p => p.id === payload.new.id)) return;
             const post = rowToPost(payload.new);
             post.likes = [];
+            post.reactions = [];
             db.posts.unshift(post);
             if (currentPage === "feed") renderFeed();
             else if (currentPage === "profile" && selectedProfileId && (post.wallOwnerId || post.authorId) === selectedProfileId) renderProfile(selectedProfileId);
@@ -8628,7 +9028,7 @@ sb.auth.onAuthStateChange(async (_event,session)=>{
 Object.assign(window,{
     showAuth,loginForm,registerForm,selectGender,register,login,logout,
     navigate,renderFeed,renderProfile,renderFriends,renderMessages,renderMusic,renderEditProfile,
-    searchUsers,createPost,toggleLike,toggleCommentLike,addComment,deleteComment,focusComment,openReplyBox,closeReplyBox,deletePost,
+    searchUsers,createPost,toggleLike,toggleReaction,togglePostReactionPicker,toggleCommentLike,addComment,deleteComment,focusComment,openReplyBox,closeReplyBox,deletePost,
     saveProfile,onAvatarFileChosen,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
     toggleMessageReaction,toggleReactionPicker,
     startReplyToMessage,cancelReplyToMessage,scrollToMessage,
@@ -8636,6 +9036,7 @@ Object.assign(window,{
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
     toggleProfileMusicExpanded,toggleProfileFriendsExpanded,toggleProfileAchievementsExpanded,
+    toggleSavePost,renderSaved,
     setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,backfillAchievementsForAllUsers,togglePinPost,
     toggleMoreSheet,openMoreSheet,closeMoreSheet,
     toggleSidebarMore,
@@ -8651,6 +9052,7 @@ Object.assign(window,{
     closeBubblesModal,
     openSharePicker,openShareToProfile,shareToProfile,openShareToChat,shareToChat,focusSharedPost,
     openMusicPicker,selectComposerMusic,removeComposerMusic,
+    togglePollComposer,addPollOptionInput,voteInPoll,
     openEditPost,renderEditPostModal,handleEditPostImageSelect,removeEditPostImage,removeEditPostMusic,saveEditPost,syncEditPostTextFromDom,
     submitCreatePet,feedPet,playPet,cleanPet,toggleSleepPet
 });
