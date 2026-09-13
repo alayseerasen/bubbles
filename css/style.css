@@ -466,6 +466,55 @@ select:focus{
     position:sticky;
     top:0;
     background:#fff;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    z-index:1;
+}
+
+.notif-mark-all-btn{
+    border:0;
+    background:transparent;
+    color:#3ba7c9;
+    font-weight:800;
+    font-size:11.5px;
+    cursor:pointer;
+    padding:4px 6px;
+    white-space:nowrap;
+}
+
+.notif-panel-tabs{
+    display:flex;
+    gap:4px;
+    padding:8px 10px;
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+    scrollbar-width:none;
+    border-bottom:1px solid #eef8fb;
+    position:sticky;
+    top:41px;
+    background:#fff;
+    z-index:1;
+}
+.notif-panel-tabs::-webkit-scrollbar{ display:none; }
+
+.notif-panel-tab{
+    flex:0 0 auto;
+    border:0;
+    background:#f3fbfd;
+    color:#7196a8;
+    font-weight:700;
+    font-size:12px;
+    padding:6px 11px;
+    border-radius:10px;
+    white-space:nowrap;
+    cursor:pointer;
+}
+
+.notif-panel-tab.active{
+    background:#4fc9f5;
+    color:#fff;
 }
 
 .notif-panel-list{
@@ -494,11 +543,22 @@ select:focus{
     background:#eafaff;
 }
 
+.notif-item-icon{
+    font-size:18px;
+    flex-shrink:0;
+    width:32px;
+    height:32px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+}
+
 .notif-item-body{
     display:flex;
     flex-direction:column;
     gap:2px;
     min-width:0;
+    flex:1;
 }
 
 .notif-item-body span{
@@ -510,6 +570,18 @@ select:focus{
 .notif-item-body small{
     color:#82a1ad;
     font-size:10px;
+}
+
+.notif-mark-read-btn{
+    flex-shrink:0;
+    border:0;
+    background:#eafaff;
+    color:#3ba7c9;
+    font-weight:800;
+    width:26px;
+    height:26px;
+    border-radius:50%;
+    cursor:pointer;
 }
 
 .notif-empty{
@@ -3134,6 +3206,28 @@ html::after{
     color:#e7f5fa;
 }
 
+[data-theme="dark"] .notif-mark-all-btn{ color:#7fd4f0; }
+
+[data-theme="dark"] .notif-panel-tabs{
+    background:#141d26;
+    border-bottom-color:rgba(255,255,255,.08);
+}
+
+[data-theme="dark"] .notif-panel-tab{
+    background:rgba(255,255,255,.06);
+    color:#9fc2cf;
+}
+
+[data-theme="dark"] .notif-panel-tab.active{
+    background:#4fc9f5;
+    color:#0b1720;
+}
+
+[data-theme="dark"] .notif-mark-read-btn{
+    background:rgba(79,201,245,.18);
+    color:#7fd4f0;
+}
+
 [data-theme="dark"] .notif-item{
     border-bottom-color:rgba(255,255,255,.06);
     color:#cfe4ec;
@@ -4855,6 +4949,66 @@ html::after{
 .wall-composer-actions { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
 .wall-locked { color:var(--muted); text-align:center; }
 @media (max-width:600px){ .wall-composer-actions button { flex:1; } }
+
+/* Profile tabs — Посты/Музыка/Друзья/Медиа. Uses the theme-aware
+   --blue/--white/--muted vars (see :root above) rather than literal
+   colors + a [data-theme=dark] override block, so it also picks up the
+   Bubbles+ accent-color themes (lines ~4726+) for free. */
+.profile-tabs{
+    display:flex;
+    gap:6px;
+    margin:14px 0 16px;
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+    scrollbar-width:none;
+}
+.profile-tabs::-webkit-scrollbar{ display:none; }
+.profile-tab{
+    flex:0 0 auto;
+    display:flex;
+    align-items:center;
+    gap:5px;
+    border:2px solid transparent;
+    background:var(--white);
+    color:var(--muted);
+    font-weight:800;
+    font-size:14px;
+    padding:9px 16px;
+    border-radius:14px;
+    white-space:nowrap;
+    box-shadow:var(--shadow);
+}
+.profile-tab.active{
+    border-color:var(--blue);
+    color:var(--text);
+}
+
+.secondary.following{
+    border:2px solid var(--blue);
+    color:var(--text);
+}
+
+.profile-media-grid{
+    display:grid;
+    grid-template-columns:repeat(3,1fr);
+    gap:6px;
+}
+.profile-media-thumb{
+    position:relative;
+    aspect-ratio:1/1;
+    border:0;
+    padding:0;
+    border-radius:12px;
+    overflow:hidden;
+    background:var(--white);
+    cursor:pointer;
+}
+.profile-media-thumb img{
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    display:block;
+}
 
 
 /* Bubbles Rooms */
