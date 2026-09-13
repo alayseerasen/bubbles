@@ -290,7 +290,7 @@ create table if not exists public.bubbles_notifications (
     id text primary key,
     user_id uuid not null references public.profiles(id) on delete cascade,
     actor_id uuid not null references public.profiles(id) on delete cascade,
-    type text not null check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed')),
+    type text not null check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed','new_follower')),
     post_id text references public.posts(id) on delete cascade,
     comment_id text references public.comments(id) on delete cascade,
     created_at timestamptz not null default now(),
@@ -310,7 +310,7 @@ create index if not exists bubbles_notifications_user_id_idx on public.bubbles_n
 -- fine to keep, there's no shape mismatch to fix here.
 alter table public.bubbles_notifications drop constraint if exists bubbles_notifications_type_check;
 alter table public.bubbles_notifications add constraint bubbles_notifications_type_check
-    check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed'));
+    check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed','new_follower'));
 
 -- ------------------------------------------------------------
 -- FRIEND REQUESTS (new — pending/accepted/declined handshake)
@@ -331,6 +331,36 @@ create table if not exists public.friend_requests (
 create unique index if not exists friend_requests_pending_unique
 on public.friend_requests (from_user, to_user)
 where status = 'pending';
+
+-- ------------------------------------------------------------
+-- FOLLOWS — lighter-weight, one-directional, no request/accept step,
+-- entirely separate from friendships above. Doesn't grant any extra
+-- post visibility beyond what posts_select's wall_visibility='everyone'
+-- branch already grants on its own — it's purely the social graph
+-- (follower/following lists + counts on the profile).
+-- ------------------------------------------------------------
+create table if not exists public.follows (
+    follower_id uuid not null references public.profiles(id) on delete cascade,
+    followed_id uuid not null references public.profiles(id) on delete cascade,
+    created_at timestamptz not null default now(),
+    primary key (follower_id, followed_id),
+    constraint follows_not_self check (follower_id <> followed_id)
+);
+
+create index if not exists follows_followed_id_idx on public.follows(followed_id);
+
+alter table public.follows enable row level security;
+
+drop policy if exists follows_select on public.follows;
+create policy follows_select on public.follows for select using (true);
+drop policy if exists follows_insert on public.follows;
+create policy follows_insert on public.follows for insert with check (auth.uid() = follower_id);
+drop policy if exists follows_delete on public.follows;
+-- Either side of the relationship can remove it — the follower
+-- unfollowing, same as anywhere else, but also the followed person
+-- (silent "remove a follower", plus needed for toggleBlockUser's
+-- cleanup which runs as the blocker, not necessarily the follower).
+create policy follows_delete on public.follows for delete using (auth.uid() = follower_id or auth.uid() = followed_id);
 
 -- ------------------------------------------------------------
 -- ROOMS — public group spaces / community chats
@@ -1593,6 +1623,12 @@ begin
         where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'poll_votes'
     ) then
         alter publication supabase_realtime add table public.poll_votes;
+    end if;
+    if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'follows'
+    ) then
+        alter publication supabase_realtime add table public.follows;
     end if;
     -- Public keys (profiles.public_key) previously only ever loaded once at
     -- page load, with nothing to refresh them afterwards. If a partner sets
