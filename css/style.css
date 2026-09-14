@@ -31,6 +31,20 @@ html,body{
     overscroll-behavior-y:contain;
 }
 
+/* iOS Safari rubber-bands past the end of a short page (e.g. a profile
+   tab with just one post) and shows whatever's behind <body> while it
+   does — which was nothing, so a fast scroll flashed stark white in the
+   middle of an otherwise all-dark/all-blue UI. <html> itself needs its
+   own matching background so that gap is themed instead of blank; the
+   light/dark THEME override below repeats this with the dark tone. */
+html{
+    background:#bdf3ff;
+}
+
+[data-theme="dark"] html{
+    background:#0d1a24;
+}
+
 body{
     background:
         radial-gradient(circle at 15% 15%,rgba(255,255,255,.95) 0 5%,transparent 18%),
