@@ -219,6 +219,15 @@ alter table public.messages add column if not exists read_at timestamptz;
 -- stored as a data URL, so no Storage bucket/policy is needed for them.
 alter table public.messages add column if not exists image text not null default '';
 
+-- Editing, and pinning — the messages_guard_update trigger further down
+-- already permits both without changes: the sender-branch check doesn't
+-- forbid touching edited_at, and neither branch forbids pinned/
+-- pinned_at, so both sender-edits-text and either-side-toggles-pinned
+-- fall through as allowed by that trigger's allow-by-omission design.
+alter table public.messages add column if not exists edited_at timestamptz;
+alter table public.messages add column if not exists pinned boolean not null default false;
+alter table public.messages add column if not exists pinned_at timestamptz;
+
 -- E2E-шифрование: text/image хранят base64 AES-GCM шифротекст, а не
 -- открытый текст, когда encrypted = true. iv/img_iv — base64 nonce для
 -- расшифровки text/image соответственно. Сервер (и любой, кто заглянет
@@ -371,6 +380,7 @@ create table if not exists public.rooms (
     slug text not null,
     description text not null default '',
     icon text not null default '🫧',
+    theme text not null default 'aqua',
     owner_id uuid not null references public.profiles(id) on delete cascade,
     is_public boolean not null default true,
     created_at timestamptz not null default now()
@@ -378,6 +388,11 @@ create table if not exists public.rooms (
 
 create unique index if not exists rooms_slug_unique on public.rooms(slug);
 create index if not exists rooms_created_at_idx on public.rooms(created_at desc);
+
+-- Defensive migrations for anyone who already had the old (pre-theme /
+-- pre-pinning) version of these two tables from before this feature had
+-- a client — same pattern as post_likes' emoji column earlier.
+alter table public.rooms add column if not exists theme text not null default 'aqua';
 
 create table if not exists public.room_members (
     id uuid primary key default gen_random_uuid(),
@@ -396,17 +411,29 @@ create table if not exists public.room_messages (
     room_id uuid not null references public.rooms(id) on delete cascade,
     author_id uuid not null references public.profiles(id) on delete cascade,
     text text not null,
+    pinned boolean not null default false,
+    pinned_at timestamptz,
     created_at timestamptz not null default now()
 );
 
 create index if not exists room_messages_room_created_idx on public.room_messages(room_id, created_at desc);
+alter table public.room_messages add column if not exists pinned boolean not null default false;
+alter table public.room_messages add column if not exists pinned_at timestamptz;
 
 alter table public.rooms enable row level security;
 alter table public.room_members enable row level security;
 alter table public.room_messages enable row level security;
 
 drop policy if exists rooms_select_public on public.rooms;
-create policy rooms_select_public on public.rooms for select using (is_public = true or auth.uid() = owner_id);
+-- Extended beyond the original owner-or-public check: a member of a
+-- PRIVATE room couldn't see the room's own name/description/icon row
+-- before this (only their own room_members row, via the policy below) —
+-- genuinely couldn't render anything for a private room they'd joined.
+create policy rooms_select_public on public.rooms for select using (
+    is_public = true
+    or auth.uid() = owner_id
+    or exists (select 1 from public.room_members m where m.room_id = rooms.id and m.user_id = auth.uid())
+);
 drop policy if exists rooms_insert_owner on public.rooms;
 create policy rooms_insert_owner on public.rooms for insert with check (auth.uid() = owner_id);
 drop policy if exists rooms_update_owner on public.rooms;
@@ -427,6 +454,13 @@ drop policy if exists room_messages_insert_member on public.room_messages;
 create policy room_messages_insert_member on public.room_messages for insert with check (auth.uid() = author_id and exists (select 1 from public.room_members m where m.room_id = room_messages.room_id and m.user_id = auth.uid()));
 drop policy if exists room_messages_delete_author on public.room_messages;
 create policy room_messages_delete_author on public.room_messages for delete using (auth.uid() = author_id);
+
+-- Pinning — owner or moderator of that specific room only, not just any
+-- member (same tiering as room_members.role).
+drop policy if exists room_messages_update_pin on public.room_messages;
+create policy room_messages_update_pin on public.room_messages for update
+using (exists (select 1 from public.room_members m where m.room_id = room_messages.room_id and m.user_id = auth.uid() and m.role in ('owner','moderator')))
+with check (exists (select 1 from public.room_members m where m.room_id = room_messages.room_id and m.user_id = auth.uid() and m.role in ('owner','moderator')));
 
 -- ------------------------------------------------------------
 -- STORIES — 24-hour disappearing posts. Image is stored the same way
@@ -509,6 +543,87 @@ create table if not exists public.music_saves (
     user_id uuid not null references public.profiles(id) on delete cascade,
     created_at timestamptz not null default now(),
     primary key (music_id, user_id)
+);
+
+-- ------------------------------------------------------------
+-- MUSIC LIKES — same one-row-per-(track,user) shape as post_likes.
+-- ------------------------------------------------------------
+create table if not exists public.music_likes (
+    music_id text not null references public.music(id) on delete cascade,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    created_at timestamptz not null default now(),
+    primary key (music_id, user_id)
+);
+create index if not exists music_likes_music_id_idx on public.music_likes(music_id);
+
+-- ------------------------------------------------------------
+-- MUSIC PLAYS — append-only listening history, for "Недавно
+-- прослушанное". Select is scoped to your own rows (like post_saves) —
+-- what you've listened to is nobody else's business. No update/delete
+-- policy: a play log only ever grows.
+-- ------------------------------------------------------------
+create table if not exists public.music_plays (
+    id uuid primary key default gen_random_uuid(),
+    music_id text not null references public.music(id) on delete cascade,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    played_at timestamptz not null default now()
+);
+create index if not exists music_plays_user_played_idx on public.music_plays(user_id, played_at desc);
+
+-- ------------------------------------------------------------
+-- PLAYLISTS
+-- ------------------------------------------------------------
+create table if not exists public.playlists (
+    id uuid primary key default gen_random_uuid(),
+    owner_id uuid not null references public.profiles(id) on delete cascade,
+    name text not null,
+    created_at timestamptz not null default now()
+);
+
+create table if not exists public.playlist_tracks (
+    id uuid primary key default gen_random_uuid(),
+    playlist_id uuid not null references public.playlists(id) on delete cascade,
+    music_id text not null references public.music(id) on delete cascade,
+    position int not null default 0,
+    added_at timestamptz not null default now(),
+    unique(playlist_id, music_id)
+);
+create index if not exists playlist_tracks_playlist_idx on public.playlist_tracks(playlist_id);
+
+alter table public.music_likes enable row level security;
+drop policy if exists music_likes_select on public.music_likes;
+create policy music_likes_select on public.music_likes for select using (true);
+drop policy if exists music_likes_insert on public.music_likes;
+create policy music_likes_insert on public.music_likes for insert with check (auth.uid() = user_id);
+drop policy if exists music_likes_delete on public.music_likes;
+create policy music_likes_delete on public.music_likes for delete using (auth.uid() = user_id);
+
+alter table public.music_plays enable row level security;
+drop policy if exists music_plays_select on public.music_plays;
+create policy music_plays_select on public.music_plays for select using (auth.uid() = user_id);
+drop policy if exists music_plays_insert on public.music_plays;
+create policy music_plays_insert on public.music_plays for insert with check (auth.uid() = user_id);
+
+alter table public.playlists enable row level security;
+drop policy if exists playlists_select on public.playlists;
+create policy playlists_select on public.playlists for select using (true);
+drop policy if exists playlists_insert on public.playlists;
+create policy playlists_insert on public.playlists for insert with check (auth.uid() = owner_id);
+drop policy if exists playlists_update on public.playlists;
+create policy playlists_update on public.playlists for update using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
+drop policy if exists playlists_delete on public.playlists;
+create policy playlists_delete on public.playlists for delete using (auth.uid() = owner_id);
+
+alter table public.playlist_tracks enable row level security;
+drop policy if exists playlist_tracks_select on public.playlist_tracks;
+create policy playlist_tracks_select on public.playlist_tracks for select using (true);
+drop policy if exists playlist_tracks_insert on public.playlist_tracks;
+create policy playlist_tracks_insert on public.playlist_tracks for insert with check (
+    exists (select 1 from public.playlists p where p.id = playlist_id and p.owner_id = auth.uid())
+);
+drop policy if exists playlist_tracks_delete on public.playlist_tracks;
+create policy playlist_tracks_delete on public.playlist_tracks for delete using (
+    exists (select 1 from public.playlists p where p.id = playlist_id and p.owner_id = auth.uid())
 );
 
 -- ------------------------------------------------------------
@@ -1629,6 +1744,12 @@ begin
         where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'follows'
     ) then
         alter publication supabase_realtime add table public.follows;
+    end if;
+    if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'room_members'
+    ) then
+        alter publication supabase_realtime add table public.room_members;
     end if;
     -- Public keys (profiles.public_key) previously only ever loaded once at
     -- page load, with nothing to refresh them afterwards. If a partner sets

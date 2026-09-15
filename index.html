@@ -37,7 +37,7 @@
     }catch(e){}
 })();
 </script>
-<link rel="stylesheet" href="css/style.css?v=5">
+<link rel="stylesheet" href="css/style.css?v=7">
 </head>
 <body>
 
@@ -45,8 +45,11 @@
 
 <!-- GLOBAL AUDIO PLAYER -->
 <div id="globalPlayer" class="global-player hidden">
+    <div class="global-player-progress" id="globalPlayerProgressBar" onclick="seekGlobalPlayer(event)">
+        <div id="globalPlayerProgressFill" class="global-player-progress-fill"></div>
+    </div>
     <div class="global-player-top">
-        <div class="global-player-info">
+        <div class="global-player-info" onclick="openFullPlayer()">
             <img id="globalPlayerCover" src="" alt="">
             <div class="global-player-text">
                 <div id="globalPlayerTitle">Ничего не играет</div>
@@ -59,6 +62,29 @@
         <button onclick="playPrevTrack()" title="Предыдущий трек">⏮️</button>
         <audio id="globalAudio" controls preload="metadata"></audio>
         <button onclick="playNextTrack()" title="Следующий трек">⏭️</button>
+    </div>
+</div>
+
+<!-- FULL-SCREEN PLAYER -->
+<div id="fullPlayer" class="full-player hidden" onclick="if(event.target===this) closeFullPlayer()">
+    <div class="full-player-sheet">
+        <button class="full-player-close" onclick="closeFullPlayer()">⌄</button>
+        <img id="fullPlayerCover" class="full-player-cover" src="" alt="">
+        <div id="fullPlayerTitle" class="full-player-title"></div>
+        <div id="fullPlayerArtist" class="full-player-artist"></div>
+        <div class="global-player-progress full-player-progress" id="fullPlayerProgressBar" onclick="seekGlobalPlayer(event)">
+            <div id="fullPlayerProgressFill" class="global-player-progress-fill"></div>
+        </div>
+        <div class="full-player-times">
+            <span id="fullPlayerCurrentTime">0:00</span>
+            <span id="fullPlayerDuration">0:00</span>
+        </div>
+        <div class="full-player-controls">
+            <button onclick="playPrevTrack()" title="Предыдущий">⏮️</button>
+            <button id="fullPlayerPlayPause" class="full-player-play-btn" onclick="toggleGlobalPlayPause()" title="Play/Pause">⏸️</button>
+            <button onclick="playNextTrack()" title="Следующий">⏭️</button>
+        </div>
+        <button id="fullPlayerLikeBtn" class="full-player-like-btn" onclick="toggleMusicLike(currentlyPlayingMusicId);renderFullPlayer();">🤍</button>
     </div>
 </div>
 
@@ -86,7 +112,7 @@
 <script src="js/crypto.js?v=2"></script>
 <script src="js/sounds.js?v=1"></script>
 <script src="js/image-cropper.js?v=1"></script>
-<script src="js/app.js?v=7"></script>
+<script src="js/app.js?v=9"></script>
 <script src="js/calls.js?v=3"></script>
 <script src="js/telegram.js?v=1"></script>
 </body>
