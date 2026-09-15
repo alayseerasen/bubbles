@@ -4028,41 +4028,11 @@ function renderProfile(userId){
                                 }
 
                                 <button
-                                    class="secondary"
-                                    onclick="openCanvasRoom('${user.id}')"
+                                    class="secondary profile-more-btn"
+                                    onclick="openProfileMoreMenu('${user.id}')"
+                                    title="Ещё"
                                 >
-                                    🎨 Комната
-                                </button>
-
-                                <button
-                                    class="secondary"
-                                    onclick="visitFriendsPet('${user.id}')"
-                                >
-                                    🐣 Питомец
-                                </button>
-
-                                <button
-                                    class="secondary"
-                                    onclick="shareProfile('${user.id}')"
-                                    title="Поделиться профилем"
-                                >
-                                    ↗ Поделиться
-                                </button>
-
-                                <button
-                                    class="secondary"
-                                    onclick="reportProfile('${user.id}')"
-                                    title="Пожаловаться"
-                                >
-                                    🚩 Пожаловаться
-                                </button>
-
-                                <button
-                                    class="secondary"
-                                    onclick="toggleBlockUser('${user.id}')"
-                                    title="Заблокировать"
-                                >
-                                    🚫 Заблокировать
+                                    ⋯ Ещё
                                 </button>
                             `
                         }
@@ -5459,6 +5429,41 @@ function shareProfile(userId) {
 /* ============================================================
    MESSAGES
    ============================================================ */
+
+// The profile header used to show up to 8 buttons side by side
+// (relationship action, follow, chat, room, pet, share, report, block).
+// This collapses the less-frequent ones behind a single "⋯ Ещё" button
+// into an action-sheet, reusing the same generic modal the share
+// picker uses. closeBubblesModal() runs first in every handler so the
+// sheet is gone before the follow-up action (navigation, confirm()
+// dialog, etc.) takes over.
+function openProfileMoreMenu(userId) {
+    const user = db.profiles.find(u => u.id === userId);
+    if (!user) return;
+    showBubblesModal(`
+        <div class="modal-header">
+            <h3>Ещё</h3>
+            <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
+        </div>
+        <div class="profile-menu-list">
+            <button class="profile-menu-item" onclick="closeBubblesModal();openCanvasRoom('${userId}')">
+                <span class="profile-menu-icon">🎨</span> Комната
+            </button>
+            <button class="profile-menu-item" onclick="closeBubblesModal();visitFriendsPet('${userId}')">
+                <span class="profile-menu-icon">🐣</span> Питомец
+            </button>
+            <button class="profile-menu-item" onclick="closeBubblesModal();shareProfile('${userId}')">
+                <span class="profile-menu-icon">↗</span> Поделиться профилем
+            </button>
+            <button class="profile-menu-item" onclick="closeBubblesModal();reportProfile('${userId}')">
+                <span class="profile-menu-icon">🚩</span> Пожаловаться
+            </button>
+            <button class="profile-menu-item profile-menu-item-danger" onclick="closeBubblesModal();toggleBlockUser('${userId}')">
+                <span class="profile-menu-icon">🚫</span> Заблокировать
+            </button>
+        </div>
+    `);
+}
 
 function openChat(userId) {
     if (selectedChatId !== userId) chatVisibleCount = CHAT_PAGE_SIZE; // switching conversations — start back at "just the recent tail", same reasoning as feedVisibleCount
