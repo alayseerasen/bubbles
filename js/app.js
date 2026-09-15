@@ -5438,7 +5438,7 @@ function shareProfile(userId) {
 // sheet is gone before the follow-up action (navigation, confirm()
 // dialog, etc.) takes over.
 function openProfileMoreMenu(userId) {
-    const user = db.profiles.find(u => u.id === userId);
+    const user = getUser(userId);
     if (!user) return;
     showBubblesModal(`
         <div class="modal-header">
