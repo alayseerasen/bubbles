@@ -861,7 +861,7 @@ let selectedProfileId = null;
 // (Поиск/Комната/Питомец/Bubbles+/Настройки) — e.g. via a deep link or
 // a button elsewhere in the app — doesn't hide its own nav highlight
 // behind a collapsed "Ещё" toggle.
-let sidebarMoreExpanded = ["search","rooms","saved","pet","premium","edit"].includes(currentPage);
+let sidebarMoreExpanded = ["search","rooms","groupRooms","roomChat","saved","pet","premium","edit"].includes(currentPage);
 function toggleSidebarMore(){
     sidebarMoreExpanded = !sidebarMoreExpanded;
     renderApp();
@@ -883,6 +883,9 @@ let selectedCanvasUserId = null; // whose canvas room is currently open — see 
 let canvasBackground = "sky";
 let selectedMessageImage = null; // resized data URL staged to send in the current chat, or null
 let replyingToMessageId = null; // message the compose box is currently replying to, or null
+let editingMessageId = null; // message currently being edited in the compose box, or null
+let chatSearchOpen = false;
+let chatSearchQuery = "";
 let selectedComposerMusicId = null; // track staged to attach to the next post, or null
 let wallTargetUserId = null; // profile whose wall is currently being composed to
 let editPostState = null; // { postId, text, image, musicId } while the edit-post modal is open, or null
@@ -920,6 +923,8 @@ let pendingAvatarExt = "jpg"; // "jpg" (прошёл через кроппер) 
 let pendingCoverBlob = null;
 let pendingMusicCoverBlob = null;
 let mySavedMusicIds = new Set(); // tracks (by others) I've added to my library
+let myRecentPlays = []; // [{musicId, playedAt}], most-recent-first, one entry per track — see loadDB
+const lastPlayLoggedAt = new Map(); // musicId -> ms timestamp, so replaying/scrubbing the same track doesn't spam music_plays inserts
 let mySavedPostIds = new Set(); // posts I've bookmarked to my private "Сохранённое" list
 let savesByUser = new Map();     // userId -> Set(musicId), for everyone (profile counts)
 
@@ -1544,6 +1549,96 @@ function pluralVotes(n){
 // realtime presence channel. Computes the count straight from the query
 // result (not db.users) so it also works pre-login on the landing screen,
 // where db.users is still empty.
+/* ------------------------------------------------------------
+   BUBBLES NOW — small live pulse at the top of the feed. Everything
+   here is computed from data already in memory (db.posts/users/rooms/
+   roomMembers) — no extra queries beyond the existing online-count
+   poll below, which this piggybacks on for its refresh timer. Only
+   ever shows counts and first names/track titles people already chose
+   to make public — nothing private.
+   ------------------------------------------------------------ */
+function bubblesNowStats() {
+    const onlineUsers = db.users.filter(u => isUserOnline(u.lastSeen));
+    const hourAgo = Date.now() - 60 * 60 * 1000;
+    const newPosts = db.posts.filter(p => (p.wallOwnerId || p.authorId) === p.authorId && p.createdAt > hourAgo).length;
+    const activeRooms = db.rooms.filter(r => roomOnlineCount(r.id) > 0).length;
+    const listening = onlineUsers.filter(u => u.currentTrack);
+    return { onlineCount: onlineUsers.length, newPosts, activeRooms, listening };
+}
+
+// Real posts and room-joins have real timestamps and interleave by
+// recency; who's listening right now doesn't have a "started at" (see
+// setListening — it's a status, not an event), so that's its own single
+// summary line instead of being forced into fake per-person timestamps.
+function bubblesNowEvents() {
+    const events = [];
+    const publicPosts = db.posts
+        .filter(p => (p.wallOwnerId || p.authorId) === p.authorId)
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 5);
+    publicPosts.forEach(p => {
+        const author = getUser(p.authorId);
+        if (author) events.push({ at: p.createdAt, text: `📝 ${escapeHtml(author.displayName)} опубликовал(а) пост` });
+    });
+
+    const recentCutoff = Date.now() - 15 * 60 * 1000;
+    db.roomMembers
+        .filter(m => m.createdAt > recentCutoff)
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 5)
+        .forEach(m => {
+            const user = getUser(m.userId);
+            const room = db.rooms.find(r => r.id === m.roomId);
+            if (user && room) events.push({ at: m.createdAt, text: `🫧 ${escapeHtml(user.displayName)} вошёл(-а) в «${escapeHtml(room.name)}»` });
+        });
+
+    return events.sort((a, b) => b.at - a.at).slice(0, 6);
+}
+
+function timeAgoShort(timestamp) {
+    const diff = Math.max(0, Date.now() - timestamp);
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "только что";
+    if (mins < 60) return `${mins} мин назад`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours} ч назад`;
+    return `${Math.floor(hours / 24)} дн назад`;
+}
+
+function bubblesNowWidgetHtml() {
+    const stats = bubblesNowStats();
+    const events = bubblesNowEvents();
+    return `
+        <div id="bubblesNowWidget" class="bubbles-now-card">
+            <div class="bubbles-now-header">🫧 Bubbles Now</div>
+            <div class="bubbles-now-stats">
+                <div class="bubbles-now-stat"><strong>${stats.onlineCount}</strong><span>онлайн</span></div>
+                <div class="bubbles-now-stat"><strong>${stats.newPosts}</strong><span>новых постов</span></div>
+                <div class="bubbles-now-stat"><strong>${stats.activeRooms}</strong><span>активных комнат</span></div>
+                <div class="bubbles-now-stat"><strong>${stats.listening.length}</strong><span>слушают музыку</span></div>
+            </div>
+            ${
+                stats.listening.length
+                ? `<div class="bubbles-now-listening">🎧 ${stats.listening.slice(0, 3).map(u => escapeHtml(u.displayName)).join(", ")}${stats.listening.length > 3 ? ` и ещё ${stats.listening.length - 3}` : ""} сейчас слушают музыку</div>`
+                : ""
+            }
+            ${
+                events.length
+                ? `<div class="bubbles-now-events">${events.map(e => `<div class="bubbles-now-event"><span>${e.text}</span><small>${timeAgoShort(e.at)}</small></div>`).join("")}</div>`
+                : ""
+            }
+        </div>
+    `;
+}
+
+function refreshBubblesNowWidget() {
+    const el = document.getElementById("bubblesNowWidget");
+    if (!el) return;
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = bubblesNowWidgetHtml().trim();
+    el.replaceWith(wrapper.firstElementChild);
+}
+
 async function refreshOnlineCount(){
     if(document.visibilityState !== "visible") return;
     try{
@@ -1558,6 +1653,7 @@ async function refreshOnlineCount(){
         if(topbarBadge) topbarBadge.textContent = `🟢 ${safeCount} онлайн`;
         const landingBadge = document.getElementById("landingOnlineCount");
         if(landingBadge) landingBadge.textContent = `🟢 ${safeCount} ${pluralPeople(safeCount)} сейчас в bubbles`;
+        refreshBubblesNowWidget();
     }catch(error){
         console.error("Не удалось обновить счётчик онлайн:", error);
     }
@@ -2002,6 +2098,14 @@ function renderApp(){
 
                     <button
                         class="nav-btn"
+                        data-page="groupRooms"
+                        onclick="navigate('groupRooms')"
+                    >
+                        🫧 Комнаты
+                    </button>
+
+                    <button
+                        class="nav-btn"
                         data-page="saved"
                         onclick="navigate('saved')"
                     >
@@ -2108,6 +2212,10 @@ function renderApp(){
                     🎨 Комната
                 </button>
 
+                <button class="more-sheet-item" data-page="groupRooms" onclick="navigate('groupRooms'); closeMoreSheet();">
+                    🫧 Комнаты
+                </button>
+
                 <button class="more-sheet-item" data-page="saved" onclick="navigate('saved'); closeMoreSheet();">
                     🔖 Сохранённое
                 </button>
@@ -2168,7 +2276,7 @@ function navigate(page, id = null){
     // button on someone's profile. navigate() only ever rebuilds #page,
     // not the sidebar itself, so the state flag alone wouldn't be
     // reflected on screen without also touching the DOM directly here.
-    if (["search","rooms","saved","pet","premium","edit"].includes(page) && !sidebarMoreExpanded) {
+    if (["search","rooms","groupRooms","roomChat","saved","pet","premium","edit"].includes(page) && !sidebarMoreExpanded) {
         sidebarMoreExpanded = true;
         document.querySelector(".sidebar-more")?.classList.remove("hidden");
         const toggle = document.querySelector(".sidebar-more-toggle");
@@ -2211,6 +2319,9 @@ function navigate(page, id = null){
         case "friends": renderFriends(); break;
         case "messages": renderMessages(); break;
         case "rooms": if (!isFreshEntryToRooms) renderRooms(); break;
+        case "groupRooms": renderGroupRoomsList(); break;
+        case "roomChat": openRoomChat(id); break;
+        case "playlist": renderPlaylistPage(id); break;
         case "music": renderMusic(); break;
         case "pet": renderPet(); break;
         case "premium": renderPremium(); break;
@@ -2276,6 +2387,8 @@ function renderFeed(){
         </h1>
 
         ${renderStoryRail()}
+
+        ${bubblesNowWidgetHtml()}
 
 
         <div class="card">
@@ -5352,6 +5465,9 @@ function openChat(userId) {
     selectedChatId = userId;
     selectedMessageImage = null; // a staged photo shouldn't follow you into a different chat
     replyingToMessageId = null; // neither should a pending reply
+    editingMessageId = null; // or an in-progress edit
+    chatSearchOpen = false;
+    chatSearchQuery = "";
     navigate("messages");
     markChatAsRead(userId);
     joinTypingChannel(userId);
@@ -5664,6 +5780,21 @@ function renderConversation(user) {
 let chatVisibleCount = 40;
 const CHAT_PAGE_SIZE = 40;
 
+// "Сегодня" / "Вчера" / full date — same idea as most chat apps' date
+// separators, inserted between messages from different days (see the
+// sameDay check in renderChat).
+function chatDateDivider(timestamp) {
+    const date = new Date(timestamp);
+    const today = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+    let label;
+    if (date.toDateString() === today.toDateString()) label = "Сегодня";
+    else if (date.toDateString() === yesterday.toDateString()) label = "Вчера";
+    else label = date.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: date.getFullYear() !== today.getFullYear() ? "numeric" : undefined });
+    return `<div class="chat-date-divider"><span>${label}</span></div>`;
+}
+
 function renderChat(userId){
     const user = getUser(userId);
     const allMessages = db.messages.filter(m => (m.from === currentUserId && m.to === userId) || (m.from === userId && m.to === currentUserId)).sort((a,b) => a.createdAt - b.createdAt);
@@ -5675,6 +5806,7 @@ function renderChat(userId){
     // same idea as the feed's "Показать ещё".
     const messages = allMessages.slice(-chatVisibleCount);
     const hasEarlier = allMessages.length > messages.length;
+    const pinnedMessages = allMessages.filter(m => m.pinned);
     // Каждая переписка теперь всегда шифруется — нет отдельного шага
     // настройки на устройстве, поэтому бейдж больше не зависит от
     // publicKey/isReady, а просто отражает текущую схему.
@@ -5701,12 +5833,40 @@ function renderChat(userId){
             <button
                 type="button"
                 class="chat-call-btn"
+                onclick="toggleChatSearch()"
+                title="Поиск по переписке"
+            >🔎</button>
+
+            <button
+                type="button"
+                class="chat-call-btn"
                 onclick="startDirectCall('${userId}')"
                 title="Позвонить"
             >📞</button>
 
         </div>
 
+        ${
+            chatSearchOpen
+            ? `
+                <div class="chat-search-bar">
+                    <input id="chatSearchInput" placeholder="Поиск по переписке..." value="${escapeHtml(chatSearchQuery)}" oninput="setChatSearchQuery(this.value)">
+                    <div id="chatSearchResults" class="chat-search-results"></div>
+                </div>
+              `
+            : ""
+        }
+
+        ${
+            pinnedMessages.length
+            ? `
+                <div class="room-pinned-section chat-pinned-section">
+                    <div class="room-pinned-label">📌 Закреплённые</div>
+                    ${pinnedMessages.map(m => `<div class="room-pinned-item" onclick="jumpToMessageInChat('${m.id}')">${escapeHtml(messagePreviewText(m).slice(0, 80))}</div>`).join("")}
+                </div>
+              `
+            : ""
+        }
 
         <div
             class="chat-messages"
@@ -5725,7 +5885,11 @@ function renderChat(userId){
 
             ${
                 messages.length
-                ? messages.map(messageBubble).join("")
+                ? messages.map((m, i) => {
+                    const prev = messages[i - 1];
+                    const sameDay = prev && new Date(prev.createdAt).toDateString() === new Date(m.createdAt).toDateString();
+                    return (sameDay ? "" : chatDateDivider(m.createdAt)) + messageBubble(m);
+                  }).join("")
                 : `
                     <div class="empty">
                         Начни переписку.
@@ -5814,6 +5978,8 @@ function messageBubble(message){
 
         <div class="message ${mine ? "me" : "them"}${message.image ? " has-image" : ""}" data-bubbles-message-id="${message.id}">
 
+            ${message.pinned ? `<div class="message-pinned-tag">📌 Закреплено</div>` : ""}
+
             ${
                 message.replyToId
                 ? (
@@ -5851,6 +6017,7 @@ function messageBubble(message){
                             minute:"2-digit"
                         }
                     )}
+                ${message.editedAt ? `<span class="message-edited-tag">изменено</span>` : ""}
                 ${mine ? `<span class="read-tick ${message.readAt ? "read" : ""}">${message.readAt ? "✓✓" : "✓"}</span>` : ""}
             </small>
 
@@ -5882,6 +6049,46 @@ function messageBubble(message){
                     onclick="startReplyToMessage('${message.id}')"
                     title="Ответить"
                 >↩️</button>
+
+                <button
+                    type="button"
+                    class="reaction-add-btn"
+                    onclick="openForwardPicker('${message.id}')"
+                    title="Переслать"
+                >↪️</button>
+
+                <button
+                    type="button"
+                    class="reaction-add-btn"
+                    onclick="toggleMessagePin('${message.id}')"
+                    title="${message.pinned ? "Открепить" : "Закрепить"}"
+                >📌</button>
+
+                ${
+                    mine && message.text && !sharedPost
+                    ? `
+                        <button
+                            type="button"
+                            class="reaction-add-btn"
+                            onclick="startEditMessage('${message.id}')"
+                            title="Редактировать"
+                        >✏️</button>
+                      `
+                    : ""
+                }
+
+                ${
+                    mine
+                    ? `
+                        <button
+                            type="button"
+                            class="reaction-add-btn"
+                            onclick="deleteMessage('${message.id}')"
+                            title="Удалить"
+                        >🗑</button>
+                      `
+                    : ""
+                }
 
                 <div class="reaction-picker hidden">
                     ${
@@ -5970,6 +6177,7 @@ function refreshMessageBubbleInPlace(messageId) {
 function startReplyToMessage(messageId) {
     const message = db.messages.find(m => m.id === messageId);
     if (!message) return;
+    editingMessageId = null; // reply and edit are mutually exclusive compose states
     replyingToMessageId = messageId;
     renderReplyPreviewBar();
     document.getElementById("messageInput")?.focus();
@@ -5980,9 +6188,47 @@ function cancelReplyToMessage() {
     renderReplyPreviewBar();
 }
 
+function startEditMessage(messageId) {
+    const message = db.messages.find(m => m.id === messageId);
+    if (!message || message.from !== currentUserId || !message.text || parseSharedPostMessage(message.text)) return;
+    replyingToMessageId = null;
+    editingMessageId = messageId;
+    renderReplyPreviewBar();
+    const input = document.getElementById("messageInput");
+    if (input) { input.value = message.text; input.focus(); }
+}
+
+function cancelEditMessage() {
+    editingMessageId = null;
+    const input = document.getElementById("messageInput");
+    if (input) input.value = "";
+    renderReplyPreviewBar();
+}
+
+// Renders whichever compose-state bar applies above the input — replying
+// to a message, editing one of your own, or neither (hidden). The two
+// are mutually exclusive (see startReplyToMessage/startEditMessage
+// above each clearing the other), so only one branch here ever applies
+// at a time.
 function renderReplyPreviewBar() {
     const el = document.getElementById("replyPreviewBar");
     if (!el) return;
+
+    if (editingMessageId) {
+        const original = db.messages.find(m => m.id === editingMessageId);
+        if (!original) { editingMessageId = null; el.innerHTML = ""; el.classList.add("hidden"); return; }
+        el.classList.remove("hidden");
+        el.innerHTML = `
+            <div class="reply-preview-bar edit-preview-bar">
+                <div class="reply-preview-text">
+                    <strong>✏️ Редактирование</strong>
+                </div>
+                <button type="button" class="message-image-remove" onclick="cancelEditMessage()" title="Отменить редактирование">✕</button>
+            </div>
+        `;
+        return;
+    }
+
     if (!replyingToMessageId) {
         el.innerHTML = "";
         el.classList.add("hidden");
@@ -6778,6 +7024,7 @@ async function buildEncryptedMessageRow(id, toUserId, text, image, createdAtIso,
 
 async function sendMessage(event, userId) {
     event.preventDefault();
+    if (editingMessageId) { await saveEditedMessage(userId); return; }
     stopTyping();
     const input = document.getElementById("messageInput");
     const text = input.value.trim();
@@ -6809,6 +7056,192 @@ async function sendMessage(event, userId) {
     recomputeAchievements();
 }
 
+// Re-encrypts with a FRESH iv (never reuse an AES-GCM iv with a new
+// ciphertext under the same key) via the same buildEncryptedMessageRow
+// used for sending — this is an update to the existing row, not a new
+// message, so only text/iv/encrypted/edited_at are touched.
+async function saveEditedMessage(userId) {
+    const input = document.getElementById("messageInput");
+    const newText = input?.value.trim();
+    const message = db.messages.find(m => m.id === editingMessageId);
+    if (!message || !newText) return;
+    const messageId = editingMessageId;
+    const prevText = message.text;
+    const prevEditedAt = message.editedAt;
+
+    message.text = newText;
+    message.editedAt = Date.now();
+    input.value = "";
+    cancelEditMessage();
+    refreshMessageBubbleInPlace(messageId);
+
+    const row = await buildEncryptedMessageRow(messageId, userId, newText, "", new Date(message.createdAt).toISOString(), message.replyToId);
+    const { error } = await sb.from("messages")
+        .update({ text: row.text, iv: row.iv || null, encrypted: row.encrypted, edited_at: new Date(message.editedAt).toISOString() })
+        .eq("id", messageId);
+
+    if (error) {
+        console.error(error);
+        message.text = prevText;
+        message.editedAt = prevEditedAt;
+        refreshMessageBubbleInPlace(messageId);
+        toast("Не удалось сохранить изменения.");
+    }
+}
+
+async function deleteMessage(messageId) {
+    const message = db.messages.find(m => m.id === messageId);
+    if (!message || message.from !== currentUserId) return;
+    if (!confirm("Удалить сообщение? Действие нельзя отменить.")) return;
+    const partnerId = message.to;
+    db.messages = db.messages.filter(m => m.id !== messageId);
+    document.querySelector(`[data-bubbles-message-id="${messageId}"]`)?.remove();
+    refreshConversationPreview(partnerId);
+
+    const { error } = await sb.from("messages").delete().eq("id", messageId);
+    if (error) {
+        console.error(error);
+        db.messages.push(message);
+        if (selectedChatId === partnerId) renderMessages();
+        toast("Не удалось удалить сообщение.");
+    }
+}
+
+function openForwardPicker(messageId) {
+    const message = db.messages.find(m => m.id === messageId);
+    if (!message) return;
+    const friends = db.friends
+        .filter(f => f.user1 === currentUserId || f.user2 === currentUserId)
+        .map(f => getUser(f.user1 === currentUserId ? f.user2 : f.user1))
+        .filter(Boolean);
+
+    showBubblesModal(`
+        <div class="modal-header">
+            <h3>Переслать</h3>
+            <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
+        </div>
+        ${
+            friends.length
+            ? `
+                <div class="share-friend-list">
+                    ${friends.map(f => `
+                        <button class="share-friend-row" onclick="forwardMessageTo('${messageId}','${f.id}')">
+                            <img loading="lazy" decoding="async" class="mini-avatar small" src="${f.avatar || defaultAvatar()}">
+                            <span>${escapeHtml(f.displayName)}</span>
+                        </button>
+                    `).join("")}
+                </div>
+              `
+            : `<p style="text-align:center;color:var(--muted);padding:20px 0;">Пока нет друзей, чтобы переслать.</p>`
+        }
+    `);
+}
+
+async function forwardMessageTo(messageId, toUserId) {
+    const original = db.messages.find(m => m.id === messageId);
+    if (!original) return;
+    closeBubblesModal();
+
+    const message = { id: uid("message"), from: currentUserId, to: toUserId, text: original.text, image: original.image, createdAt: Date.now(), readAt: null, reactions: [] };
+    db.messages.push(message);
+    appendMessageToChat(message, toUserId);
+
+    const row = await buildEncryptedMessageRow(message.id, toUserId, original.text, original.image, new Date(message.createdAt).toISOString());
+    const { error } = await sb.from("messages").insert(row);
+    if (error) {
+        console.error(error);
+        db.messages = db.messages.filter(m => m.id !== message.id);
+        document.querySelector(`[data-bubbles-message-id="${message.id}"]`)?.remove();
+        toast("Не удалось переслать сообщение.");
+        return;
+    }
+    toast("Переслано ↪️");
+}
+
+// Либо сторона DM может закрепить/открепить — см. заметки про
+// messages_guard_update в supabase.sql: ни sender-, ни receiver-ветка
+// не запрещают менять pinned/pinned_at, так что это разрешено обеим
+// сторонам без изменений RLS.
+async function toggleMessagePin(messageId) {
+    const message = db.messages.find(m => m.id === messageId);
+    if (!message) return;
+    const wasPinned = message.pinned;
+    message.pinned = !wasPinned;
+    message.pinnedAt = message.pinned ? Date.now() : null;
+    if (selectedChatId) renderMessages();
+
+    const { error } = await sb.from("messages")
+        .update({ pinned: message.pinned, pinned_at: message.pinned ? new Date().toISOString() : null })
+        .eq("id", messageId);
+
+    if (error) {
+        console.error(error);
+        message.pinned = wasPinned;
+        message.pinnedAt = wasPinned ? message.pinnedAt : null;
+        if (selectedChatId) renderMessages();
+        toast("Не удалось закрепить сообщение.");
+    }
+}
+
+function toggleChatSearch() {
+    chatSearchOpen = !chatSearchOpen;
+    if (!chatSearchOpen) chatSearchQuery = "";
+    renderMessages();
+    if (chatSearchOpen) document.getElementById("chatSearchInput")?.focus();
+}
+
+function setChatSearchQuery(value) {
+    chatSearchQuery = value;
+    renderChatSearchResults();
+}
+
+function renderChatSearchResults() {
+    const box = document.getElementById("chatSearchResults");
+    if (!box) return;
+    const q = chatSearchQuery.trim().toLowerCase();
+    if (!q) { box.innerHTML = ""; return; }
+    const partnerId = selectedChatId;
+    const matches = db.messages
+        .filter(m =>
+            ((m.from === currentUserId && m.to === partnerId) || (m.from === partnerId && m.to === currentUserId)) &&
+            m.text && !parseSharedPostMessage(m.text) && m.text.toLowerCase().includes(q)
+        )
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 30);
+
+    box.innerHTML = matches.length
+        ? matches.map(m => `
+            <button type="button" class="chat-search-result" onclick="jumpToMessageInChat('${m.id}')">
+                <span>${escapeHtml(m.text.length > 70 ? m.text.slice(0, 70) + "…" : m.text)}</span>
+                <small>${new Date(m.createdAt).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })}</small>
+            </button>
+        `).join("")
+        : `<p style="text-align:center;color:var(--muted);padding:10px 0;">Ничего не найдено.</p>`;
+}
+
+// Unlike scrollToMessage (used for reply-quote jumps, where the target
+// is almost always already on screen), a search hit can easily be
+// outside the last-40-messages window renderChat actually puts in the
+// DOM — so this widens that window first if needed, then scrolls.
+function jumpToMessageInChat(messageId) {
+    const message = db.messages.find(m => m.id === messageId);
+    if (!message) { toast("Сообщение не найдено."); return; }
+    const partnerId = message.from === currentUserId ? message.to : message.from;
+    chatSearchOpen = false;
+    chatSearchQuery = "";
+    if (selectedChatId !== partnerId) selectedChatId = partnerId;
+
+    const allMessages = db.messages
+        .filter(m => (m.from === currentUserId && m.to === partnerId) || (m.from === partnerId && m.to === currentUserId))
+        .sort((a, b) => a.createdAt - b.createdAt);
+    const idx = allMessages.findIndex(m => m.id === messageId);
+    const fromEnd = allMessages.length - idx;
+    if (fromEnd > chatVisibleCount) chatVisibleCount = fromEnd + 5;
+
+    renderMessages();
+    setTimeout(() => scrollToMessage(messageId), 60);
+}
+
 /* ============================================================
    MUSIC
    ============================================================ */
@@ -6835,6 +7268,21 @@ function renderMusic() {
     const music = getFilteredMusicList();
     musicQueue = music.map(m => m.id);
 
+    const recentPlayedTracks = myRecentPlays
+        .slice(0, 5)
+        .map(p => db.music.find(m => m.id === p.musicId))
+        .filter(Boolean);
+
+    // Lightweight "recommendations": a handful of tracks you haven't
+    // already saved, liked, or played — not a real ranking model, just
+    // enough to surface stuff you haven't seen yet. Reshuffles on every
+    // visit to the Music page.
+    const seenIds = new Set([...mySavedMusicIds, ...myRecentPlays.map(p => p.musicId)]);
+    const recommendedTracks = db.music
+        .filter(m => m.authorId !== currentUserId && !seenIds.has(m.id))
+        .sort(() => Math.random() - 0.5)
+        .slice(0, 5);
+
     document.getElementById("page").innerHTML = `
         <h1 class="section-title">🎵 Музыка</h1>
 
@@ -6846,6 +7294,40 @@ function renderMusic() {
         <div class="search music-search">
             <input id="musicSearchInput" placeholder="Найти трек, артиста или автора…" value="${escapeHtml(musicSearchQuery)}" oninput="setMusicSearch(this.value)">
         </div>
+
+        ${
+            musicTab === "all" && !musicSearchQuery.trim()
+            ? `
+                <div class="rooms-topbar">
+                    <h3 class="rooms-subheading" style="margin:0;">📃 Мои плейлисты</h3>
+                    <div class="rooms-header-actions">
+                        <button type="button" class="secondary" onclick="openAddToPlaylistModal(null)">+ Плейлист</button>
+                    </div>
+                </div>
+                ${
+                    myPlaylists().length
+                    ? `<div class="playlist-row">${myPlaylists().map(p => `
+                        <button type="button" class="playlist-chip" onclick="navigate('playlist','${p.id}')">📃 ${escapeHtml(p.name)} <small>${tracksInPlaylist(p.id).length}</small></button>
+                    `).join("")}</div>`
+                    : `<p class="wall-subtitle">Плейлистов пока нет — создай первый.</p>`
+                }
+
+                ${
+                    recentPlayedTracks.length
+                    ? `<h3 class="rooms-subheading">🕓 Недавно прослушанное</h3>${recentPlayedTracks.map(renderMusicCard).join("")}`
+                    : ""
+                }
+
+                ${
+                    recommendedTracks.length
+                    ? `<h3 class="rooms-subheading">✨ Рекомендуем</h3>${recommendedTracks.map(renderMusicCard).join("")}`
+                    : ""
+                }
+
+                <h3 class="rooms-subheading">Все треки</h3>
+            `
+            : ""
+        }
 
         ${
             musicTab === "mine"
@@ -6902,6 +7384,7 @@ function renderMusicCard(music) {
     const isPlaying = currentlyPlayingMusicId === music.id;
     const isMine = music.authorId === currentUserId;
     const isSaved = mySavedMusicIds.has(music.id);
+    const liked = (music.likes || []).includes(currentUserId);
     return `
         <div class="music-card ${isPlaying ? "playing" : ""}" id="music-${music.id}">
             <div class="music-row">
@@ -6909,8 +7392,11 @@ function renderMusicCard(music) {
                 <div class="music-info">
                     <div class="music-title">${escapeHtml(music.title)}</div>
                     <div class="music-artist">${escapeHtml(music.artist || "Unknown Artist")}</div>
-                    <div class="music-artist">@${escapeHtml(author?.username || "unknown")}</div>
+                    <div class="music-artist music-author-link" onclick="navigate('profile','${music.authorId}')">@${escapeHtml(author?.username || "unknown")}</div>
                 </div>
+                <button class="music-like-btn ${liked ? "liked" : ""}" onclick="toggleMusicLike('${music.id}')" title="${liked ? "Убрать лайк" : "Нравится"}">
+                    ${liked ? "❤️" : "🤍"}${music.likes?.length ? `<span>${music.likes.length}</span>` : ""}
+                </button>
                 <button onclick="playMusic('${music.id}')" title="Слушать">${isPlaying ? "⏸️" : "▶️"}</button>
                 ${
                     isMine
@@ -6922,6 +7408,7 @@ function renderMusicCard(music) {
                     ? `<button onclick="deleteMusic('${music.id}')" title="Удалить (админ)">🗑️</button>`
                     : ""
                 }
+                <button onclick="openAddToPlaylistModal('${music.id}')" title="Добавить в плейлист">➕📃</button>
             </div>
         </div>
     `;
@@ -6953,6 +7440,165 @@ async function toggleMusicSave(musicId) {
     } else if (!wasSaved) {
         recomputeAchievements();
     }
+}
+
+async function toggleMusicLike(musicId) {
+    const track = db.music.find(m => m.id === musicId);
+    if (!track) return;
+    if (!track.likes) track.likes = [];
+    const wasLiked = track.likes.includes(currentUserId);
+    track.likes = wasLiked ? track.likes.filter(id => id !== currentUserId) : [...track.likes, currentUserId];
+    refreshMusicCardInPlace(musicId);
+
+    const { error } = wasLiked
+        ? await sb.from("music_likes").delete().eq("music_id", musicId).eq("user_id", currentUserId)
+        : await sb.from("music_likes").insert({ music_id: musicId, user_id: currentUserId });
+
+    if (error) {
+        console.error(error);
+        track.likes = wasLiked ? [...track.likes, currentUserId] : track.likes.filter(id => id !== currentUserId);
+        refreshMusicCardInPlace(musicId);
+        toast("Не удалось поставить лайк.");
+    }
+}
+
+function refreshMusicCardInPlace(musicId) {
+    const track = db.music.find(m => m.id === musicId);
+    const card = document.getElementById("music-" + musicId);
+    if (!track || !card) return;
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = renderMusicCard(track).trim();
+    card.replaceWith(wrapper.firstElementChild);
+}
+
+/* ------------------------------------------------------------
+   PLAYLISTS
+   ------------------------------------------------------------ */
+function myPlaylists() {
+    return db.playlists.filter(p => p.ownerId === currentUserId);
+}
+
+function tracksInPlaylist(playlistId) {
+    return db.playlistTracks
+        .filter(t => t.playlistId === playlistId)
+        .sort((a, b) => a.position - b.position)
+        .map(t => db.music.find(m => m.id === t.musicId))
+        .filter(Boolean);
+}
+
+function openAddToPlaylistModal(musicId) {
+    const playlists = myPlaylists();
+    showBubblesModal(`
+        <div class="modal-header">
+            <h3>${musicId ? "Добавить в плейлист" : "Новый плейлист"}</h3>
+            <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
+        </div>
+        ${
+            musicId && playlists.length
+            ? `
+                <div class="friend-grid" style="grid-template-columns:1fr;">
+                    ${playlists.map(p => `
+                        <button class="share-friend-row" onclick="addTrackToPlaylist('${p.id}','${musicId}')">
+                            <span>📃 ${escapeHtml(p.name)}</span>
+                            <small style="color:var(--muted);">${tracksInPlaylist(p.id).length} треков</small>
+                        </button>
+                    `).join("")}
+                </div>
+              `
+            : musicId ? `<p style="text-align:center;color:var(--muted);">Плейлистов пока нет.</p>` : ""
+        }
+        <div class="room-create-form" style="margin-top:12px;">
+            <input id="newPlaylistNameModal" maxlength="60" placeholder="Название нового плейлиста">
+            <button type="button" class="primary full" onclick="createPlaylistAndAdd(${musicId ? `'${musicId}'` : "null"})">+ Создать${musicId ? " и добавить" : ""}</button>
+        </div>
+    `);
+}
+
+async function createPlaylistAndAdd(musicId) {
+    const name = document.getElementById("newPlaylistNameModal")?.value.trim();
+    if (!name) { toast("Дай плейлисту название."); return; }
+    const { data, error } = await sb.from("playlists").insert({ owner_id: currentUserId, name }).select("id,created_at").single();
+    if (error) { console.error(error); toast("Не удалось создать плейлист."); return; }
+    db.playlists.push({ id: data.id, ownerId: currentUserId, name, createdAt: Date.parse(data.created_at) });
+    if (musicId) await addTrackToPlaylist(data.id, musicId);
+    else closeBubblesModal();
+}
+
+async function addTrackToPlaylist(playlistId, musicId) {
+    if (db.playlistTracks.some(t => t.playlistId === playlistId && t.musicId === musicId)) {
+        toast("Уже в этом плейлисте.");
+        closeBubblesModal();
+        return;
+    }
+    const position = tracksInPlaylist(playlistId).length;
+    const { data, error } = await sb.from("playlist_tracks")
+        .insert({ playlist_id: playlistId, music_id: musicId, position })
+        .select("id,added_at").single();
+    if (error) { console.error(error); toast("Не удалось добавить трек."); return; }
+    db.playlistTracks.push({ id: data.id, playlistId, musicId, position, addedAt: Date.parse(data.added_at) });
+    toast("Добавлено в плейлист 📃");
+    closeBubblesModal();
+    if (currentPage === "music") renderMusic();
+}
+
+async function removeTrackFromPlaylist(playlistId, musicId) {
+    const entry = db.playlistTracks.find(t => t.playlistId === playlistId && t.musicId === musicId);
+    if (!entry) return;
+    db.playlistTracks = db.playlistTracks.filter(t => t.id !== entry.id);
+    renderPlaylistPage(playlistId);
+    const { error } = await sb.from("playlist_tracks").delete().eq("id", entry.id);
+    if (error) { console.error(error); toast("Не удалось убрать трек."); }
+}
+
+async function deletePlaylist(playlistId) {
+    if (!confirm("Удалить плейлист?")) return;
+    const { error } = await sb.from("playlists").delete().eq("id", playlistId);
+    if (error) { console.error(error); toast("Не удалось удалить плейлист."); return; }
+    db.playlists = db.playlists.filter(p => p.id !== playlistId);
+    db.playlistTracks = db.playlistTracks.filter(t => t.playlistId !== playlistId);
+    renderMusic();
+}
+
+function playPlaylist(playlistId) {
+    const tracks = tracksInPlaylist(playlistId);
+    if (!tracks.length) return;
+    musicQueue = tracks.map(t => t.id);
+    playMusic(tracks[0].id);
+}
+
+function renderPlaylistPage(playlistId) {
+    const playlist = db.playlists.find(p => p.id === playlistId);
+    const page = document.getElementById("page");
+    if (!playlist) { page.innerHTML = emptyState("📃", "Плейлист не найден", ""); return; }
+    const tracks = tracksInPlaylist(playlistId);
+    const isMine = playlist.ownerId === currentUserId;
+
+    page.innerHTML = `
+        <div class="rooms-topbar">
+            <h1 class="section-title" style="margin-bottom:0;">📃 ${escapeHtml(playlist.name)}</h1>
+            <div class="rooms-header-actions">
+                ${tracks.length ? `<button type="button" class="primary" onclick="playPlaylist('${playlistId}')">▶️ Играть всё</button>` : ""}
+                ${isMine ? `<button type="button" class="secondary" onclick="deletePlaylist('${playlistId}')">🗑</button>` : ""}
+            </div>
+        </div>
+        ${
+            tracks.length
+            ? tracks.map(t => `
+                <div class="music-card" id="music-${t.id}">
+                    <div class="music-row">
+                        <img loading="lazy" decoding="async" class="music-cover" src="${t.cover || defaultMusicCover()}">
+                        <div class="music-info">
+                            <div class="music-title">${escapeHtml(t.title)}</div>
+                            <div class="music-artist">${escapeHtml(t.artist || "Unknown Artist")}</div>
+                        </div>
+                        <button onclick="playMusic('${t.id}')" title="Слушать">${currentlyPlayingMusicId === t.id ? "⏸️" : "▶️"}</button>
+                        ${isMine ? `<button onclick="removeTrackFromPlaylist('${playlistId}','${t.id}')" title="Убрать из плейлиста">✕</button>` : ""}
+                    </div>
+                </div>
+            `).join("")
+            : emptyState("📃", "Плейлист пуст", "Добавляй треки кнопкой ➕📃 на карточке трека.")
+        }
+    `;
 }
 
 async function onMusicCoverFileChosen(input){
@@ -7077,12 +7723,33 @@ async function playMusic(musicId){
     setListening(music.title, music.artist || "Unknown Artist");
     refreshMusicCardPlayState(musicId);
     updateMediaSessionMetadata(music);
+    if (!document.getElementById("fullPlayer")?.classList.contains("hidden")) renderFullPlayer();
 
     // If this track isn't part of the currently-viewed list (e.g. played
     // from a profile page), fall back to a queue of just this one track.
     if (!musicQueue.includes(musicId)) musicQueue = [musicId];
 
     try{ await audio.play(); }catch(error){ console.log("Браузер ожидает действие пользователя.",error); }
+    logMusicPlay(musicId);
+}
+
+// Debounced: replaying/scrubbing the same track within a few minutes
+// doesn't spam music_plays with near-duplicate rows — one row per
+// genuine "started listening to this again" moment is enough for a
+// recently-played list.
+async function logMusicPlay(musicId) {
+    if (!currentUserId) return;
+    const now = Date.now();
+    const last = lastPlayLoggedAt.get(musicId);
+    if (last && now - last < 5 * 60 * 1000) return;
+    lastPlayLoggedAt.set(musicId, now);
+
+    myRecentPlays = myRecentPlays.filter(p => p.musicId !== musicId);
+    myRecentPlays.unshift({ musicId, playedAt: now });
+    myRecentPlays = myRecentPlays.slice(0, 200);
+
+    const { error } = await sb.from("music_plays").insert({ music_id: musicId, user_id: currentUserId });
+    if (error) console.error(error);
 }
 
 function playAdjacentTrack(direction) {
@@ -7814,6 +8481,21 @@ async function declineSubscriptionRequest(requestId) {
    ============================================================ */
 
 let userSearchQuery = "";
+let searchTab = "users"; // "users" | "posts" | "music"
+let selectedRoomId = null;
+let roomMessagesChannel = null;
+
+// A handful of preset themes so rooms can look visually distinct from
+// each other while staying inside Bubbles' own palette — not arbitrary
+// colors, just different combinations of the same Frutiger-Aero-ish
+// gradient stops already used elsewhere (see .cover / body backgrounds).
+const ROOM_THEMES = {
+    aqua: "linear-gradient(135deg,#72dcff,#b8f5ff)",
+    mint: "linear-gradient(135deg,#7ee5c9,#d3fff2)",
+    pink: "linear-gradient(135deg,#ff9fd0,#ffe0f0)",
+    lavender: "linear-gradient(135deg,#b39dff,#e3d8ff)",
+    peach: "linear-gradient(135deg,#ff9868,#ffe0c9)"
+};
 
 let searchRenderDebounceTimer = null;
 
@@ -7846,10 +8528,58 @@ function searchUsers(value, sourceId){
     }, 150);
 }
 
+const SEARCH_TABS = [
+    { id: "users", label: "👤 Люди" },
+    { id: "posts", label: "📝 Посты" },
+    { id: "music", label: "🎵 Музыка" },
+    { id: "rooms", label: "🫧 Комнаты" }
+];
+
+function setSearchTab(tab) {
+    searchTab = tab;
+    renderSearchResults(userSearchQuery.trim().toLowerCase());
+}
+
 function renderSearchResults(query){
-    const users = query
-        ? db.users.filter(user => user.id !== currentUserId && (user.username.toLowerCase().includes(query) || user.displayName.toLowerCase().includes(query)))
-        : [];
+    // "@username" is how people actually type it, but usernames aren't
+    // stored with the @ — strip it so that still matches instead of
+    // silently returning nothing.
+    const q = query.startsWith("@") ? query.slice(1) : query;
+
+    const users = !q ? [] : db.users.filter(user =>
+        user.id !== currentUserId &&
+        (user.username.toLowerCase().includes(q) || user.displayName.toLowerCase().includes(q))
+    );
+
+    const posts = !q ? [] : [...db.posts]
+        .filter(p => p.text && p.text.toLowerCase().includes(q))
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 40); // a plain substring scan over every loaded post — fine at this scale, but capped so a very common word doesn't render dozens of full post cards at once
+
+    const music = !q ? [] : db.music
+        .filter(m => m.title.toLowerCase().includes(q) || m.artist.toLowerCase().includes(q))
+        .slice(0, 40);
+
+    const rooms = !q ? [] : db.rooms
+        .filter(r => r.isPublic && (r.name.toLowerCase().includes(q) || r.description.toLowerCase().includes(q)))
+        .slice(0, 40);
+
+    const counts = { users: users.length, posts: posts.length, music: music.length, rooms: rooms.length };
+
+    let resultsHtml;
+    if (!q) {
+        resultsHtml = emptyState("🔎", "Найди что-нибудь", "Ищи людей, посты по тексту или треки по названию/автору.");
+    } else if (searchTab === "posts") {
+        resultsHtml = posts.length ? posts.map(renderPost).join("") : emptyState("📝", "Постов не найдено", "Попробуй другой запрос.");
+    } else if (searchTab === "music") {
+        resultsHtml = music.length ? music.map(musicProfileCard).join("") : emptyState("🎵", "Треков не найдено", "Попробуй другое название или исполнителя.");
+    } else if (searchTab === "rooms") {
+        resultsHtml = rooms.length ? `<div class="rooms-grid">${rooms.map(roomCardHtml).join("")}</div>` : emptyState("🫧", "Комнат не найдено", "Попробуй другой запрос.");
+    } else {
+        resultsHtml = users.length
+            ? `<div class="friend-grid">${users.map(friendCard).join("")}</div>`
+            : emptyState("🔎", "Ничего не найдено", "Попробуй другой юзернейм или имя.");
+    }
 
     document.getElementById("page").innerHTML = `
 
@@ -7860,29 +8590,29 @@ function renderSearchResults(query){
         <div class="user-search-box">
             <input
                 id="searchPageInput"
-                placeholder="Поиск пользователей..."
+                placeholder="Люди, посты, музыка..."
                 value="${escapeHtml(userSearchQuery)}"
                 oninput="searchUsers(this.value,'searchPageInput')"
             >
         </div>
 
         ${
-            !query
-            ? emptyState("🔎", "Найди друзей", "Начни вводить имя пользователя или @юзернейм выше.")
-            : users.length
+            q
             ? `
-                <div class="friend-grid">
-
-                    ${users.map(friendCard).join("")}
-
+                <div class="profile-tabs">
+                    ${
+                        SEARCH_TABS.map(t => `
+                            <button type="button" class="profile-tab${searchTab === t.id ? " active" : ""}" onclick="setSearchTab('${t.id}')">
+                                ${t.label}${counts[t.id] ? ` (${counts[t.id]})` : ""}
+                            </button>
+                        `).join("")
+                    }
                 </div>
             `
-            : emptyState(
-                "🔎",
-                "Ничего не найдено",
-                "Попробуй другой юзернейм или имя."
-            )
+            : ""
         }
+
+        ${resultsHtml}
 
     `;
 }
@@ -8365,6 +9095,378 @@ function renderCanvasItem(item) {
     `;
 }
 
+/* ============================================================
+   GROUP ROOMS — public/private community chat spaces. Separate from
+   renderRooms() below (the personal decorable canvas "Комната") despite
+   the similar name in Russian; that one is unchanged.
+   ============================================================ */
+
+function roomMembersOf(roomId) {
+    return db.roomMembers.filter(m => m.roomId === roomId);
+}
+
+function isRoomMember(roomId) {
+    return db.roomMembers.some(m => m.roomId === roomId && m.userId === currentUserId);
+}
+
+function roomMemberRole(roomId) {
+    return db.roomMembers.find(m => m.roomId === roomId && m.userId === currentUserId)?.role || null;
+}
+
+function roomOnlineCount(roomId) {
+    return roomMembersOf(roomId).filter(m => isUserOnline(getUser(m.userId)?.lastSeen)).length;
+}
+
+function roomCardHtml(room) {
+    return `
+        <div class="room-card" onclick="navigate('roomChat','${room.id}')">
+            <div class="room-card-icon" style="background:${ROOM_THEMES[room.theme] || ROOM_THEMES.aqua}">${room.icon}</div>
+            <div class="room-card-main">
+                <h3>${escapeHtml(room.name)} ${room.isPublic ? "" : "🔒"}</h3>
+                <p>${escapeHtml(room.description || "Без описания")}</p>
+                <div class="room-card-meta">${roomMembersOf(room.id).length} ${pluralPeople(roomMembersOf(room.id).length)} · 🟢 ${roomOnlineCount(room.id)} онлайн</div>
+            </div>
+        </div>
+    `;
+}
+
+function renderGroupRoomsList() {
+    const page = document.getElementById("page");
+    const myRooms = db.rooms.filter(r => isRoomMember(r.id)).sort((a, b) => b.createdAt - a.createdAt);
+    const otherPublicRooms = db.rooms.filter(r => r.isPublic && !isRoomMember(r.id)).sort((a, b) => b.createdAt - a.createdAt);
+
+    page.innerHTML = `
+        <div class="rooms-topbar">
+            <h1 class="section-title" style="margin-bottom:0;">🫧 Комнаты</h1>
+            <div class="rooms-header-actions">
+                <button type="button" class="primary" onclick="openCreateRoomModal()">+ Создать</button>
+            </div>
+        </div>
+
+        ${
+            myRooms.length
+            ? `<h3 class="rooms-subheading">Мои комнаты</h3><div class="rooms-grid">${myRooms.map(roomCardHtml).join("")}</div>`
+            : ""
+        }
+
+        <h3 class="rooms-subheading">${myRooms.length ? "Другие публичные комнаты" : "Публичные комнаты"}</h3>
+        ${
+            otherPublicRooms.length
+            ? `<div class="rooms-grid">${otherPublicRooms.map(roomCardHtml).join("")}</div>`
+            : emptyState("🫧", "Комнат пока нет", "Создай первую — например, для музыки, игр или просто поболтать.")
+        }
+    `;
+}
+
+function openCreateRoomModal() {
+    const themeSwatches = Object.keys(ROOM_THEMES).map(key => `
+        <button type="button" class="room-theme-swatch${key === "aqua" ? " selected" : ""}" data-theme-key="${key}" style="background:${ROOM_THEMES[key]}" onclick="document.querySelectorAll('.room-theme-swatch').forEach(el=>el.classList.remove('selected'));this.classList.add('selected');"></button>
+    `).join("");
+
+    showBubblesModal(`
+        <div class="modal-header">
+            <h3>Новая комната</h3>
+            <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
+        </div>
+        <div class="room-create-form">
+            <input id="newRoomIcon" maxlength="4" value="🫧" style="width:60px;text-align:center;font-size:22px;">
+            <input id="newRoomName" maxlength="60" placeholder="Название комнаты">
+            <textarea id="newRoomDescription" maxlength="200" placeholder="О чём эта комната?"></textarea>
+            <div class="room-theme-picker">${themeSwatches}</div>
+            <label class="room-public-toggle">
+                <input id="newRoomIsPublic" type="checkbox" checked>
+                Публичная — видна всем в списке комнат
+            </label>
+            <button type="button" class="primary full" onclick="submitCreateRoom()">Создать</button>
+        </div>
+    `);
+}
+
+async function submitCreateRoom() {
+    const name = document.getElementById("newRoomName")?.value.trim();
+    const description = document.getElementById("newRoomDescription")?.value.trim() || "";
+    const icon = document.getElementById("newRoomIcon")?.value.trim() || "🫧";
+    const isPublic = document.getElementById("newRoomIsPublic")?.checked ?? true;
+    const theme = document.querySelector(".room-theme-swatch.selected")?.dataset.themeKey || "aqua";
+
+    if (!name) { toast("Дай комнате название."); return; }
+
+    const roomId = uid("room");
+    const slug = name.toLowerCase().replace(/[^a-zа-я0-9]+/gi, "-").replace(/(^-|-$)/g, "") + "-" + roomId.slice(-6);
+
+    const { error } = await sb.from("rooms").insert({
+        id: roomId, name, slug, description, icon, theme, owner_id: currentUserId, is_public: isPublic
+    });
+    if (error) { console.error(error); toast("Не удалось создать комнату."); return; }
+
+    const { error: memberError } = await sb.from("room_members").insert({
+        room_id: roomId, user_id: currentUserId, role: "owner"
+    });
+    if (memberError) console.error(memberError);
+
+    db.rooms.push({ id: roomId, name, slug, description, icon, theme, ownerId: currentUserId, isPublic, createdAt: Date.now() });
+    db.roomMembers.push({ id: uid("rm"), roomId, userId: currentUserId, role: "owner", createdAt: Date.now() });
+
+    closeBubblesModal();
+    navigate("roomChat", roomId);
+}
+
+async function joinRoom(roomId) {
+    if (isRoomMember(roomId)) return;
+    db.roomMembers.push({ id: uid("rm"), roomId, userId: currentUserId, role: "member", createdAt: Date.now() });
+    renderRoomChatHeader(roomId);
+    const { error } = await sb.from("room_members").insert({ room_id: roomId, user_id: currentUserId, role: "member" });
+    if (error) {
+        console.error(error);
+        db.roomMembers = db.roomMembers.filter(m => !(m.roomId === roomId && m.userId === currentUserId));
+        renderRoomChatHeader(roomId);
+        toast("Не удалось вступить в комнату.");
+    }
+}
+
+async function leaveRoom(roomId) {
+    const room = db.rooms.find(r => r.id === roomId);
+    if (room && room.ownerId === currentUserId) {
+        toast("Владелец не может покинуть свою комнату — удали её в настройках.");
+        return;
+    }
+    const prevMembers = db.roomMembers;
+    db.roomMembers = db.roomMembers.filter(m => !(m.roomId === roomId && m.userId === currentUserId));
+    navigate("groupRooms");
+    const { error } = await sb.from("room_members").delete().eq("room_id", roomId).eq("user_id", currentUserId);
+    if (error) {
+        console.error(error);
+        db.roomMembers = prevMembers;
+        toast("Не удалось покинуть комнату.");
+    }
+}
+
+async function deleteRoom(roomId) {
+    const room = db.rooms.find(r => r.id === roomId);
+    if (!room || room.ownerId !== currentUserId) return;
+    if (!confirm(`Удалить комнату «${room.name}» безвозвратно?`)) return;
+    const { error } = await sb.from("rooms").delete().eq("id", roomId);
+    if (error) { console.error(error); toast("Не удалось удалить комнату."); return; }
+    db.rooms = db.rooms.filter(r => r.id !== roomId);
+    db.roomMembers = db.roomMembers.filter(m => m.roomId !== roomId);
+    navigate("groupRooms");
+}
+
+// Loads that room's message history once, on entry — not kept for every
+// room the way DM conversations are, see the roomMessages comment in
+// loadDB above.
+async function openRoomChat(roomId) {
+    selectedRoomId = roomId;
+    if (!isRoomMember(roomId)) {
+        const room = db.rooms.find(r => r.id === roomId);
+        if (room && !room.isPublic) { toast("Эта комната приватная."); navigate("groupRooms"); return; }
+    }
+    const page = document.getElementById("page");
+    page.innerHTML = `<div class="empty"><span class="loading-spinner"></span></div>`;
+
+    const { data, error } = await sb
+        .from("room_messages")
+        .select("id,room_id,author_id,text,pinned,pinned_at,created_at")
+        .eq("room_id", roomId)
+        .order("created_at", { ascending: true })
+        .limit(300);
+
+    if (error) console.error(error);
+    db.roomMessages = (data || []).map(row => ({
+        id: row.id, roomId: row.room_id, authorId: row.author_id, text: row.text,
+        pinned: !!row.pinned, pinnedAt: row.pinned_at ? Date.parse(row.pinned_at) : null,
+        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
+    }));
+
+    renderRoomChat(roomId);
+    joinRoomMessagesChannel(roomId);
+}
+
+function renderRoomChatHeader(roomId) {
+    const el = document.getElementById("roomChatHeader");
+    if (el) el.outerHTML = roomChatHeaderHtml(roomId);
+}
+
+function roomChatHeaderHtml(roomId) {
+    const room = db.rooms.find(r => r.id === roomId);
+    if (!room) return "";
+    const member = isRoomMember(roomId);
+    const isOwner = room.ownerId === currentUserId;
+    return `
+        <div id="roomChatHeader" class="room-chat-header" style="background:${ROOM_THEMES[room.theme] || ROOM_THEMES.aqua}">
+            <button type="button" class="room-chat-back" onclick="navigate('groupRooms')">←</button>
+            <div class="room-chat-icon">${room.icon}</div>
+            <div class="room-chat-title">
+                <h3>${escapeHtml(room.name)} ${room.isPublic ? "" : "🔒"}</h3>
+                <small>${roomMembersOf(roomId).length} ${pluralPeople(roomMembersOf(roomId).length)} · 🟢 ${roomOnlineCount(roomId)} онлайн</small>
+            </div>
+            ${
+                member
+                ? `<button type="button" class="secondary" onclick="${isOwner ? `deleteRoom('${roomId}')` : `leaveRoom('${roomId}')`}">${isOwner ? "🗑" : "Выйти"}</button>`
+                : `<button type="button" class="primary" onclick="joinRoom('${roomId}')">Вступить</button>`
+            }
+        </div>
+    `;
+}
+
+function renderRoomChat(roomId) {
+    const room = db.rooms.find(r => r.id === roomId);
+    const page = document.getElementById("page");
+    if (!room) { page.innerHTML = emptyState("🫧", "Комната не найдена", ""); return; }
+
+    const member = isRoomMember(roomId);
+    const messages = db.roomMessages.filter(m => m.roomId === roomId).sort((a, b) => a.createdAt - b.createdAt);
+    const pinned = messages.filter(m => m.pinned);
+    const canPin = ["owner", "moderator"].includes(roomMemberRole(roomId));
+
+    const bubble = (m) => {
+        const author = getUser(m.authorId);
+        return `
+            <div class="room-message${m.authorId === currentUserId ? " mine" : ""}">
+                <img loading="lazy" decoding="async" class="mini-avatar" src="${author?.avatar || defaultAvatar()}" onclick="navigate('profile','${m.authorId}')">
+                <div class="room-message-body">
+                    <div class="room-message-meta">
+                        <strong onclick="navigate('profile','${m.authorId}')">${escapeHtml(author?.displayName || "?")}</strong>
+                        <small>${new Date(m.createdAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}</small>
+                    </div>
+                    <div class="room-message-bubble">${escapeHtml(m.text)}</div>
+                    ${
+                        canPin
+                        ? `<button type="button" class="room-message-pin-btn" onclick="toggleRoomMessagePin('${m.id}')">${m.pinned ? "📌 Открепить" : "📌 Закрепить"}</button>`
+                        : ""
+                    }
+                </div>
+            </div>
+        `;
+    };
+
+    page.innerHTML = `
+        ${roomChatHeaderHtml(roomId)}
+
+        <div class="card room-chat-card">
+
+            ${
+                pinned.length
+                ? `
+                    <div class="room-pinned-section">
+                        <div class="room-pinned-label">📌 Закреплённые</div>
+                        ${pinned.map(m => `<div class="room-pinned-item">${escapeHtml(m.text)}</div>`).join("")}
+                    </div>
+                `
+                : ""
+            }
+
+            ${room.description ? `<p class="room-description">${escapeHtml(room.description)}</p>` : ""}
+
+            <div id="roomMessagesList" class="room-chat-list">
+                ${messages.length ? messages.map(bubble).join("") : emptyState("💬", "Тут пока тихо", "Напиши первое сообщение.")}
+            </div>
+
+            ${
+                member
+                ? `
+                    <div class="room-composer">
+                        <input id="roomMessageInput" placeholder="Сообщение..." onkeydown="if(event.key==='Enter')sendRoomMessage('${roomId}')">
+                        <button type="button" class="primary" onclick="sendRoomMessage('${roomId}')">→</button>
+                    </div>
+                `
+                : `<p class="wall-subtitle" style="text-align:center;">Вступи в комнату, чтобы писать сообщения.</p>`
+            }
+
+        </div>
+    `;
+
+    const list = document.getElementById("roomMessagesList");
+    if (list) list.scrollTop = list.scrollHeight;
+}
+
+async function sendRoomMessage(roomId) {
+    const input = document.getElementById("roomMessageInput");
+    const text = input?.value.trim();
+    if (!text) return;
+    input.value = "";
+
+    const tempId = uid("roommsg");
+    const optimistic = { id: tempId, roomId, authorId: currentUserId, text, pinned: false, pinnedAt: null, createdAt: Date.now() };
+    db.roomMessages.push(optimistic);
+    renderRoomChat(roomId);
+
+    const { data, error } = await sb.from("room_messages")
+        .insert({ room_id: roomId, author_id: currentUserId, text })
+        .select("id,created_at")
+        .single();
+
+    if (error) {
+        console.error(error);
+        db.roomMessages = db.roomMessages.filter(m => m.id !== tempId);
+        renderRoomChat(roomId);
+        toast("Сообщение не отправлено.");
+        return;
+    }
+    // Swap the temp id for the real one so the later realtime INSERT
+    // echo of this same row (see joinRoomMessagesChannel) is recognized
+    // as a duplicate and skipped, instead of appearing twice.
+    const msg = db.roomMessages.find(m => m.id === tempId);
+    if (msg && data) { msg.id = data.id; msg.createdAt = Date.parse(data.created_at); }
+}
+
+async function toggleRoomMessagePin(messageId) {
+    const m = db.roomMessages.find(x => x.id === messageId);
+    if (!m) return;
+    const wasPinned = m.pinned;
+    m.pinned = !wasPinned;
+    m.pinnedAt = m.pinned ? Date.now() : null;
+    renderRoomChat(m.roomId);
+
+    const { error } = await sb.from("room_messages")
+        .update({ pinned: m.pinned, pinned_at: m.pinned ? new Date().toISOString() : null })
+        .eq("id", messageId);
+
+    if (error) {
+        console.error(error);
+        m.pinned = wasPinned;
+        m.pinnedAt = wasPinned ? m.pinnedAt : null;
+        renderRoomChat(m.roomId);
+        toast("Не удалось закрепить сообщение.");
+    }
+}
+
+// One channel for whichever room is currently open, same "tear down and
+// rebuild on room switch" pattern as joinTypingChannel for DMs.
+function joinRoomMessagesChannel(roomId) {
+    if (roomMessagesChannel) { sb.removeChannel(roomMessagesChannel); roomMessagesChannel = null; }
+    if (!roomId) return;
+    roomMessagesChannel = sb.channel("bubbles-room-" + roomId)
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_messages", filter: `room_id=eq.${roomId}` }, (payload) => {
+            if (db.roomMessages.some(m => m.id === payload.new.id)) return; // our own optimistic echo
+            db.roomMessages.push({
+                id: payload.new.id, roomId: payload.new.room_id, authorId: payload.new.author_id,
+                text: payload.new.text, pinned: !!payload.new.pinned,
+                pinnedAt: payload.new.pinned_at ? Date.parse(payload.new.pinned_at) : null,
+                createdAt: Date.parse(payload.new.created_at)
+            });
+            if (selectedRoomId === roomId) renderRoomChat(roomId);
+        })
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "room_messages", filter: `room_id=eq.${roomId}` }, (payload) => {
+            const m = db.roomMessages.find(x => x.id === payload.new.id);
+            if (!m) return;
+            m.pinned = !!payload.new.pinned;
+            m.pinnedAt = payload.new.pinned_at ? Date.parse(payload.new.pinned_at) : null;
+            if (selectedRoomId === roomId) renderRoomChat(roomId);
+        })
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_members", filter: `room_id=eq.${roomId}` }, (payload) => {
+            if (!db.roomMembers.some(m => m.roomId === roomId && m.userId === payload.new.user_id)) {
+                db.roomMembers.push({ id: payload.new.id, roomId, userId: payload.new.user_id, role: payload.new.role || "member", createdAt: Date.now() });
+            }
+            if (selectedRoomId === roomId) renderRoomChatHeader(roomId);
+        })
+        .on("postgres_changes", { event: "DELETE", schema: "public", table: "room_members", filter: `room_id=eq.${roomId}` }, (payload) => {
+            db.roomMembers = db.roomMembers.filter(m => !(m.roomId === roomId && m.userId === payload.old.user_id));
+            if (selectedRoomId === roomId) renderRoomChatHeader(roomId);
+        })
+        .subscribe(logRealtimeStatus("room:" + roomId));
+}
+
 function renderRooms() {
     const page = document.getElementById("page");
     if (!selectedCanvasUserId) selectedCanvasUserId = currentUserId;
@@ -8526,6 +9628,10 @@ async function rowToMessage(row) {
 
         replyToId: row.reply_to_id || null,
 
+        editedAt: row.edited_at ? Date.parse(row.edited_at) : null,
+        pinned: !!row.pinned,
+        pinnedAt: row.pinned_at ? Date.parse(row.pinned_at) : null,
+
         createdAt:
             row.created_at
                 ? Date.parse(row.created_at)
@@ -8665,7 +9771,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, reports, subscriptionRequests, blocks, stories, storyViews, petRow] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, rooms, roomMembers, musicLikes, musicPlays, playlists, playlistTracks, reports, subscriptionRequests, blocks, stories, storyViews, petRow] = await Promise.all([
             sb.from("profiles_public").select("id,username,display_name,gender,avatar,cover,bio,visible_last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,created_at,show_online_status,wall_visibility,music_visibility,who_can_message,who_can_friend_request").order("created_at", { ascending: true }),
             sb.from("posts").select("id,author_id,wall_owner_id,text,image,music_id,shared_post_id,likes,pinned,pinned_at,created_at").order("created_at", { ascending: false }).limit(150),
             sb.from("comments").select("id,post_id,author_id,parent_comment_id,text,created_at").order("created_at", { ascending: true }).limit(1000),
@@ -8674,7 +9780,7 @@ async function loadDB() {
             currentUserId ? sb.from("friendships").select("*") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("friend_requests").select("*").eq("status", "pending") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("bubbles_notifications").select("*").eq("user_id", currentUserId).order("created_at", { ascending: false }).limit(50) : Promise.resolve({ data: [], error: null }),
-            currentUserId ? sb.from("messages").select("id,sender_id,receiver_id,text,image,created_at,read_at,encrypted,iv,img_iv,reply_to_id").or(`sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`).order("created_at", { ascending: false }).limit(1000) : Promise.resolve({ data: [], error: null }),
+            currentUserId ? sb.from("messages").select("id,sender_id,receiver_id,text,image,created_at,read_at,encrypted,iv,img_iv,reply_to_id,edited_at,pinned,pinned_at").or(`sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`).order("created_at", { ascending: false }).limit(1000) : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("message_reactions").select("message_id,user_id,emoji") : Promise.resolve({ data: [], error: null }),
             sb.from("music").select("id,author_id,title,artist,cover_url,audio_url,audio_path,cover_path,created_at").order("created_at", { ascending: false }).limit(200),
             sb.from("music_saves").select("music_id,user_id"),
@@ -8685,6 +9791,12 @@ async function loadDB() {
             sb.from("poll_options").select("id,poll_id,text,position").order("position", { ascending: true }),
             sb.from("poll_votes").select("poll_id,option_id,user_id").limit(20000),
             sb.from("follows").select("follower_id,followed_id"),
+            sb.from("rooms").select("id,name,slug,description,icon,theme,owner_id,is_public,created_at"),
+            sb.from("room_members").select("id,room_id,user_id,role,created_at"),
+            sb.from("music_likes").select("music_id,user_id"),
+            currentUserId ? sb.from("music_plays").select("music_id,played_at").eq("user_id", currentUserId).order("played_at", { ascending: false }).limit(200) : Promise.resolve({ data: [], error: null }),
+            sb.from("playlists").select("id,owner_id,name,created_at"),
+            sb.from("playlist_tracks").select("id,playlist_id,music_id,position,added_at"),
             // RLS only ever actually returns rows here for the reporter or an
             // admin, so this is cheap/empty for a regular user and only an
             // admin's own profile page ends up showing anything from it.
@@ -8704,7 +9816,7 @@ async function loadDB() {
             // it, same reasoning as room_messages used to be.
             currentUserId ? sb.from("pets").select("*").eq("owner_id", currentUserId).maybeSingle() : Promise.resolve({ data: null, error: null })
         ]);
-        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, reports, subscriptionRequests, blocks, stories, storyViews, petRow];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, rooms, roomMembers, musicLikes, musicPlays, playlists, playlistTracks, reports, subscriptionRequests, blocks, stories, storyViews, petRow];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -8725,9 +9837,44 @@ async function loadDB() {
             polls: (polls.data || []).map(row => ({ id: row.id, postId: row.post_id, createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
             pollOptions: (pollOptions.data || []).map(row => ({ id: row.id, pollId: row.poll_id, text: row.text, position: row.position || 0, votes: [] })),
             follows: (follows.data || []).map(row => ({ followerId: row.follower_id, followedId: row.followed_id })),
+            rooms: (rooms.data || []).map(row => ({
+                id: row.id, name: row.name, slug: row.slug, description: row.description || "",
+                icon: row.icon || "🫧", theme: row.theme || "aqua", ownerId: row.owner_id,
+                isPublic: !!row.is_public, createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
+            })),
+            roomMembers: (roomMembers.data || []).map(row => ({
+                id: row.id, roomId: row.room_id, userId: row.user_id, role: row.role || "member",
+                createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
+            })),
+            // Chat history for whichever room is currently open — loaded
+            // on demand by openRoom(), not eagerly here, same reasoning
+            // as canvasItems below: no point pulling every room's whole
+            // history into memory for a list screen that only needs
+            // member counts.
+            roomMessages: [],
+            playlists: (playlists.data || []).map(row => ({ id: row.id, ownerId: row.owner_id, name: row.name, createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
+            playlistTracks: (playlistTracks.data || []).map(row => ({ id: row.id, playlistId: row.playlist_id, musicId: row.music_id, position: row.position || 0, addedAt: row.added_at ? Date.parse(row.added_at) : Date.now() })),
             canvasItems: [],
             pet: petRow.data ? rowToPet(petRow.data) : null
         };
+        // Attach each track's likes from music_likes, same two-step
+        // attach as post/comment/poll-option likes above.
+        const musicLikesByTrack = new Map();
+        (musicLikes.data || []).forEach(row => {
+            if (!musicLikesByTrack.has(row.music_id)) musicLikesByTrack.set(row.music_id, []);
+            musicLikesByTrack.get(row.music_id).push(row.user_id);
+        });
+        db.music.forEach(track => { track.likes = musicLikesByTrack.get(track.id) || []; });
+        // Own listening history only (RLS already scopes music_plays to
+        // this, see supabase.sql) — most-recent-first, deduped to one
+        // entry per track for the "Недавно прослушанное" list.
+        const seenTracks = new Set();
+        myRecentPlays = [];
+        (musicPlays.data || []).forEach(row => {
+            if (seenTracks.has(row.music_id)) return;
+            seenTracks.add(row.music_id);
+            myRecentPlays.push({ musicId: row.music_id, playedAt: Date.parse(row.played_at) });
+        });
         // Attach each poll option's votes from poll_votes, same
         // two-step attach as post/comment likes above.
         const votesByOption = new Map();
@@ -8888,18 +10035,52 @@ function setupMessagesRealtime() {
             }
             updateNavBadges();
         })
-        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "messages" }, (payload) => {
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "messages" }, async (payload) => {
             const row = payload.new;
             const local = db.messages.find(m => m.id === row.id);
             if (!local) return;
             local.readAt = row.read_at ? Date.parse(row.read_at) : null;
-            if (local.from === currentUserId) {
-                const bubble = document.querySelector(`[data-bubbles-message-id="${local.id}"] .read-tick`);
-                if (bubble) {
-                    bubble.textContent = local.readAt ? "✓✓" : "✓";
-                    bubble.classList.toggle("read", !!local.readAt);
+            const editedAt = row.edited_at ? Date.parse(row.edited_at) : null;
+            const pinned = !!row.pinned;
+            const metaChanged = local.editedAt !== editedAt || local.pinned !== pinned;
+
+            if (!metaChanged) {
+                if (local.from === currentUserId) {
+                    const bubble = document.querySelector(`[data-bubbles-message-id="${local.id}"] .read-tick`);
+                    if (bubble) {
+                        bubble.textContent = local.readAt ? "✓✓" : "✓";
+                        bubble.classList.toggle("read", !!local.readAt);
+                    }
                 }
+                return;
             }
+
+            local.editedAt = editedAt;
+            local.pinned = pinned;
+            local.pinnedAt = row.pinned_at ? Date.parse(row.pinned_at) : null;
+
+            // Our own edit already has the right plaintext locally (set
+            // optimistically in saveEditedMessage) — this echo is just
+            // confirming it landed, nothing to re-decrypt. An edit from
+            // the OTHER party arrives as ciphertext though, so that case
+            // needs the same decrypt path rowToMessage already knows.
+            if (local.from !== currentUserId && editedAt) {
+                const decrypted = await rowToMessage(row);
+                local.text = decrypted.text;
+            }
+
+            refreshMessageBubbleInPlace(local.id);
+            const partnerId = local.from === currentUserId ? local.to : local.from;
+            if (selectedChatId === partnerId) renderReplyPreviewBar();
+        })
+        .on("postgres_changes", { event: "DELETE", schema: "public", table: "messages" }, (payload) => {
+            const row = payload.old;
+            if (!db.messages.some(m => m.id === row.id)) return;
+            db.messages = db.messages.filter(m => m.id !== row.id);
+            document.querySelector(`[data-bubbles-message-id="${row.id}"]`)?.remove();
+            const partnerId = row.sender_id === currentUserId ? row.receiver_id : row.sender_id;
+            refreshConversationPreview(partnerId);
+            updateNavBadges();
         })
         // A reaction insert/switch. Supabase's upsert (used when someone
         // changes their emoji) replicates as an UPDATE once the row
@@ -9149,7 +10330,7 @@ async function catchUpMessages() {
     const newestKnown = db.messages.reduce((max, m) => Math.max(max, m.createdAt || 0), 0);
     try {
         const { data, error } = await sb.from("messages")
-            .select("id,sender_id,receiver_id,text,image,created_at,read_at,encrypted,iv,img_iv,reply_to_id")
+            .select("id,sender_id,receiver_id,text,image,created_at,read_at,encrypted,iv,img_iv,reply_to_id,edited_at,pinned,pinned_at")
             .or(`sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`)
             .gt("created_at", new Date(newestKnown || 0).toISOString())
             .order("created_at", { ascending: true });
@@ -9277,6 +10458,87 @@ setInterval(() => {
 })();
 
 /* ------------------------------------------------------------
+   Progress bar sync — one custom slim bar on the mini-player, a
+   bigger one on the full-screen player, both driven off the same
+   <audio> timeupdate/play/pause events so they never drift apart.
+   ------------------------------------------------------------ */
+function formatPlayerTime(seconds) {
+    if (!isFinite(seconds) || seconds < 0) return "0:00";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s < 10 ? "0" : ""}${s}`;
+}
+
+(function setupPlayerProgress(){
+    const audio = document.getElementById("globalAudio");
+    if (!audio) return;
+
+    const sync = () => {
+        const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
+        document.getElementById("globalPlayerProgressFill")?.style.setProperty("width", pct + "%");
+        document.getElementById("fullPlayerProgressFill")?.style.setProperty("width", pct + "%");
+        const curEl = document.getElementById("fullPlayerCurrentTime");
+        const durEl = document.getElementById("fullPlayerDuration");
+        if (curEl) curEl.textContent = formatPlayerTime(audio.currentTime);
+        if (durEl) durEl.textContent = formatPlayerTime(audio.duration);
+    };
+
+    audio.addEventListener("timeupdate", sync);
+    audio.addEventListener("loadedmetadata", sync);
+    audio.addEventListener("play", () => {
+        const btn = document.getElementById("fullPlayerPlayPause");
+        if (btn) btn.textContent = "⏸️";
+    });
+    audio.addEventListener("pause", () => {
+        const btn = document.getElementById("fullPlayerPlayPause");
+        if (btn) btn.textContent = "▶️";
+    });
+})();
+
+// Shared by both progress bars (see their onclick in index.html) — works
+// out the tapped fraction from the bar's own width rather than needing
+// to know which of the two bars fired it.
+function seekGlobalPlayer(event) {
+    const audio = document.getElementById("globalAudio");
+    if (!audio || !audio.duration) return;
+    const bar = event.currentTarget;
+    const rect = bar.getBoundingClientRect();
+    const fraction = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    audio.currentTime = fraction * audio.duration;
+}
+
+function toggleGlobalPlayPause() {
+    const audio = document.getElementById("globalAudio");
+    if (!audio) return;
+    if (audio.paused) audio.play().catch(() => {});
+    else audio.pause();
+    refreshMusicCardPlayState(audio.paused ? null : currentlyPlayingMusicId);
+}
+
+function openFullPlayer() {
+    if (!currentlyPlayingMusicId) return;
+    renderFullPlayer();
+    document.getElementById("fullPlayer")?.classList.remove("hidden");
+}
+
+function closeFullPlayer() {
+    document.getElementById("fullPlayer")?.classList.add("hidden");
+}
+
+function renderFullPlayer() {
+    const music = db.music.find(m => m.id === currentlyPlayingMusicId);
+    if (!music) return;
+    const audio = document.getElementById("globalAudio");
+    document.getElementById("fullPlayerCover").src = music.cover || defaultMusicCover();
+    document.getElementById("fullPlayerTitle").textContent = music.title;
+    document.getElementById("fullPlayerArtist").textContent = music.artist || "Unknown Artist";
+    document.getElementById("fullPlayerPlayPause").textContent = audio && !audio.paused ? "⏸️" : "▶️";
+    const liked = (music.likes || []).includes(currentUserId);
+    const likeBtn = document.getElementById("fullPlayerLikeBtn");
+    if (likeBtn) likeBtn.textContent = liked ? "❤️" : "🤍";
+}
+
+/* ------------------------------------------------------------
    MediaSession — это то, что рисует iOS/Android на экране
    блокировки и в шторке "сейчас играет": обложка, название,
    исполнитель, и кнопки play/pause/next/prev управляют плеером
@@ -9375,17 +10637,21 @@ sb.auth.onAuthStateChange(async (_event,session)=>{
 Object.assign(window,{
     showAuth,loginForm,registerForm,selectGender,register,login,logout,
     navigate,renderFeed,renderProfile,renderFriends,renderMessages,renderMusic,renderEditProfile,
-    searchUsers,createPost,toggleLike,toggleReaction,togglePostReactionPicker,toggleCommentLike,addComment,deleteComment,focusComment,openReplyBox,closeReplyBox,deletePost,
+    searchUsers,setSearchTab,createPost,toggleLike,toggleReaction,togglePostReactionPicker,toggleCommentLike,addComment,deleteComment,focusComment,openReplyBox,closeReplyBox,deletePost,
     saveProfile,onAvatarFileChosen,openChat,sendMessage,handleTyping,uploadMusic,playMusic,closeMusicPlayer,deleteMusic,
     toggleMessageReaction,toggleReactionPicker,
     startReplyToMessage,cancelReplyToMessage,scrollToMessage,
+    startEditMessage,cancelEditMessage,deleteMessage,openForwardPicker,forwardMessageTo,toggleMessagePin,toggleChatSearch,setChatSearchQuery,jumpToMessageInChat,
     toggleNotificationsPanel,goToPost,setNotifFilterTab,markNotificationRead,markAllNotificationsRead,
     sendFriendRequest,cancelFriendRequest,declineFriendRequest,acceptFriendRequest,removeFriend,
     toggleFollow,openFollowListModal,
     setMusicTab,setMusicSearch,setMusicAutoplay,playNextTrack,playPrevTrack,toggleMusicSave,
+    openFullPlayer,closeFullPlayer,seekGlobalPlayer,toggleGlobalPlayPause,renderFullPlayer,
+    toggleMusicLike,openAddToPlaylistModal,createPlaylistAndAdd,addTrackToPlaylist,removeTrackFromPlaylist,deletePlaylist,playPlaylist,
     toggleProfileMusicExpanded,toggleProfileFriendsExpanded,toggleProfileAchievementsExpanded,
     setProfileTab,goToProfileMedia,shareProfile,
     toggleSavePost,renderSaved,
+    openCreateRoomModal,submitCreateRoom,joinRoom,leaveRoom,deleteRoom,toggleRoomMessagePin,sendRoomMessage,
     setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,backfillAchievementsForAllUsers,togglePinPost,
     toggleMoreSheet,openMoreSheet,closeMoreSheet,
     toggleSidebarMore,
