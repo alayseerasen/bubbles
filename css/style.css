@@ -1427,6 +1427,91 @@ h1,h2,h3{
     color:var(--muted);
 }
 
+.edit-preview-bar{
+    border-left-color:#e0b23c;
+    background:#fffaea;
+}
+.edit-preview-bar .reply-preview-text strong{
+    color:#a5822b;
+}
+
+.message-edited-tag{
+    opacity:.65;
+    font-style:italic;
+    margin-left:2px;
+}
+
+.message-pinned-tag{
+    font-size:10px;
+    font-weight:800;
+    color:#a5822b;
+    margin-bottom:3px;
+}
+
+.chat-pinned-section{
+    margin:10px 14px 0;
+}
+
+.chat-search-bar{
+    padding:10px 14px;
+    border-bottom:2px solid #eef8fb;
+}
+
+.chat-search-bar input{
+    width:100%;
+    margin-bottom:6px;
+}
+
+.chat-search-results{
+    max-height:220px;
+    overflow-y:auto;
+    display:flex;
+    flex-direction:column;
+    gap:2px;
+}
+
+.chat-search-result{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:8px;
+    width:100%;
+    text-align:left;
+    border:0;
+    background:transparent;
+    padding:8px 6px;
+    border-radius:10px;
+    cursor:pointer;
+}
+.chat-search-result:hover{
+    background:#f3fbfd;
+}
+.chat-search-result span{
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font-size:13px;
+}
+.chat-search-result small{
+    flex-shrink:0;
+    color:var(--muted);
+    font-size:11px;
+}
+
+.chat-date-divider{
+    display:flex;
+    justify-content:center;
+    margin:10px 0;
+}
+.chat-date-divider span{
+    font-size:11px;
+    font-weight:700;
+    color:var(--muted);
+    background:#eef8fb;
+    padding:3px 12px;
+    border-radius:10px;
+}
+
 .message-reply-quote{
     display:flex;
     flex-direction:column;
@@ -1652,6 +1737,23 @@ h1,h2,h3{
     box-shadow:0 15px 45px rgba(25,115,150,.27);
 }
 
+.global-player-progress{
+    width:100%;
+    height:4px;
+    border-radius:2px;
+    background:#e3f6fb;
+    cursor:pointer;
+    overflow:hidden;
+}
+
+.global-player-progress-fill{
+    height:100%;
+    width:0%;
+    background:linear-gradient(90deg,#4fc9f5,#7ee5c9);
+    border-radius:2px;
+    transition:width .1s linear;
+}
+
 .global-player-top{
     display:flex;
     align-items:center;
@@ -1664,6 +1766,7 @@ h1,h2,h3{
     gap:10px;
     flex:1;
     min-width:0;
+    cursor:pointer;
 }
 
 .global-player-info img{
@@ -1732,6 +1835,171 @@ h1,h2,h3{
     color:#d95774;
     font-weight:900;
     flex-shrink:0;
+}
+
+/* FULL-SCREEN PLAYER */
+.full-player{
+    position:fixed;
+    inset:0;
+    z-index:10000;
+    display:flex;
+    align-items:flex-end;
+    background:rgba(10,30,40,.55);
+    backdrop-filter:blur(6px);
+}
+.full-player.hidden{ display:none; }
+
+.full-player-sheet{
+    width:100%;
+    max-width:520px;
+    margin:0 auto;
+    background:var(--white,#fff);
+    background:linear-gradient(180deg,#eafcff,#ffffff);
+    border-radius:28px 28px 0 0;
+    padding:14px 26px calc(30px + env(safe-area-inset-bottom));
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:10px;
+    box-shadow:0 -20px 50px rgba(20,60,80,.35);
+}
+
+.full-player-close{
+    align-self:center;
+    border:0;
+    background:transparent;
+    font-size:26px;
+    line-height:1;
+    color:#9db9c4;
+    padding:4px 20px;
+}
+
+.full-player-cover{
+    width:min(260px,60vw);
+    height:min(260px,60vw);
+    object-fit:cover;
+    border-radius:22px;
+    box-shadow:0 15px 35px rgba(25,115,150,.3);
+    margin-top:4px;
+}
+
+.full-player-title{
+    font-weight:900;
+    font-size:19px;
+    text-align:center;
+    margin-top:8px;
+}
+
+.full-player-artist{
+    color:#7899a7;
+    font-size:14px;
+    margin-bottom:6px;
+}
+
+.full-player-progress{
+    width:100%;
+    height:6px;
+}
+
+.full-player-times{
+    display:flex;
+    justify-content:space-between;
+    width:100%;
+    font-size:11px;
+    color:#7899a7;
+    margin-top:-2px;
+}
+
+.full-player-controls{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:22px;
+    margin:8px 0 4px;
+}
+
+.full-player-controls > button{
+    border:0;
+    background:transparent;
+    font-size:26px;
+    padding:6px;
+}
+
+.full-player-play-btn{
+    width:64px;
+    height:64px;
+    border-radius:50%;
+    background:linear-gradient(135deg,#4fc9f5,#7ee5c9);
+    font-size:26px;
+    box-shadow:0 10px 25px rgba(79,201,245,.4);
+}
+
+.full-player-like-btn{
+    border:0;
+    background:#ffe9ef;
+    width:44px;
+    height:44px;
+    border-radius:50%;
+    font-size:19px;
+}
+
+/* Music likes, artist link, playlists */
+.music-like-btn{
+    display:flex;
+    align-items:center;
+    gap:3px;
+    background:transparent;
+    border:0;
+    font-size:15px;
+}
+.music-like-btn span{
+    font-size:11px;
+    color:var(--muted);
+}
+.music-like-btn.liked span{
+    color:#ef5877;
+}
+
+.music-author-link{
+    cursor:pointer;
+    text-decoration:underline;
+    text-decoration-color:transparent;
+}
+.music-author-link:hover{
+    text-decoration-color:currentColor;
+}
+
+.playlist-row{
+    display:flex;
+    gap:8px;
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+    padding-bottom:6px;
+    margin-bottom:6px;
+    scrollbar-width:none;
+}
+.playlist-row::-webkit-scrollbar{ display:none; }
+
+.playlist-chip{
+    flex:0 0 auto;
+    display:flex;
+    align-items:center;
+    gap:6px;
+    border:2px solid #d5eef3;
+    background:#f7fdff;
+    color:#3d6e7f;
+    font-weight:700;
+    font-size:13px;
+    padding:8px 12px;
+    border-radius:14px;
+    white-space:nowrap;
+}
+.playlist-chip small{
+    background:#eafaff;
+    color:#3ba7c9;
+    border-radius:8px;
+    padding:1px 6px;
+    font-size:11px;
 }
 
 /* NAV BADGES */
@@ -3422,6 +3690,19 @@ html::after{
 [data-theme="dark"] .message small{ color:#7f9ba8; }
 [data-theme="dark"] .message-image-preview{ border-top-color:#233542; }
 [data-theme="dark"] .reply-preview-bar{ border-top-color:#233542; border-left-color:#4fc9f5; background:rgba(79,201,245,.08); }
+[data-theme="dark"] .edit-preview-bar{ border-left-color:#f0ce5c; background:rgba(240,206,92,.08); }
+[data-theme="dark"] .edit-preview-bar .reply-preview-text strong{ color:#f0ce5c; }
+[data-theme="dark"] .message-pinned-tag{ color:#f0ce5c; }
+[data-theme="dark"] .chat-search-bar{ border-bottom-color:#233542; }
+[data-theme="dark"] .chat-search-result:hover{ background:rgba(79,201,245,.08); }
+[data-theme="dark"] .chat-date-divider span{ background:rgba(255,255,255,.06); color:#9fc2cf; }
+
+[data-theme="dark"] .bubbles-now-card{
+    background:linear-gradient(135deg,rgba(79,201,245,.1),rgba(126,229,201,.06));
+    border-color:#233542;
+}
+[data-theme="dark"] .bubbles-now-listening{ color:#9fc2cf; }
+[data-theme="dark"] .bubbles-now-events{ border-top-color:rgba(79,201,245,.18); }
 [data-theme="dark"] .reply-preview-text span{ color:#84a0ad; }
 [data-theme="dark"] .message-reply-quote{ background:rgba(255,255,255,.06); border-left-color:rgba(255,255,255,.25); }
 [data-theme="dark"] .message.them .message-reply-quote{ border-left-color:#4fc9f5; background:rgba(79,201,245,.12); }
@@ -3512,6 +3793,30 @@ html::after{
 [data-theme="dark"] .global-player-top > button{
     background:rgba(239,88,119,.15);
     color:#ff8fa3;
+}
+
+[data-theme="dark"] .global-player-progress{ background:rgba(255,255,255,.1); }
+
+[data-theme="dark"] .full-player-sheet{
+    background:linear-gradient(180deg,#101a22,#0b141c);
+}
+[data-theme="dark"] .full-player-title{ color:#e8f9ff; }
+[data-theme="dark"] .full-player-artist{ color:#84a0ad; }
+[data-theme="dark"] .full-player-times{ color:#84a0ad; }
+[data-theme="dark"] .full-player-close{ color:#5f7a86; }
+[data-theme="dark"] .full-player-like-btn{ background:rgba(239,88,119,.15); }
+
+[data-theme="dark"] .music-like-btn span{ color:#84a0ad; }
+[data-theme="dark"] .music-like-btn.liked span{ color:#ff8fa3; }
+
+[data-theme="dark"] .playlist-chip{
+    background:rgba(255,255,255,.04);
+    border-color:#233542;
+    color:#9fc2cf;
+}
+[data-theme="dark"] .playlist-chip small{
+    background:rgba(79,201,245,.15);
+    color:#7fd4f0;
 }
 
 /* TOAST / POPUP / MISC */
@@ -3668,6 +3973,77 @@ html::after{
 /* ============================================================
    STORIES (24-hour rail + full-screen viewer)
    ============================================================ */
+
+/* BUBBLES NOW */
+.bubbles-now-card{
+    background:linear-gradient(135deg,rgba(114,220,255,.16),rgba(126,229,201,.12));
+    border:2px solid #cdeef7;
+    border-radius:20px;
+    padding:14px 16px;
+    margin-bottom:16px;
+}
+
+.bubbles-now-header{
+    font-weight:900;
+    font-size:15px;
+    margin-bottom:10px;
+}
+
+.bubbles-now-stats{
+    display:flex;
+    flex-wrap:wrap;
+    gap:16px;
+}
+
+.bubbles-now-stat{
+    display:flex;
+    flex-direction:column;
+    gap:1px;
+}
+
+.bubbles-now-stat strong{
+    font-size:18px;
+}
+
+.bubbles-now-stat span{
+    font-size:11px;
+    color:var(--muted);
+}
+
+.bubbles-now-listening{
+    margin-top:10px;
+    font-size:12.5px;
+    color:#3d6e7f;
+    overflow-wrap:anywhere;
+}
+
+.bubbles-now-events{
+    margin-top:10px;
+    padding-top:10px;
+    border-top:1px solid rgba(79,201,245,.25);
+    display:flex;
+    flex-direction:column;
+    gap:5px;
+}
+
+.bubbles-now-event{
+    display:flex;
+    justify-content:space-between;
+    gap:8px;
+    font-size:12.5px;
+}
+
+.bubbles-now-event span{
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+}
+
+.bubbles-now-event small{
+    flex-shrink:0;
+    color:var(--muted);
+    font-size:11px;
+}
 
 .story-rail{
     display:flex;
@@ -5057,6 +5433,135 @@ html::after{
 [data-theme="dark"] .room-message.mine .room-message-bubble{background:linear-gradient(135deg,rgba(24,78,95,.9),rgba(31,88,63,.8))}
 [data-theme="dark"] .room-composer{background:rgba(20,32,39,.88);border-color:rgba(84,130,142,.45)}
 [data-theme="dark"] .room-composer input{background:rgba(21,33,40,.95);color:#e8f9ff;border-color:#355966}
+
+/* Group rooms additions — header bar, pinned-messages strip, and the
+   create-room form. Everything else (.room-card, .room-message-bubble,
+   .room-composer, etc. above) is the pre-existing styling this reuses. */
+.rooms-subheading{
+    margin:18px 0 10px;
+    font-size:15px;
+    color:var(--muted);
+}
+
+.room-chat-header{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:12px 14px;
+    border-radius:18px;
+    margin-bottom:12px;
+    color:#0b3446;
+}
+
+.room-chat-back{
+    border:0;
+    background:rgba(255,255,255,.55);
+    width:32px;
+    height:32px;
+    border-radius:50%;
+    font-weight:900;
+    flex-shrink:0;
+}
+
+.room-chat-icon{
+    font-size:26px;
+    flex-shrink:0;
+}
+
+.room-chat-title{
+    flex:1;
+    min-width:0;
+}
+
+.room-chat-title h3{
+    margin:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+}
+
+.room-chat-title small{
+    opacity:.8;
+}
+
+.room-pinned-section{
+    background:#fff9e0;
+    border:2px solid #ffe9a8;
+    border-radius:14px;
+    padding:10px 12px;
+    margin-bottom:12px;
+}
+
+.room-pinned-label{
+    font-weight:800;
+    font-size:12px;
+    color:#a5822b;
+    margin-bottom:5px;
+}
+
+.room-pinned-item{
+    font-size:13px;
+    color:#6b5518;
+    padding:3px 0;
+    overflow-wrap:anywhere;
+}
+
+.room-message-pin-btn{
+    border:0;
+    background:transparent;
+    color:#3ba7c9;
+    font-size:11px;
+    font-weight:700;
+    padding:2px 0 0;
+    cursor:pointer;
+}
+
+.room-create-form{
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+}
+
+.room-create-form textarea{
+    min-height:70px;
+    resize:vertical;
+}
+
+.room-theme-picker{
+    display:flex;
+    gap:8px;
+}
+
+.room-theme-swatch{
+    width:34px;
+    height:34px;
+    border-radius:50%;
+    border:2px solid transparent;
+    padding:0;
+    cursor:pointer;
+}
+
+.room-theme-swatch.selected{
+    border-color:#168fd0;
+    box-shadow:0 0 0 3px rgba(79,201,245,.3);
+}
+
+.room-public-toggle{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    font-size:13px;
+    color:var(--muted);
+}
+.room-public-toggle input{ width:auto; }
+
+[data-theme="dark"] .room-pinned-section{
+    background:rgba(255,224,120,.08);
+    border-color:rgba(255,224,120,.25);
+}
+[data-theme="dark"] .room-pinned-label{ color:#f0ce5c; }
+[data-theme="dark"] .room-pinned-item{ color:#e6d6a0; }
+[data-theme="dark"] .room-message-pin-btn{ color:#7fd4f0; }
 
 /* ============================================================
    CANVAS ROOMS — personal decorable "blank canvas" self-expression
