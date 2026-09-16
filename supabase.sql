@@ -299,7 +299,7 @@ create table if not exists public.bubbles_notifications (
     id text primary key,
     user_id uuid not null references public.profiles(id) on delete cascade,
     actor_id uuid not null references public.profiles(id) on delete cascade,
-    type text not null check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed','new_follower')),
+    type text not null check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed','new_follower','story_reaction')),
     post_id text references public.posts(id) on delete cascade,
     comment_id text references public.comments(id) on delete cascade,
     created_at timestamptz not null default now(),
@@ -319,7 +319,7 @@ create index if not exists bubbles_notifications_user_id_idx on public.bubbles_n
 -- fine to keep, there's no shape mismatch to fix here.
 alter table public.bubbles_notifications drop constraint if exists bubbles_notifications_type_check;
 alter table public.bubbles_notifications add constraint bubbles_notifications_type_check
-    check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed','new_follower'));
+    check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed','new_follower','story_reaction'));
 
 -- ------------------------------------------------------------
 -- FRIEND REQUESTS (new — pending/accepted/declined handshake)
@@ -1139,6 +1139,35 @@ using (
 );
 drop policy if exists story_views_insert on public.story_views;
 create policy story_views_insert on public.story_views for insert with check (auth.uid() = viewer_id);
+
+-- ------------------------------------------------------------
+-- STORY REACTIONS — tapback-style, one emoji per (story,user), same
+-- shape as post_likes/poll_votes. Select mirrors story_views: you can
+-- see your own reaction, or every reaction on a story you authored.
+-- ------------------------------------------------------------
+create table if not exists public.story_reactions (
+    story_id text not null references public.stories(id) on delete cascade,
+    user_id uuid not null references public.profiles(id) on delete cascade,
+    emoji text not null default '❤️',
+    created_at timestamptz not null default now(),
+    primary key (story_id, user_id)
+);
+create index if not exists story_reactions_story_id_idx on public.story_reactions(story_id);
+
+alter table public.story_reactions enable row level security;
+drop policy if exists story_reactions_select on public.story_reactions;
+create policy story_reactions_select on public.story_reactions for select
+using (
+    auth.uid() = user_id
+    or exists (select 1 from public.stories where stories.id = story_id and stories.author_id = auth.uid())
+);
+drop policy if exists story_reactions_insert on public.story_reactions;
+create policy story_reactions_insert on public.story_reactions for insert with check (auth.uid() = user_id);
+drop policy if exists story_reactions_update on public.story_reactions;
+create policy story_reactions_update on public.story_reactions for update
+using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists story_reactions_delete on public.story_reactions;
+create policy story_reactions_delete on public.story_reactions for delete using (auth.uid() = user_id);
 
 -- Stops a non-admin from granting themselves (or anyone) admin,
 -- un-banning themselves, or handing themselves a custom status, by
