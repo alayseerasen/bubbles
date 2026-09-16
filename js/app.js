@@ -12,6 +12,7 @@ const QUICK_REACTIONS = ["❤️", "😂", "👍", "😮", "😢"];
 // a separate constant from the chat's QUICK_REACTIONS/PLUS_REACTIONS since
 // there's no reason the two surfaces need to share the exact same emoji.
 const POST_REACTIONS = ["❤️", "🫧", "✨", "😂", "😮"];
+const STORY_REACTIONS = ["❤️", "😂", "😮", "🔥", "👏"];
 
 /* ============================================================
    BUBBLES+ — subscription config
@@ -1247,7 +1248,103 @@ async function markStorySeen(story) {
         .insert({ id: uid("storyview"), story_id: story.id, viewer_id: currentUserId })
         .select()
         .single();
-    if (!error && data) db.storyViews.push({ id: data.id, storyId: data.story_id, viewerId: data.viewer_id });
+    if (!error && data) db.storyViews.push({ id: data.id, storyId: data.story_id, viewerId: data.viewer_id, viewedAt: data.viewed_at ? Date.parse(data.viewed_at) : Date.now() });
+}
+
+// Tapback-style, same semantics as post/poll reactions elsewhere —
+// tapping your current emoji again removes it, a different one swaps it.
+async function toggleStoryReaction(storyId, emoji) {
+    const mine = db.storyReactions.find(r => r.storyId === storyId && r.userId === currentUserId);
+    const removing = !!mine && mine.emoji === emoji;
+
+    if (removing) db.storyReactions = db.storyReactions.filter(r => !(r.storyId === storyId && r.userId === currentUserId));
+    else {
+        db.storyReactions = db.storyReactions.filter(r => !(r.storyId === storyId && r.userId === currentUserId));
+        db.storyReactions.push({ storyId, userId: currentUserId, emoji, createdAt: Date.now() });
+    }
+    renderStoryReactionBar();
+    if (!removing) haptic("tap");
+
+    const { error } = removing
+        ? await sb.from("story_reactions").delete().eq("story_id", storyId).eq("user_id", currentUserId)
+        : await sb.from("story_reactions").upsert({ story_id: storyId, user_id: currentUserId, emoji }, { onConflict: "story_id,user_id" });
+
+    if (error) {
+        console.error(error);
+        toast("Не удалось отправить реакцию.");
+    } else if (!removing) {
+        const story = db.stories.find(s => s.id === storyId);
+        if (story && story.authorId !== currentUserId) createNotification({ userId: story.authorId, type: "story_reaction" });
+    }
+}
+
+// Re-renders just the reaction row (not the whole overlay) so picking an
+// emoji doesn't restart the story's auto-advance timer.
+function renderStoryReactionBar() {
+    const el = document.getElementById("storyReactionBar");
+    if (!el || !storyViewerState) return;
+    const stories = storiesByAuthor(storyViewerState.authorId);
+    const story = stories[storyViewerState.index];
+    if (!story) return;
+    const mine = db.storyReactions.find(r => r.storyId === story.id && r.userId === currentUserId);
+    el.innerHTML = STORY_REACTIONS.map(emoji => `
+        <button type="button" class="story-reaction-btn${mine?.emoji === emoji ? " selected" : ""}" onclick="toggleStoryReaction('${story.id}','${emoji}')">${emoji}</button>
+    `).join("");
+}
+
+async function sendStoryReply(authorId, storyId) {
+    const input = document.getElementById("storyReplyInput");
+    const text = input?.value.trim();
+    if (!text) return;
+    input.value = "";
+
+    const story = db.stories.find(s => s.id === storyId);
+    const fullText = `📖 Ответ на историю:\n${text}`;
+    const message = { id: uid("message"), from: currentUserId, to: authorId, text: fullText, image: "", createdAt: Date.now(), readAt: null, reactions: [] };
+    db.messages.push(message);
+
+    const row = await buildEncryptedMessageRow(message.id, authorId, fullText, "", new Date(message.createdAt).toISOString());
+    const { error } = await sb.from("messages").insert(row);
+    if (error) {
+        console.error(error);
+        db.messages = db.messages.filter(m => m.id !== message.id);
+        toast("Не удалось отправить ответ.");
+        return;
+    }
+    toast("Ответ отправлен ↪️");
+}
+
+// Shown to the story's author — who viewed it and, if they reacted,
+// with what. Sorted most-recent-view-first.
+function openStoryViewersModal(storyId) {
+    const views = db.storyViews.filter(v => v.storyId === storyId).sort((a, b) => b.viewedAt - a.viewedAt);
+    showBubblesModal(`
+        <div class="modal-header">
+            <h3>👁️ Просмотрели</h3>
+            <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
+        </div>
+        ${
+            views.length
+            ? `
+                <div class="profile-menu-list">
+                    ${views.map(v => {
+                        const user = getUser(v.viewerId);
+                        if (!user) return "";
+                        const reaction = db.storyReactions.find(r => r.storyId === storyId && r.userId === v.viewerId);
+                        return `
+                            <button class="profile-menu-item" onclick="closeBubblesModal();navigate('profile','${user.id}')">
+                                <img loading="lazy" decoding="async" class="mini-avatar" src="${user.avatar || defaultAvatar()}">
+                                <span style="flex:1;">${escapeHtml(user.displayName)}</span>
+                                ${reaction ? `<span>${reaction.emoji}</span>` : ""}
+                                <small style="color:var(--muted);">${timeAgo(v.viewedAt)}</small>
+                            </button>
+                        `;
+                    }).join("")}
+                </div>
+              `
+            : `<p style="text-align:center;color:var(--muted);padding:16px 0;">Пока никто не посмотрел.</p>`
+        }
+    `);
 }
 
 async function deleteCurrentStory() {
@@ -1276,6 +1373,8 @@ function renderStoryViewer() {
     const author = getUser(story.authorId);
     const isMine = story.authorId === currentUserId;
     const viewCount = isMine ? db.storyViews.filter(v => v.storyId === story.id).length : 0;
+    const reactionCount = isMine ? db.storyReactions.filter(r => r.storyId === story.id).length : 0;
+    const myReaction = db.storyReactions.find(r => r.storyId === story.id && r.userId === currentUserId);
 
     markStorySeen(story);
 
@@ -1313,7 +1412,32 @@ function renderStoryViewer() {
                 ${story.caption ? `<div class="story-caption">${escapeHtml(story.caption)}</div>` : ""}
             </div>
 
-            ${isMine ? `<div class="story-view-count">👁️ ${viewCount}</div>` : ""}
+            ${
+                isMine
+                ? `
+                    <div class="story-view-count" onclick="openStoryViewersModal('${story.id}')" style="cursor:pointer;">
+                        👁️ ${viewCount}${reactionCount ? ` · ❤️ ${reactionCount}` : ""}
+                    </div>
+                `
+                : `
+                    <div class="story-footer">
+                        <div id="storyReactionBar" class="story-reaction-bar">
+                            ${STORY_REACTIONS.map(emoji => `
+                                <button type="button" class="story-reaction-btn${myReaction?.emoji === emoji ? " selected" : ""}" onclick="toggleStoryReaction('${story.id}','${emoji}')">${emoji}</button>
+                            `).join("")}
+                        </div>
+                        <div class="story-reply-row">
+                            <input
+                                id="storyReplyInput"
+                                placeholder="Ответить на историю..."
+                                onfocus="if(storyViewerState?.timer)clearTimeout(storyViewerState.timer);"
+                                onkeydown="if(event.key==='Enter')sendStoryReply('${story.authorId}','${story.id}')"
+                            >
+                            <button type="button" onclick="sendStoryReply('${story.authorId}','${story.id}')">➤</button>
+                        </div>
+                    </div>
+                `
+            }
 
         </div>
     `;
@@ -5163,6 +5287,8 @@ function notificationLine(n) {
             return { text: `${name} покормил(а) вашего питомца 🍬`, onclick: `navigate('pet')` };
         case "new_follower":
             return { text: `${name} подписался(ась) на вас 🔔`, onclick: `navigate('profile','${n.actorId}')` };
+        case "story_reaction":
+            return { text: `${name} отреагировал(а) на вашу историю`, onclick: `openStoryViewer('${n.actorId}')` };
         default:
             return { text: name, onclick: "" };
     }
@@ -7725,6 +7851,7 @@ async function playMusic(musicId){
     document.getElementById("globalPlayerTitle").textContent = music.title;
     document.getElementById("globalPlayerArtist").textContent = music.artist || "Unknown Artist";
     document.getElementById("globalPlayer").classList.remove("hidden");
+    document.body.classList.add("player-open");
     setListening(music.title, music.artist || "Unknown Artist");
     refreshMusicCardPlayState(musicId);
     updateMediaSessionMetadata(music);
@@ -7775,6 +7902,7 @@ function closeMusicPlayer(){
     currentlyPlayingMusicId = null;
     refreshMusicCardPlayState(null);
     document.getElementById("globalPlayer").classList.add("hidden");
+    document.body.classList.remove("player-open");
     setListening("", "");
     if ("mediaSession" in navigator) {
         navigator.mediaSession.metadata = null;
@@ -9776,7 +9904,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, rooms, roomMembers, musicLikes, musicPlays, playlists, playlistTracks, reports, subscriptionRequests, blocks, stories, storyViews, petRow] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, rooms, roomMembers, musicLikes, musicPlays, playlists, playlistTracks, reports, subscriptionRequests, blocks, stories, storyViews, storyReactions, petRow] = await Promise.all([
             sb.from("profiles_public").select("id,username,display_name,gender,avatar,cover,bio,visible_last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,created_at,show_online_status,wall_visibility,music_visibility,who_can_message,who_can_friend_request").order("created_at", { ascending: true }),
             sb.from("posts").select("id,author_id,wall_owner_id,text,image,music_id,shared_post_id,likes,pinned,pinned_at,created_at").order("created_at", { ascending: false }).limit(150),
             sb.from("comments").select("id,post_id,author_id,parent_comment_id,text,created_at").order("created_at", { ascending: true }).limit(1000),
@@ -9816,12 +9944,15 @@ async function loadDB() {
             // just "everyone's currently-active stories".
             sb.from("stories").select("*").order("created_at", { ascending: true }),
             currentUserId ? sb.from("story_views").select("*") : Promise.resolve({ data: [], error: null }),
+            // Same RLS shape as story_views: your own reactions, plus every
+            // reaction on stories you authored.
+            currentUserId ? sb.from("story_reactions").select("*") : Promise.resolve({ data: [], error: null }),
             // Canvas rooms are NOT loaded here — each one is fetched on
             // demand (see openCanvasRoom) only when someone actually opens
             // it, same reasoning as room_messages used to be.
             currentUserId ? sb.from("pets").select("*").eq("owner_id", currentUserId).maybeSingle() : Promise.resolve({ data: null, error: null })
         ]);
-        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, rooms, roomMembers, musicLikes, musicPlays, playlists, playlistTracks, reports, subscriptionRequests, blocks, stories, storyViews, petRow];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, rooms, roomMembers, musicLikes, musicPlays, playlists, playlistTracks, reports, subscriptionRequests, blocks, stories, storyViews, storyReactions, petRow];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -9838,7 +9969,8 @@ async function loadDB() {
             subscriptionRequests: (subscriptionRequests.data || []).map(rowToSubscriptionRequest),
             blocks: (blocks.data || []).map(row => ({ id: row.id, blockerId: row.blocker_id, blockedId: row.blocked_id })),
             stories: (stories.data || []).map(rowToStory),
-            storyViews: (storyViews.data || []).map(row => ({ id: row.id, storyId: row.story_id, viewerId: row.viewer_id })),
+            storyViews: (storyViews.data || []).map(row => ({ id: row.id, storyId: row.story_id, viewerId: row.viewer_id, viewedAt: row.viewed_at ? Date.parse(row.viewed_at) : Date.now() })),
+            storyReactions: (storyReactions.data || []).map(row => ({ storyId: row.story_id, userId: row.user_id, emoji: row.emoji || "❤️", createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
             polls: (polls.data || []).map(row => ({ id: row.id, postId: row.post_id, createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
             pollOptions: (pollOptions.data || []).map(row => ({ id: row.id, pollId: row.poll_id, text: row.text, position: row.position || 0, votes: [] })),
             follows: (follows.data || []).map(row => ({ followerId: row.follower_id, followedId: row.followed_id })),
@@ -10669,6 +10801,7 @@ Object.assign(window,{
     reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent,
     toggleBlockUser,
     addStoryPrompt,openStoryViewer,closeStoryViewer,storyViewerAdvance,deleteCurrentStory,
+    toggleStoryReaction,sendStoryReply,openStoryViewersModal,
     closeBubblesModal,
     openSharePicker,openShareToProfile,shareToProfile,openShareToChat,shareToChat,focusSharedPost,
     openMusicPicker,selectComposerMusic,removeComposerMusic,
