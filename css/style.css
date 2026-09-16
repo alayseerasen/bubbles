@@ -29,6 +29,13 @@ html,body{
        edge of the page — without this, a slightly-too-enthusiastic
        scroll in the feed can accidentally reload or navigate back. */
     overscroll-behavior-y:contain;
+    /* Belt-and-suspenders against horizontal scroll: nothing in this
+       stylesheet is meant to overflow sideways, but a stray wide image,
+       a long unbroken URL/word, or a future layout slip could still
+       create a few px of scrollable width on a narrow phone. This
+       clips it at the document level instead of relying on every
+       individual container getting it right. */
+    overflow-x:hidden;
 }
 
 /* iOS Safari rubber-bands past the end of a short page (e.g. a profile
@@ -106,6 +113,44 @@ a.nav-btn:active{
     button:not(:disabled):active,
     a.nav-btn:active{
         transform:none;
+    }
+}
+
+/* Smooth, consistent hover/focus feedback — previously only touch
+   (:active) had any transition at all; desktop hover and keyboard
+   focus were either instant or, for focus-visible, entirely absent on
+   buttons/links. Hover is scoped to (hover: hover) so it never lingers
+   "stuck on" after a tap the way real :hover can on touchscreens. */
+button,
+a.nav-btn,
+input,
+textarea,
+select{
+    transition:transform .15s ease, filter .15s ease, box-shadow .15s ease, border-color .15s ease, background-color .15s ease;
+}
+
+@media (hover: hover){
+    button:not(:disabled):not(.story-tap-zone):hover,
+    a.nav-btn:hover{
+        filter:brightness(1.045);
+        transform:translateY(-1px);
+    }
+}
+
+button:focus-visible,
+a.nav-btn:focus-visible,
+[tabindex]:focus-visible{
+    outline:none;
+    box-shadow:0 0 0 3px rgba(79,201,245,.45);
+}
+
+@media(prefers-reduced-motion: reduce){
+    button,
+    a.nav-btn,
+    input,
+    textarea,
+    select{
+        transition:none;
     }
 }
 
@@ -615,11 +660,23 @@ select:focus{
 
 .layout{
     width:min(1200px,calc(100% - 30px));
-    margin:22px auto 130px;
+    /* 130px clears the fixed bottom nav; the extra safe-area term is for
+       notched/home-indicator phones where that nav's own height grows
+       by the inset (see .bottom-nav's padding below) — without it, this
+       fixed 130px alone could sit slightly short on those devices. */
+    margin:22px auto calc(130px + env(safe-area-inset-bottom));
     display:grid;
     grid-template-columns:220px minmax(0,1fr);
     align-items:start;
     gap:20px;
+}
+
+/* The floating music player (position:fixed, own bottom:18px) sits on
+   top of the bottom nav when a track is playing — see playMusic/
+   closeMusicPlayer toggling this class. Without extra clearance here,
+   the last bit of a page's content ends up hidden behind it. */
+body.player-open .layout{
+    margin-bottom:calc(220px + env(safe-area-inset-bottom));
 }
 
 .sidebar{
@@ -2143,6 +2200,52 @@ h1,h2,h3{
 
 .share-friend-row:hover{
     background:#eafcff;
+}
+
+.profile-more-btn{
+    width:44px;
+    flex:0 0 auto;
+    padding-left:0;
+    padding-right:0;
+}
+
+.profile-menu-list{
+    display:flex;
+    flex-direction:column;
+    gap:5px;
+}
+
+.profile-menu-item{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:11px 12px;
+    border:0;
+    border-radius:14px;
+    background:#f4fdff;
+    font-weight:700;
+    font-size:14px;
+    color:var(--text);
+    text-align:left;
+}
+
+.profile-menu-item:hover{
+    background:#eafcff;
+}
+
+.profile-menu-icon{
+    font-size:17px;
+    width:22px;
+    text-align:center;
+    flex-shrink:0;
+}
+
+.profile-menu-item-danger{
+    background:#ffeef1;
+    color:#d9435f;
+}
+.profile-menu-item-danger:hover{
+    background:#ffe0e6;
 }
 
 /* SHARED / REPOSTED POST CARD — shown embedded in a post, or in a chat
@@ -3742,7 +3845,8 @@ html::after{
 
 [data-theme="dark"] .share-option-btn,
 [data-theme="dark"] .share-friend-row,
-[data-theme="dark"] .music-picker-row{
+[data-theme="dark"] .music-picker-row,
+[data-theme="dark"] .profile-menu-item{
     background:rgba(255,255,255,.05);
     border-color:#233542;
     color:var(--text);
@@ -3750,9 +3854,18 @@ html::after{
 
 [data-theme="dark"] .share-option-btn:hover,
 [data-theme="dark"] .share-friend-row:hover,
-[data-theme="dark"] .music-picker-row:hover{
+[data-theme="dark"] .music-picker-row:hover,
+[data-theme="dark"] .profile-menu-item:hover{
     background:rgba(79,201,245,.12);
     border-color:#4fc9f5;
+}
+
+[data-theme="dark"] .profile-menu-item-danger{
+    background:rgba(217,67,95,.15);
+    color:#ff8fa3;
+}
+[data-theme="dark"] .profile-menu-item-danger:hover{
+    background:rgba(217,67,95,.25);
 }
 
 [data-theme="dark"] .shared-post-card{
@@ -4259,6 +4372,61 @@ html::after{
     text-align:center;
     padding:10px 0 16px;
     font-size:14px;
+}
+
+.story-footer{
+    padding:10px 16px calc(14px + env(safe-area-inset-bottom));
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+}
+
+.story-reaction-bar{
+    display:flex;
+    justify-content:center;
+    gap:10px;
+}
+
+.story-reaction-btn{
+    border:0;
+    background:rgba(255,255,255,.15);
+    border-radius:50%;
+    width:40px;
+    height:40px;
+    font-size:19px;
+    backdrop-filter:blur(6px);
+}
+
+.story-reaction-btn.selected{
+    background:rgba(255,255,255,.4);
+    transform:scale(1.1);
+}
+
+.story-reply-row{
+    display:flex;
+    gap:8px;
+}
+
+.story-reply-row input{
+    flex:1;
+    border-radius:20px;
+    background:rgba(255,255,255,.15);
+    border:1px solid rgba(255,255,255,.35);
+    color:#fff;
+    padding:10px 16px;
+}
+.story-reply-row input::placeholder{
+    color:rgba(255,255,255,.75);
+}
+
+.story-reply-row button{
+    border:0;
+    background:rgba(255,255,255,.25);
+    color:#fff;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    font-size:16px;
 }
 
 [data-theme="dark"] .story-ring.seen,
@@ -5880,4 +6048,56 @@ html::after{
 
 [data-theme="dark"] .telegram-code-box{
     background:rgba(191,245,255,.08);
+}
+
+/* ============================================================
+   LANDSCAPE / SHORT VIEWPORTS — a phone turned sideways has maybe
+   360-400px of height total, and the fixed bottom nav + a playing
+   track's floating player were both sized for portrait, eating a much
+   bigger share of that. Shrinks both, and lets the bottom nav's labels
+   drop so the icons alone still fit comfortably above the keyboard/
+   home-indicator area.
+   ============================================================ */
+@media (max-height:500px) and (orientation:landscape){
+
+    .bottom-nav-btn{
+        min-height:38px;
+        padding:4px 2px;
+    }
+
+    .bottom-nav-label{
+        display:none;
+    }
+
+    .bottom-nav-icon{
+        font-size:19px;
+    }
+
+    .global-player{
+        bottom:8px;
+        padding:7px 10px;
+    }
+
+    .global-player-info img{
+        width:34px;
+        height:34px;
+    }
+
+    .full-player-cover{
+        width:min(140px,32vh);
+        height:min(140px,32vh);
+    }
+
+    .full-player-controls{
+        margin:4px 0;
+    }
+
+    .layout{
+        margin-bottom:calc(90px + env(safe-area-inset-bottom));
+    }
+
+    body.player-open .layout{
+        margin-bottom:calc(150px + env(safe-area-inset-bottom));
+    }
+
 }
