@@ -463,6 +463,27 @@ select:focus{
     transform:translateY(-1px);
 }
 
+/* Only meaningful on mobile — desktop already has every one of these
+   destinations as its own row in the sidebar, so there's nothing for
+   this to open there. Positioned via the mobile media query below
+   rather than a bare "display:none" default + override, matching how
+   .bottom-nav itself is structured. */
+.mobile-more-btn{
+    display:none;
+    position:relative;
+    width:38px;
+    height:38px;
+    flex-shrink:0;
+    align-items:center;
+    justify-content:center;
+    border:0;
+    border-radius:50%;
+    background:rgba(79,201,245,.14);
+    color:#39768e;
+    font-size:19px;
+    font-weight:900;
+}
+
 .notif-wrap{
     position:relative;
     flex-shrink:0;
@@ -758,8 +779,33 @@ body.player-open .layout{
     animation:pageFadeIn .22s ease;
 }
 
+.notif-fade-in{
+    animation:pageFadeIn .18s ease;
+}
+
+@keyframes postAppear{
+    from{ opacity:0; transform:translateY(-10px) scale(.98); }
+    to{ opacity:1; transform:translateY(0) scale(1); }
+}
+
+.post-appear{
+    animation:postAppear .32s ease;
+}
+
+@keyframes messageAppear{
+    from{ opacity:0; transform:translateY(8px) scale(.97); }
+    to{ opacity:1; transform:translateY(0) scale(1); }
+}
+
+.message-appear{
+    animation:messageAppear .22s ease;
+}
+
 @media(prefers-reduced-motion: reduce){
-    .content.page-transition{ animation:none; }
+    .content.page-transition,
+    .notif-fade-in,
+    .post-appear,
+    .message-appear{ animation:none; }
 }
 
 .section-title{
@@ -1375,6 +1421,48 @@ h1,h2,h3{
     font-size:10px;
     font-weight:800;
     color:#5a8a97;
+}
+
+/* Quick, satisfying "pop" on every reaction-style button — post/message/
+   story reactions, plus the emoji pickers themselves. A spring-ish
+   cubic-bezier overshoot on release reads as a deliberate bounce rather
+   than a plain instant click, without needing per-tap JS to add/remove
+   an animation class. */
+.reaction-pill,
+.post-reaction-pill,
+.post-reaction-add-btn,
+.post-reaction-picker button,
+.reaction-add-btn,
+.story-reaction-btn{
+    transition:transform .25s cubic-bezier(.34,1.56,.64,1);
+}
+.reaction-pill:active,
+.post-reaction-pill:active,
+.post-reaction-add-btn:active,
+.post-reaction-picker button:active,
+.reaction-add-btn:active,
+.story-reaction-btn:active{
+    transform:scale(1.25);
+    transition:transform .05s ease;
+}
+
+@media(prefers-reduced-motion: reduce){
+    .reaction-pill,
+    .post-reaction-pill,
+    .post-reaction-add-btn,
+    .post-reaction-picker button,
+    .reaction-add-btn,
+    .story-reaction-btn{
+        transition:none;
+    }
+    .reaction-pill:active,
+    .post-reaction-pill:active,
+    .post-reaction-add-btn:active,
+    .post-reaction-picker button:active,
+    .reaction-add-btn:active,
+    .story-reaction-btn:active{
+        transform:none;
+    }
 }
 
 .reaction-pill.mine{
@@ -2587,6 +2675,10 @@ h1,h2,h3{
         align-items:flex-start;
     }
 
+    .mobile-more-btn{
+        display:flex;
+    }
+
     .bottom-nav{
         display:flex;
         position:fixed;
@@ -2622,6 +2714,31 @@ h1,h2,h3{
     .bottom-nav-btn.active{
         color:#168fd0;
         background:rgba(98,201,235,.15);
+    }
+
+    /* The "+" gets its own raised, always-colored treatment rather than
+       the plain active/inactive text-color toggle the other four use —
+       it doesn't correspond to a page (openCreateSheet is a modal, not
+       a navigate() target), so it never actually gets .active, and
+       would otherwise just look like a plain unstyled label forever. */
+    .bottom-nav-create{
+        color:#fff !important;
+        background:none;
+    }
+    .bottom-nav-create .bottom-nav-icon{
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        width:34px;
+        height:34px;
+        border-radius:50%;
+        background:linear-gradient(135deg,#4fc9f5,#7ee5c9);
+        box-shadow:0 6px 16px rgba(79,201,245,.45);
+        font-size:17px;
+        color:#fff;
+    }
+    .bottom-nav-create .bottom-nav-label{
+        color:#5590a0;
     }
 
     .bottom-nav-icon{
@@ -3564,6 +3681,15 @@ html::after{
 
 [data-theme="dark"] .theme-toggle-btn:hover{
     background:rgba(79,201,245,.28);
+}
+
+[data-theme="dark"] .mobile-more-btn{
+    background:rgba(79,201,245,.16);
+    color:#a9d3e8;
+}
+
+[data-theme="dark"] .bottom-nav-create .bottom-nav-label{
+    color:#84a0ad;
 }
 
 [data-theme="dark"] .notif-bell-btn{
