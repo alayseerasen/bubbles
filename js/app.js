@@ -862,7 +862,7 @@ let selectedProfileId = null;
 // (Поиск/Комната/Питомец/Bubbles+/Настройки) — e.g. via a deep link or
 // a button elsewhere in the app — doesn't hide its own nav highlight
 // behind a collapsed "Ещё" toggle.
-let sidebarMoreExpanded = ["search","rooms","groupRooms","roomChat","saved","pet","premium","edit"].includes(currentPage);
+let sidebarMoreExpanded = ["friends","music","rooms","groupRooms","roomChat","saved","pet","premium","edit"].includes(currentPage);
 function toggleSidebarMore(){
     sidebarMoreExpanded = !sidebarMoreExpanded;
     renderApp();
@@ -913,6 +913,7 @@ let onlineCountTimer = null;
 /* Music player state */
 let musicTab = "mine";           // "mine" | "all"
 let musicSearchQuery = "";
+let musicSearchDebounceTimer = null;
 let musicQueue = [];             // ids, in the order currently shown
 let musicAutoplay = true;
 
@@ -1186,6 +1187,42 @@ function renderStoryRail() {
 
         </div>
     `;
+}
+
+// The bottom nav's "+" — a quick-create hub rather than jumping
+// straight to one composer, since there isn't room for a separate
+// dedicated button per content type (post/story/track/room) alongside
+// the 5 required bottom-nav slots.
+function openCreateSheet() {
+    showBubblesModal(`
+        <div class="modal-header">
+            <h3>Создать</h3>
+            <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
+        </div>
+        <div class="profile-menu-list">
+            <button class="profile-menu-item" onclick="closeBubblesModal();openCreatePost();">
+                <span class="profile-menu-icon">📝</span> Пост
+            </button>
+            <button class="profile-menu-item" onclick="closeBubblesModal();addStoryPrompt();">
+                <span class="profile-menu-icon">📖</span> История
+            </button>
+            <button class="profile-menu-item" onclick="closeBubblesModal();musicTab='mine';navigate('music');">
+                <span class="profile-menu-icon">🎵</span> Трек
+            </button>
+            <button class="profile-menu-item" onclick="closeBubblesModal();openCreateRoomModal();">
+                <span class="profile-menu-icon">🫧</span> Комната
+            </button>
+        </div>
+    `);
+}
+
+function openCreatePost() {
+    navigate("feed");
+    setTimeout(() => {
+        const input = document.getElementById("postText");
+        input?.scrollIntoView({ behavior: "smooth", block: "center" });
+        input?.focus();
+    }, 80);
 }
 
 function addStoryPrompt() {
@@ -1766,11 +1803,11 @@ function refreshBubblesNowWidget() {
 async function refreshOnlineCount(){
     if(document.visibilityState !== "visible") return;
     try{
-        const cutoff = new Date(Date.now() - 60000).toISOString();
-        const { count, error } = await sb
-            .from("profiles")
-            .select("id", { count: "exact", head: true })
-            .gte("last_seen", cutoff);
+        // Was a direct .gte("last_seen", cutoff) head-count against the
+        // raw profiles table — moved to a security-definer RPC instead
+        // so a bare aggregate count doesn't need the client to filter
+        // on last_seen directly (see online_users_count in supabase.sql).
+        const { data: count, error } = await sb.rpc("online_users_count");
         if(error) throw error;
         const safeCount = Number(count) || 0;
         const topbarBadge = document.getElementById("topbarOnlineCount");
@@ -2110,6 +2147,15 @@ function renderApp(){
                     title="${getTheme() === "dark" ? "Светлая тема" : "Тёмная тема"}"
                 >${getTheme() === "dark" ? "☀️" : "🌙"}</button>
 
+                <button
+                    class="mobile-more-btn"
+                    onclick="toggleMoreSheet()"
+                    title="Ещё"
+                >
+                    ⋯
+                    <span id="moreSheetDot" class="bottom-nav-dot hidden"></span>
+                </button>
+
                 <img
                     class="mini-avatar${avatarFrameClass(user)}"
                     src="${user.avatar || defaultAvatar()}"
@@ -2289,36 +2335,29 @@ function renderApp(){
 
             <button class="bottom-nav-btn" data-page="feed" onclick="navigate('feed')">
                 <span class="bottom-nav-icon">🏠</span>
-                <span class="bottom-nav-label">Лента</span>
+                <span class="bottom-nav-label">Главная</span>
             </button>
 
-            <button class="bottom-nav-btn" data-page="friends" onclick="navigate('friends')">
-                <span class="bottom-nav-icon">🫂</span>
-                <span class="bottom-nav-label">Друзья</span>
-                <span id="friendRequestsBadgeMobile" class="nav-badge bottom-nav-badge hidden"></span>
+            <button class="bottom-nav-btn" data-page="search" onclick="navigate('search')">
+                <span class="bottom-nav-icon">🔎</span>
+                <span class="bottom-nav-label">Поиск</span>
+            </button>
+
+            <button class="bottom-nav-btn bottom-nav-create" onclick="openCreateSheet()">
+                <span class="bottom-nav-icon">➕</span>
+                <span class="bottom-nav-label">Создать</span>
             </button>
 
             <button class="bottom-nav-btn" data-page="messages" onclick="navigate('messages')">
                 <span class="bottom-nav-icon">💬</span>
-                <span class="bottom-nav-label">Чаты</span>
+                <span class="bottom-nav-label">Сообщения</span>
                 <span id="messagesUnreadBadgeMobile" class="nav-badge bottom-nav-badge hidden"></span>
-            </button>
-
-            <button class="bottom-nav-btn" data-page="music" onclick="navigate('music')">
-                <span class="bottom-nav-icon">🎵</span>
-                <span class="bottom-nav-label">Музыка</span>
             </button>
 
             <button class="bottom-nav-btn" data-page="profile" onclick="navigate('profile')">
                 <span class="bottom-nav-icon">👤</span>
                 <span class="bottom-nav-label">Профиль</span>
                 <span id="pendingReportsBadgeMobile" class="nav-badge bottom-nav-badge hidden"></span>
-            </button>
-
-            <button class="bottom-nav-btn" onclick="toggleMoreSheet()">
-                <span class="bottom-nav-icon">⋯</span>
-                <span class="bottom-nav-label">Ещё</span>
-                <span id="moreSheetDot" class="bottom-nav-dot hidden"></span>
             </button>
 
         </nav>
@@ -2328,8 +2367,13 @@ function renderApp(){
 
                 <div class="more-sheet-handle"></div>
 
-                <button class="more-sheet-item" data-page="search" onclick="navigate('search'); closeMoreSheet();">
-                    🔎 Поиск
+                <button class="more-sheet-item" data-page="friends" onclick="navigate('friends'); closeMoreSheet();">
+                    🫂 Друзья
+                    <span id="friendRequestsBadgeMobile" class="nav-badge hidden"></span>
+                </button>
+
+                <button class="more-sheet-item" data-page="music" onclick="navigate('music'); closeMoreSheet();">
+                    🎵 Музыка
                 </button>
 
                 <button class="more-sheet-item" data-page="rooms" onclick="navigate('rooms'); closeMoreSheet();">
@@ -2400,7 +2444,7 @@ function navigate(page, id = null){
     // button on someone's profile. navigate() only ever rebuilds #page,
     // not the sidebar itself, so the state flag alone wouldn't be
     // reflected on screen without also touching the DOM directly here.
-    if (["search","rooms","groupRooms","roomChat","saved","pet","premium","edit"].includes(page) && !sidebarMoreExpanded) {
+    if (["friends","music","rooms","groupRooms","roomChat","saved","pet","premium","edit"].includes(page) && !sidebarMoreExpanded) {
         sidebarMoreExpanded = true;
         document.querySelector(".sidebar-more")?.classList.remove("hidden");
         const toggle = document.querySelector(".sidebar-more-toggle");
@@ -2459,18 +2503,25 @@ function navigate(page, id = null){
     if (page === "messages" && selectedChatId) watchChatPartnerPresence(selectedChatId);
 
     // Small fade+rise on every page switch — ties tab changes together
-    // visually instead of content just snapping into place. Retriggered
-    // by removing the class, forcing a reflow, then re-adding it, since
-    // a CSS animation won't restart on its own just because #page's
-    // innerHTML changed underneath it.
-    const pageEl = document.getElementById("page");
-    if (pageEl) {
-        pageEl.classList.remove("page-transition");
-        void pageEl.offsetWidth;
-        pageEl.classList.add("page-transition");
-    }
+    // visually instead of content just snapping into place. See
+    // replayPageTransition() for why it's a remove/reflow/re-add.
+    replayPageTransition();
 
     updateNavBadges();
+}
+
+// Reused by tab-switch functions within a page (profile/music/search/
+// notifications) that rewrite #page's content directly rather than
+// going through navigate() — same fade+rise, retriggered by removing
+// the class, forcing a reflow, then re-adding it, since a CSS animation
+// won't restart on its own just because #page's innerHTML changed
+// underneath it.
+function replayPageTransition() {
+    const pageEl = document.getElementById("page");
+    if (!pageEl) return;
+    pageEl.classList.remove("page-transition");
+    void pageEl.offsetWidth;
+    pageEl.classList.add("page-transition");
 }
 
 /* ============================================================
@@ -2823,7 +2874,7 @@ function renderPost(post){
     return `
 
         <article
-    class="card post ${post.pinned ? "post-pinned" : ""}"
+    class="card post ${post.pinned ? "post-pinned" : ""} ${post.id === justAddedPostId ? "post-appear" : ""}"
     data-bubbles-post-id="${post.id}"
 >
 
@@ -3069,6 +3120,11 @@ function renderPost(post){
 }
 
 let isCreatingPost = false;
+// Marks whichever post should play the "just appeared" animation on its
+// very next render — cleared right after so liking/commenting/editing
+// that same post later doesn't replay it. See renderPost's post-appear
+// class and the reduced-motion-respecting keyframe in style.css.
+let justAddedPostId = null;
 async function createPost(targetWallId = null) {
     if (isCreatingPost) return; // guards against a double-tap firing this twice while the upload/insert is still in flight — would otherwise post it twice
     const text = document.getElementById("postText")?.value.trim() || "";
@@ -3103,7 +3159,9 @@ async function createPost(targetWallId = null) {
         const musicId = selectedComposerMusicId || null;
         const wallOwnerId = targetWallId || currentUserId;
         const post = { id: postId, authorId: currentUserId, wallOwnerId, text, image, musicId, sharedPostId: null, likes: [], reactions: [], createdAt: Date.now() };
+        justAddedPostId = post.id;
         db.posts.unshift(post);
+        setTimeout(() => { if (justAddedPostId === post.id) justAddedPostId = null; }, 600);
         const { error } = await sb.from("posts").insert({
             id: post.id, author_id: post.authorId, wall_owner_id: post.wallOwnerId, text: post.text, image: post.image, music_id: post.musicId, likes: [], created_at: new Date(post.createdAt).toISOString()
         });
@@ -3182,7 +3240,9 @@ async function createWallPost(userId){
             id: post.id, author_id: post.authorId, wall_owner_id: post.wallOwnerId, text: post.text, image: post.image, music_id: post.musicId, likes: [], created_at: new Date(post.createdAt).toISOString()
         });
         if (error) throw error;
+        justAddedPostId = post.id;
         db.posts.unshift(post);
+        setTimeout(() => { if (justAddedPostId === post.id) justAddedPostId = null; }, 600);
         selectedComposerMusicId = null;
         wallTargetUserId = null;
         recomputeAchievements();
@@ -3498,7 +3558,9 @@ async function shareToProfile(postId){
     if(!original) return;
     const caption = document.getElementById("shareCaptionInput")?.value.trim() || "";
     const post = { id: uid("post"), authorId: currentUserId, wallOwnerId: currentUserId, text: caption, image: "", musicId: null, sharedPostId: postId, likes: [], reactions: [], createdAt: Date.now() };
-    db.posts.unshift(post);
+    justAddedPostId = post.id;
+        db.posts.unshift(post);
+        setTimeout(() => { if (justAddedPostId === post.id) justAddedPostId = null; }, 600);
     const { error } = await sb.from("posts").insert({
         id: post.id, author_id: post.authorId, wall_owner_id: post.wallOwnerId, text: post.text, image: "", music_id: null, shared_post_id: postId, likes: [], created_at: new Date(post.createdAt).toISOString()
     });
@@ -5366,7 +5428,7 @@ function renderNotificationsPanel() {
                 `).join("")
             }
         </div>
-        <div class="notif-panel-list">
+        <div class="notif-panel-list notif-fade-in">
             ${combinedHtml || `<div class="empty notif-empty">Пока ничего нет.</div>`}
         </div>
     `;
@@ -5513,6 +5575,7 @@ function goToPost(postId) {
 function setProfileTab(tab) {
     profileTab = tab;
     renderProfile(selectedProfileId || currentUserId);
+    replayPageTransition();
 }
 
 // Media tab thumbnails link back into the Посты tab of the same profile,
@@ -7049,7 +7112,9 @@ function appendMessageToChat(message, partnerId) {
             if (empty) empty.remove();
             const wrapper = document.createElement("div");
             wrapper.innerHTML = messageBubble(message).trim();
-            box.appendChild(wrapper.firstElementChild);
+            const bubbleEl = wrapper.firstElementChild;
+            bubbleEl?.classList.add("message-appear");
+            box.appendChild(bubbleEl);
             box.scrollTop = box.scrollHeight;
             // A new message pushes the total past the visible window too,
             // so "Показать более ранние" (if it exists) doesn't quietly
@@ -7321,9 +7386,11 @@ function toggleChatSearch() {
     if (chatSearchOpen) document.getElementById("chatSearchInput")?.focus();
 }
 
+let chatSearchDebounceTimer = null;
 function setChatSearchQuery(value) {
     chatSearchQuery = value;
-    renderChatSearchResults();
+    clearTimeout(chatSearchDebounceTimer);
+    chatSearchDebounceTimer = setTimeout(renderChatSearchResults, 150);
 }
 
 function renderChatSearchResults() {
@@ -7496,14 +7563,21 @@ function renderMusic() {
 function setMusicTab(tab) {
     musicTab = tab;
     renderMusic();
+    replayPageTransition();
 }
 
 function setMusicSearch(value) {
     musicSearchQuery = value;
-    renderMusic();
-    // Keep focus + caret in the search box after the re-render.
-    const input = document.getElementById("musicSearchInput");
-    if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+    // Purely client-side filtering (db.music is already in memory) —
+    // still worth debouncing renderMusic() itself, since that's a full
+    // page rebuild and fast typing was re-running it on every keystroke.
+    clearTimeout(musicSearchDebounceTimer);
+    musicSearchDebounceTimer = setTimeout(() => {
+        renderMusic();
+        // Keep focus + caret in the search box after the re-render.
+        const input = document.getElementById("musicSearchInput");
+        if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+    }, 150);
 }
 
 function setMusicAutoplay(value) {
@@ -8671,6 +8745,7 @@ const SEARCH_TABS = [
 function setSearchTab(tab) {
     searchTab = tab;
     renderSearchResults(userSearchQuery.trim().toLowerCase());
+    replayPageTransition();
 }
 
 function renderSearchResults(query){
@@ -9908,28 +9983,28 @@ async function loadDB() {
             sb.from("profiles_public").select("id,username,display_name,gender,avatar,cover,bio,visible_last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,created_at,show_online_status,wall_visibility,music_visibility,who_can_message,who_can_friend_request").order("created_at", { ascending: true }),
             sb.from("posts").select("id,author_id,wall_owner_id,text,image,music_id,shared_post_id,likes,pinned,pinned_at,created_at").order("created_at", { ascending: false }).limit(150),
             sb.from("comments").select("id,post_id,author_id,parent_comment_id,text,created_at").order("created_at", { ascending: true }).limit(1000),
-            sb.from("post_likes").select("post_id,user_id,emoji"),
-            sb.from("comment_likes").select("comment_id,user_id"),
+            sb.from("post_likes").select("post_id,user_id,emoji").limit(20000),
+            sb.from("comment_likes").select("comment_id,user_id").limit(20000),
             currentUserId ? sb.from("friendships").select("*") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("friend_requests").select("*").eq("status", "pending") : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("bubbles_notifications").select("*").eq("user_id", currentUserId).order("created_at", { ascending: false }).limit(50) : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("messages").select("id,sender_id,receiver_id,text,image,created_at,read_at,encrypted,iv,img_iv,reply_to_id,edited_at,pinned,pinned_at").or(`sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`).order("created_at", { ascending: false }).limit(1000) : Promise.resolve({ data: [], error: null }),
             currentUserId ? sb.from("message_reactions").select("message_id,user_id,emoji") : Promise.resolve({ data: [], error: null }),
             sb.from("music").select("id,author_id,title,artist,cover_url,audio_url,audio_path,cover_path,created_at").order("created_at", { ascending: false }).limit(200),
-            sb.from("music_saves").select("music_id,user_id"),
+            sb.from("music_saves").select("music_id,user_id").limit(10000),
             // RLS already restricts this to your own rows (see supabase.sql),
             // so this is naturally just your own bookmarks — nobody else's.
             currentUserId ? sb.from("post_saves").select("post_id").eq("user_id", currentUserId) : Promise.resolve({ data: [], error: null }),
-            sb.from("polls").select("id,post_id,created_at"),
+            sb.from("polls").select("id,post_id,created_at").limit(500),
             sb.from("poll_options").select("id,poll_id,text,position").order("position", { ascending: true }),
             sb.from("poll_votes").select("poll_id,option_id,user_id").limit(20000),
-            sb.from("follows").select("follower_id,followed_id"),
-            sb.from("rooms").select("id,name,slug,description,icon,theme,owner_id,is_public,created_at"),
-            sb.from("room_members").select("id,room_id,user_id,role,created_at"),
-            sb.from("music_likes").select("music_id,user_id"),
+            sb.from("follows").select("follower_id,followed_id").limit(20000),
+            sb.from("rooms").select("id,name,slug,description,icon,theme,owner_id,is_public,created_at").limit(500),
+            sb.from("room_members").select("id,room_id,user_id,role,created_at").limit(10000),
+            sb.from("music_likes").select("music_id,user_id").limit(10000),
             currentUserId ? sb.from("music_plays").select("music_id,played_at").eq("user_id", currentUserId).order("played_at", { ascending: false }).limit(200) : Promise.resolve({ data: [], error: null }),
             sb.from("playlists").select("id,owner_id,name,created_at"),
-            sb.from("playlist_tracks").select("id,playlist_id,music_id,position,added_at"),
+            sb.from("playlist_tracks").select("id,playlist_id,music_id,position,added_at").limit(20000),
             // RLS only ever actually returns rows here for the reporter or an
             // admin, so this is cheap/empty for a regular user and only an
             // admin's own profile page ends up showing anything from it.
@@ -10141,7 +10216,7 @@ function watchChatPartnerPresence(userId) {
         const user = getUser(userId);
         if (user) user.lastSeen = data.visible_last_seen;
         const el = document.getElementById("chatPartnerStatus");
-        if (el) el.textContent = isUserOnline(data.last_seen) ? "🟢 Онлайн" : "⚪ Не в сети";
+        if (el) el.textContent = isUserOnline(data.visible_last_seen) ? "🟢 Онлайн" : "⚪ Не в сети";
     };
     refresh();
     chatPartnerPresenceTimer = setInterval(refresh, 30000);
@@ -10401,7 +10476,9 @@ function setupSocialRealtime() {
             const post = rowToPost(payload.new);
             post.likes = [];
             post.reactions = [];
-            db.posts.unshift(post);
+            justAddedPostId = post.id;
+        db.posts.unshift(post);
+        setTimeout(() => { if (justAddedPostId === post.id) justAddedPostId = null; }, 600);
             if (currentPage === "feed") renderFeed();
             else if (currentPage === "profile" && selectedProfileId && (post.wallOwnerId || post.authorId) === selectedProfileId) renderProfile(selectedProfileId);
         })
@@ -10413,6 +10490,7 @@ function teardownRealtime() {
     removeChannelQuietly(friendRequestsChannel, "friend-requests");
     removeChannelQuietly(notificationsChannel, "notifications");
     removeChannelQuietly(socialChannel, "social");
+    removeChannelQuietly(roomMessagesChannel, "room");
     if (typingChannel) sb.removeChannel(typingChannel);
     messagesChannel = null;
     friendRequestsChannel = null;
@@ -10420,6 +10498,7 @@ function teardownRealtime() {
     typingChannel = null;
     typingChannelPartnerId = null;
     socialChannel = null;
+    roomMessagesChannel = null;
     selectedCanvasUserId = null;
     stopWatchingChatPartnerPresence();
 }
@@ -10528,6 +10607,37 @@ function logRealtimeStatus(label) {
     };
 }
 
+// Same reasoning as catchUpMessages above, for whichever room chat is
+// currently open — its realtime channel is only (re)subscribed when
+// reconnectRealtime() below decides to, same gap DMs had before
+// catchUpMessages existed.
+async function catchUpRoomMessages(roomId) {
+    if (!roomId) return;
+    const roomMsgs = db.roomMessages.filter(m => m.roomId === roomId);
+    const newestKnown = roomMsgs.reduce((max, m) => Math.max(max, m.createdAt || 0), 0);
+    try {
+        const { data, error } = await sb.from("room_messages")
+            .select("id,room_id,author_id,text,pinned,pinned_at,created_at")
+            .eq("room_id", roomId)
+            .gt("created_at", new Date(newestKnown || 0).toISOString())
+            .order("created_at", { ascending: true });
+        if (error || !data || !data.length) return;
+        let added = false;
+        for (const row of data) {
+            if (db.roomMessages.some(m => m.id === row.id)) continue;
+            db.roomMessages.push({
+                id: row.id, roomId: row.room_id, authorId: row.author_id, text: row.text,
+                pinned: !!row.pinned, pinnedAt: row.pinned_at ? Date.parse(row.pinned_at) : null,
+                createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
+            });
+            added = true;
+        }
+        if (added && selectedRoomId === roomId) renderRoomChat(roomId);
+    } catch (e) {
+        console.error("catchUpRoomMessages failed:", e);
+    }
+}
+
 function reconnectRealtime({ force = false } = {}) {
     if (!currentUserId || !sb?.realtime) return;
 
@@ -10555,6 +10665,11 @@ function reconnectRealtime({ force = false } = {}) {
         typingChannel = null; // force joinTypingChannel to actually rebuild it
         typingChannelPartnerId = null;
         joinTypingChannel(partnerId);
+    }
+    // Same idea for an open room chat's own channel + backlog.
+    if (selectedRoomId && currentPage === "roomChat") {
+        joinRoomMessagesChannel(selectedRoomId);
+        catchUpRoomMessages(selectedRoomId);
     }
 }
 
@@ -10800,6 +10915,7 @@ Object.assign(window,{
     startCanvasItemDrag,selectCanvasItem,bringCanvasItemToFront,rotateCanvasItem,deleteCanvasItem,
     reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent,
     toggleBlockUser,
+    openCreateSheet,openCreatePost,
     addStoryPrompt,openStoryViewer,closeStoryViewer,storyViewerAdvance,deleteCurrentStory,
     toggleStoryReaction,sendStoryReply,openStoryViewersModal,
     closeBubblesModal,
