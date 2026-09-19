@@ -833,20 +833,72 @@ $$;
 
 grant execute on function public.can_friend_request(uuid, uuid) to authenticated;
 
+-- Aggregate-only, doesn't expose WHO is online or filter by
+-- show_online_status (a bare count can't identify anyone by itself) —
+-- exists because refreshOnlineCount's badge runs this exact
+-- .gte("last_seen", cutoff) filter, which needs SELECT on that column
+-- even though it's not in the output; going through a security-definer
+-- RPC here keeps that off the client's own direct query surface.
+create or replace function public.online_users_count()
+returns integer
+language sql security definer set search_path = public stable as $$
+    select count(*)::int from public.profiles where last_seen > now() - interval '60 seconds';
+$$;
+grant execute on function public.online_users_count() to authenticated, anon;
+
+create or replace function public.get_visible_last_seen(profile_id uuid)
+returns timestamptz
+language sql security definer set search_path = public stable as $$
+    select case
+        when p.show_online_status or auth.uid() = p.id then p.last_seen
+        else null
+    end
+    from public.profiles p
+    where p.id = profile_id;
+$$;
+grant execute on function public.get_visible_last_seen(uuid) to authenticated, anon;
+
+-- Same reasoning as get_visible_last_seen above: a ban reason can be a
+-- pointed, personal moderation note, and profiles_public used to expose
+-- it (via ban_reason in its p.* select) to literally everyone, not just
+-- the banned person or an admin — the UI only ever *displayed* it to
+-- admins (adminProfileControls' isAdmin() check), but the raw data was
+-- already sitting in every visitor's browser regardless of what the UI
+-- showed.
+create or replace function public.get_visible_ban_reason(profile_id uuid)
+returns text
+language sql security definer set search_path = public stable as $$
+    select case
+        when auth.uid() = profile_id or public.is_admin() then p.ban_reason
+        else null
+    end
+    from public.profiles p
+    where p.id = profile_id;
+$$;
+grant execute on function public.get_visible_ban_reason(uuid) to authenticated, anon;
+
 -- Masked view of profiles for reading OTHER people's data — last_seen
 -- comes back null when the owner turned show_online_status off and
--- you're not that owner. Use this (not the raw profiles table) for
--- any query that reads other users' data; reads of your OWN row can
--- keep using the base table since you always see your own true value.
+-- you're not that owner, same idea for ban_reason (only the banned
+-- person or an admin sees it). Use this view (not the raw profiles
+-- table) for any query that reads other users' data. This used to be a
+-- plain `select p.*, case ... as visible_last_seen`, which left the RAW
+-- last_seen sitting right there in the same row as the masked column —
+-- anyone asking for it by name got the real value regardless, making
+-- the masking purely cosmetic. Listing columns explicitly (and routing
+-- last_seen/ban_reason through the two functions above instead of a
+-- bare column reference) is what actually closes that.
 create or replace view public.profiles_public
 with (security_invoker = true)
 as
 select
-    p.*,
-    case
-        when p.show_online_status or auth.uid() = p.id then p.last_seen
-        else null
-    end as visible_last_seen
+    p.id, p.username, p.display_name, p.gender, p.avatar, p.cover, p.bio, p.created_at,
+    p.public_key, p.current_track, p.current_artist, p.role, p.banned,
+    p.unlocked_achievements, p.achievement_level, p.custom_status_title, p.custom_status_icon,
+    p.subscription_tier, p.subscription_expires_at, p.subscription_frame, p.subscription_theme,
+    p.show_online_status, p.wall_visibility, p.music_visibility, p.who_can_message, p.who_can_friend_request,
+    public.get_visible_last_seen(p.id) as visible_last_seen,
+    public.get_visible_ban_reason(p.id) as ban_reason
 from public.profiles p;
 
 grant select on public.profiles_public to authenticated, anon;
