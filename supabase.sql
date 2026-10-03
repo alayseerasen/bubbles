@@ -730,6 +730,7 @@ alter table public.profiles add column if not exists subscription_tier text not 
 alter table public.profiles add column if not exists subscription_expires_at timestamptz;
 alter table public.profiles add column if not exists subscription_frame text not null default 'none';
 alter table public.profiles add column if not exists subscription_theme text not null default 'default';
+alter table public.profiles add column if not exists subscription_cover_effect text not null default 'none';
 
 
 
@@ -895,7 +896,7 @@ select
     p.id, p.username, p.display_name, p.gender, p.avatar, p.cover, p.bio, p.created_at,
     p.public_key, p.current_track, p.current_artist, p.role, p.banned,
     p.unlocked_achievements, p.achievement_level, p.custom_status_title, p.custom_status_icon,
-    p.subscription_tier, p.subscription_expires_at, p.subscription_frame, p.subscription_theme,
+    p.subscription_tier, p.subscription_expires_at, p.subscription_frame, p.subscription_theme, p.subscription_cover_effect,
     p.show_online_status, p.wall_visibility, p.music_visibility, p.who_can_message, p.who_can_friend_request,
     public.get_visible_last_seen(p.id) as visible_last_seen,
     public.get_visible_ban_reason(p.id) as ban_reason
@@ -1259,6 +1260,7 @@ begin
         if old.subscription_tier <> 'plus' or old.subscription_expires_at is null or old.subscription_expires_at < now() then
             new.subscription_frame := 'none';
             new.subscription_theme := 'default';
+            new.subscription_cover_effect := 'none';
         end if;
     end if;
     return new;
