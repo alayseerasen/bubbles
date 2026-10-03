@@ -57,6 +57,19 @@ const THEME_OPTIONS = [
     { id: "mint", label: "Мята", swatch: "linear-gradient(135deg,#57e0b8,#149a75)" }
 ];
 
+// Cosmetic overlay on the profile cover photo — distinct from the
+// avatar frame above, since "косметические элементы профиля" in the
+// spec reads as more than just the one existing frame perk. Purely
+// decorative (a CSS class on .cover), same enforcement pattern as
+// frame/theme: protect_profile_role_columns resets this server-side
+// for anyone whose subscription lapses.
+const COVER_EFFECTS = [
+    { id: "none", label: "Без эффекта", swatch: "linear-gradient(135deg,#e3eef2,#cfe4ea)" },
+    { id: "sparkle", label: "Искры", swatch: "linear-gradient(135deg,#fff6c4,#ffe89c)" },
+    { id: "bubbles", label: "Пузырьки", swatch: "linear-gradient(135deg,#bff5ff,#72dcff)" },
+    { id: "shimmer", label: "Переливы", swatch: "linear-gradient(135deg,#ffd6ec,#d6b8ff)" }
+];
+
 // Extra reaction row shown only to subscribers in the message reaction
 // picker — QUICK_REACTIONS above stays exactly as-is for everyone else.
 const PLUS_REACTIONS = ["🫧", "✨", "💎", "🌈", "🔥", "😻"];
@@ -1062,7 +1075,11 @@ function openFollowListModal(userId, kind) {
         ${
             users.length
             ? `<div class="friend-grid" onclick="closeBubblesModal()">${users.map(friendCard).join("")}</div>`
-            : emptyState("🔔", kind === "followers" ? "Пока нет подписчиков" : "Пока никто не выбран", "")
+            : emptyState(
+                "🔔",
+                kind === "followers" ? "Пока нет подписчиков" : "Пока ни на кого не подписан(а)",
+                kind === "followers" ? "Когда кто-то подпишется, он появится здесь." : "Подписки появятся здесь."
+              )
         }
     `);
 }
@@ -4113,7 +4130,7 @@ function renderProfile(userId){
         <div class="card" style="padding:0;">
 
             <div
-                class="cover"
+                class="cover${isSubscriber(user) && user.subscriptionCoverEffect && user.subscriptionCoverEffect !== "none" ? ` cover-effect-${user.subscriptionCoverEffect}` : ""}"
                 style="
                     ${
                         user.cover
@@ -5429,7 +5446,7 @@ function renderNotificationsPanel() {
             }
         </div>
         <div class="notif-panel-list notif-fade-in">
-            ${combinedHtml || `<div class="empty notif-empty">Пока ничего нет.</div>`}
+            ${combinedHtml || `<div class="empty notif-empty">Здесь пока ничего нет 🫧</div>`}
         </div>
     `;
 }
@@ -5823,11 +5840,11 @@ function renderMessages(){
                 ${
                     users.length
                     ? users.map(renderConversation).join("")
-                    : `
-                        <div class="empty">
-                            Нет друзей для переписки.
-                        </div>
-                    `
+                    : emptyState(
+                        "💬",
+                        "Переписок пока нет",
+                        "Добавь кого-нибудь в друзья, чтобы начать общаться."
+                      )
                 }
 
             </div>
@@ -5838,15 +5855,11 @@ function renderMessages(){
                 ${
                     selectedChatId
                     ? renderChat(selectedChatId)
-                    : `
-                        <div class="empty">
-                            <div class="empty-icon">
-                                💬
-                            </div>
-
-                            Выбери друга.
-                        </div>
-                    `
+                    : emptyState(
+                        "💬",
+                        "Выбери собеседника",
+                        "Нажми на друга слева, чтобы открыть переписку."
+                      )
                 }
 
             </div>
@@ -8527,6 +8540,21 @@ function renderPremium() {
                 </div>
             </div>
 
+            <div style="margin-bottom:14px;">
+                <strong>🖼️ Эффект на обложку профиля</strong>
+                <div class="perk-option-grid">
+                    ${COVER_EFFECTS.map(c => `
+                        <div class="perk-option${subscribed && (user.subscriptionCoverEffect || "none") === c.id ? " selected" : ""}${subscribed || c.id === "none" ? "" : " locked"}"
+                            ${subscribed || c.id === "none" ? `onclick="setSubscriptionCoverEffect('${c.id}')"` : ""}
+                            title="${subscribed || c.id === "none" ? "" : "Доступно с подпиской"}"
+                        >
+                            <span class="perk-swatch" style="background:${c.swatch}"></span>
+                            ${c.label}
+                        </div>
+                    `).join("")}
+                </div>
+            </div>
+
             <div>
                 <strong>🫧 Эксклюзивные стикеры</strong>
                 <div style="font-size:24px;margin-top:8px;${subscribed ? "" : "opacity:.4;"}">
@@ -8578,6 +8606,17 @@ async function setSubscriptionFrame(frame) {
     user.subscriptionFrame = frame;
     toast("Рамка обновлена.");
     renderApp();
+}
+
+async function setSubscriptionCoverEffect(effectId) {
+    const user = getCurrentUser();
+    if (effectId !== "none" && !isSubscriber(user)) return;
+    const { error } = await sb.from("profiles").update({ subscription_cover_effect: effectId }).eq("id", currentUserId);
+    if (error) { console.error(error); toast("Не удалось сохранить эффект обложки."); return; }
+    user.subscriptionCoverEffect = effectId;
+    toast("Эффект обложки обновлён.");
+    if (currentPage === "profile" && (selectedProfileId || currentUserId) === currentUserId) renderProfile(currentUserId);
+    else if (currentPage === "premium") renderPremium();
 }
 
 async function setSubscriptionTheme(themeId) {
@@ -8863,6 +8902,7 @@ function rowToUser(row){
         subscriptionExpiresAt: row.subscription_expires_at ? Date.parse(row.subscription_expires_at) : null,
         subscriptionFrame: row.subscription_frame || "none",
         subscriptionTheme: row.subscription_theme || "default",
+        subscriptionCoverEffect: row.subscription_cover_effect || "none",
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
@@ -9980,7 +10020,7 @@ async function loadDB() {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
         const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, rooms, roomMembers, musicLikes, musicPlays, playlists, playlistTracks, reports, subscriptionRequests, blocks, stories, storyViews, storyReactions, petRow] = await Promise.all([
-            sb.from("profiles_public").select("id,username,display_name,gender,avatar,cover,bio,visible_last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,created_at,show_online_status,wall_visibility,music_visibility,who_can_message,who_can_friend_request").order("created_at", { ascending: true }),
+            sb.from("profiles_public").select("id,username,display_name,gender,avatar,cover,bio,visible_last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,subscription_cover_effect,created_at,show_online_status,wall_visibility,music_visibility,who_can_message,who_can_friend_request").order("created_at", { ascending: true }),
             sb.from("posts").select("id,author_id,wall_owner_id,text,image,music_id,shared_post_id,likes,pinned,pinned_at,created_at").order("created_at", { ascending: false }).limit(150),
             sb.from("comments").select("id,post_id,author_id,parent_comment_id,text,created_at").order("created_at", { ascending: true }).limit(1000),
             sb.from("post_likes").select("post_id,user_id,emoji").limit(20000),
