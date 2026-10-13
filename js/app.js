@@ -184,484 +184,6 @@ function statusBadgeHtml(user, size = "normal") {
     return `<span class="${cls}" title="${escapeHtml(tier.title)}">${tier.icon} ${escapeHtml(tier.title)}</span>`;
 }
 
-/* ============================================================
-   PETS (Tamagotchi-style companion)
-   ------------------------------------------------------------
-   One companion per account (db.pet, or null before it's adopted).
-   Species/appearance is config here (PET_SPECIES), not a DB table —
-   same reasoning as ACHIEVEMENTS above: it's static content, easy to
-   extend with more characters later, and doesn't need a migration to
-   add one. Cosmetics (recoloring, accessories) are a later layer —
-   colorPrimary/colorSecondary already round-trip through the DB (see
-   rowToPet) but nothing sets them yet, so every pet just renders in
-   its species' base colors for now.
-
-   STATS live 0–100: hunger, energy, happiness, cleanliness, plus a
-   slower-moving `health` meter that only drifts down when the other
-   four have been neglected for a while, and drifts back up on good
-   care — it's the "sick" gate, and it's always recoverable, never
-   fatal. Actions (feed/play/clean/sleep) nudge the four fast stats;
-   nothing acts on health directly.
-
-   TICKING is lazy, like the rest of this app has no server cron:
-   - applyPetDecay() is a pure function of (pet, elapsedMs, rate) —
-     no I/O, easy to reason about and to unit-test by hand.
-   - tickPet() is the only place that actually moves lastTickAt and
-     talks to Supabase. It runs in two situations:
-       1) once right after loadDB(), with awayCatchUp:true — the gap
-          between lastTickAt and now is however long the app was
-          CLOSED for, so it decays at PET_OFFLINE_RATE (slower).
-       2) every 30s via the heartbeat started in startApp(), with
-          awayCatchUp:false — that gap is always ~30s of the app
-          being open, so it decays at the normal full rate.
-     This is what gives the "decays as usual while you're using
-     bubbles, a bit more forgiving while you're away" behavior,
-     without needing to know in real time whether the tab is
-     foregrounded — the heartbeat only runs while the app is open at
-     all, so any large gap found on load could only have happened
-     while it was closed.
-   ============================================================ */
-
-const PET_SPECIES = [
-    {
-        id: "aero_orb",
-        name: "Баблу",
-        description: "Глянцевый желейный человечек — как стеклянная игрушка, только живой.",
-        colorPrimary: "#b9ff9b",
-        colorSecondary: "#149a3c"
-    }
-    // More characters go here later — creating one is just adding an
-    // entry to this array (id, name, description, two base colors);
-    // renderPetCreature() below draws any of them from those colors.
-];
-
-function getPetSpecies(speciesId) {
-    return PET_SPECIES.find(s => s.id === speciesId) || PET_SPECIES[0];
-}
-
-// Per-hour decay while the app is open and the pet is awake.
-const PET_DECAY_RATES = { hunger: 6, cleanliness: 4, happiness: 4, energy: 3 };
-// Applied instead of PET_DECAY_RATES for whatever time the app was
-// closed — "outside the bubbles" stats still drop, just noticeably
-// slower (roughly a third of the normal rate).
-const PET_OFFLINE_RATE_MULTIPLIER = 0.4;
-// While asleep, the fast stats barely move and energy climbs back up
-// instead of draining.
-const PET_ASLEEP_DECAY_MULTIPLIER = 0.35;
-const PET_ASLEEP_ENERGY_REGEN_PER_HOUR = 14;
-// Health drifts down when the four fast stats average below this,
-// and drifts up when they average at or above this — dead zone in
-// between so it doesn't flicker back and forth.
-const PET_HEALTH_DECAY_THRESHOLD = 30;
-const PET_HEALTH_REGEN_THRESHOLD = 60;
-const PET_HEALTH_DRIFT_PER_HOUR = 4;
-const PET_SICK_HEALTH_THRESHOLD = 30;
-// Age (from createdAt) needed to reach each stage — also gated on
-// health being at least PET_HEALTH_REGEN_THRESHOLD at the moment the
-// age threshold is hit, so sustained neglect delays growth instead
-// of punishing it any other way (it always catches up once cared for).
-const PET_STAGE_HOURS = { juvenile: 24, adult: 4 * 24 };
-
-function clampStat(value) {
-    return Math.max(0, Math.min(100, value));
-}
-
-// Pure function: given a pet snapshot, how far did elapsedMs of decay
-// (at the given hourly rates, before the sleep multiplier) move it?
-// Never touches the DB or `db.pet` — tickPet() below is what commits
-// the result, so this stays easy to reason about on its own.
-function applyPetDecay(pet, elapsedMs, rateMultiplier) {
-    const hours = elapsedMs / 3600000;
-    if (hours <= 0) return pet;
-    const sleepFactor = pet.asleep ? PET_ASLEEP_DECAY_MULTIPLIER : 1;
-    const next = { ...pet };
-    next.hunger = clampStat(pet.hunger - PET_DECAY_RATES.hunger * hours * rateMultiplier * sleepFactor);
-    next.cleanliness = clampStat(pet.cleanliness - PET_DECAY_RATES.cleanliness * hours * rateMultiplier * sleepFactor);
-    next.happiness = clampStat(pet.happiness - PET_DECAY_RATES.happiness * hours * rateMultiplier * sleepFactor);
-    next.energy = clampStat(pet.asleep
-        ? pet.energy + PET_ASLEEP_ENERGY_REGEN_PER_HOUR * hours * rateMultiplier
-        : pet.energy - PET_DECAY_RATES.energy * hours * rateMultiplier);
-
-    const careAverage = (next.hunger + next.cleanliness + next.happiness + next.energy) / 4;
-    if (careAverage < PET_HEALTH_DECAY_THRESHOLD) {
-        next.health = clampStat(pet.health - PET_HEALTH_DRIFT_PER_HOUR * hours * rateMultiplier);
-    } else if (careAverage >= PET_HEALTH_REGEN_THRESHOLD) {
-        next.health = clampStat(pet.health + PET_HEALTH_DRIFT_PER_HOUR * hours * rateMultiplier);
-    } else {
-        next.health = pet.health;
-    }
-
-    const ageHours = (Date.now() - pet.createdAt) / 3600000;
-    if (next.stage === "baby" && ageHours >= PET_STAGE_HOURS.juvenile && next.health >= PET_HEALTH_REGEN_THRESHOLD) {
-        next.stage = "juvenile";
-    } else if (next.stage === "juvenile" && ageHours >= PET_STAGE_HOURS.adult && next.health >= PET_HEALTH_REGEN_THRESHOLD) {
-        next.stage = "adult";
-    }
-
-    return next;
-}
-
-function isPetSick(pet) {
-    return pet.health < PET_SICK_HEALTH_THRESHOLD;
-}
-
-// Recomputes db.pet from however long it's actually been, optionally
-// writes the result back to Supabase, and optionally treats the gap
-// as "away" time (slower rate) vs. "app open" time (normal rate) —
-// see the big comment above PET_SPECIES for when each is used.
-async function tickPet({ persist = false, awayCatchUp = false } = {}) {
-    if (!db.pet) return;
-    const elapsedMs = Date.now() - db.pet.lastTickAt;
-    if (elapsedMs <= 0) return;
-    const rate = awayCatchUp ? PET_OFFLINE_RATE_MULTIPLIER : 1;
-    const evolved = applyPetDecay(db.pet, elapsedMs, rate);
-    evolved.lastTickAt = Date.now();
-    db.pet = evolved;
-    if (persist) await savePetToSupabase();
-}
-
-async function savePetToSupabase() {
-    if (!db.pet || !currentUserId) return;
-    const p = db.pet;
-    const { error } = await sb.from("pets").update({
-        hunger: p.hunger, energy: p.energy, happiness: p.happiness, cleanliness: p.cleanliness,
-        health: p.health, stage: p.stage, asleep: p.asleep, name: p.name,
-        last_tick_at: new Date(p.lastTickAt).toISOString()
-    }).eq("owner_id", currentUserId);
-    if (error) console.error("Не удалось сохранить питомца:", error);
-}
-
-let petHeartbeatTimer = null;
-
-function startPetHeartbeat() {
-    if (petHeartbeatTimer) return;
-    petHeartbeatTimer = setInterval(async () => {
-        if (!db.pet) return;
-        await tickPet({ persist: true, awayCatchUp: false });
-        if (currentPage === "pet") renderPet();
-    }, 30000);
-}
-
-function stopPetHeartbeat() {
-    if (petHeartbeatTimer) {
-        clearInterval(petHeartbeatTimer);
-        petHeartbeatTimer = null;
-    }
-}
-
-async function createPet(speciesId, name) {
-    if (!currentUserId || db.pet) return;
-    const species = getPetSpecies(speciesId);
-    const nowIso = new Date().toISOString();
-    const row = {
-        owner_id: currentUserId,
-        species_id: species.id,
-        name: (name || "").trim().slice(0, 30) || "Пузырёныш",
-        stage: "baby",
-        hunger: 80, energy: 80, happiness: 80, cleanliness: 80, health: 100,
-        asleep: false,
-        last_tick_at: nowIso,
-        created_at: nowIso
-    };
-    const { data, error } = await sb.from("pets").insert(row).select().single();
-    if (error) {
-        console.error(error);
-        toast("Не удалось завести питомца.");
-        return;
-    }
-    db.pet = rowToPet(data);
-    startPetHeartbeat();
-    renderPet();
-}
-
-// Shared by every action button: bumps the given stats (clamped),
-// optionally reduced if the pet is sick — a gentle nudge to nurse it
-// back to full health rather than a hard block — then re-renders
-// immediately and persists in the background, same optimistic-update
-// pattern as toggleLike().
-async function applyPetAction(deltas, { blockIfAsleep = true } = {}) {
-    if (!db.pet) return;
-    if (blockIfAsleep && db.pet.asleep) {
-        toast("Питомец спит — разбуди его сначала 💤");
-        return;
-    }
-    const sickFactor = isPetSick(db.pet) ? 0.7 : 1;
-    const next = { ...db.pet };
-    Object.entries(deltas).forEach(([stat, delta]) => {
-        next[stat] = clampStat(next[stat] + delta * (delta > 0 ? sickFactor : 1));
-    });
-    db.pet = next;
-    renderPet();
-    await savePetToSupabase();
-}
-
-async function feedPet() {
-    await applyPetAction({ hunger: 30, happiness: 3, cleanliness: -4 });
-}
-
-async function playPet() {
-    if (db.pet && db.pet.energy < 10) {
-        toast("Питомец слишком устал играть — дай ему отдохнуть 😴");
-        return;
-    }
-    await applyPetAction({ happiness: 25, energy: -15, hunger: -4, cleanliness: -6 });
-}
-
-async function cleanPet() {
-    await applyPetAction({ cleanliness: 40, happiness: 3 });
-}
-
-async function toggleSleepPet() {
-    if (!db.pet) return;
-    db.pet = { ...db.pet, asleep: !db.pet.asleep };
-    renderPet();
-    await savePetToSupabase();
-}
-
-function petStageLabel(stage) {
-    return stage === "adult" ? "Взрослый" : stage === "juvenile" ? "Подросток" : "Малыш";
-}
-
-function petStatBar(label, icon, value) {
-    const tier = value < 25 ? "low" : value < 55 ? "mid" : "high";
-    return `
-        <div class="pet-stat-row">
-            <span class="pet-stat-label">${icon} ${label}</span>
-            <div class="pet-stat-track">
-                <div class="pet-stat-fill ${tier}" style="width:${Math.round(value)}%"></div>
-            </div>
-        </div>
-    `;
-}
-
-// Builds the creature as inline SVG with CSS custom properties for
-// its two colors, instead of baking hex values into the gradient
-// stops directly — so a future recolor cosmetic only has to set
-// --pet-color-1/--pet-color-2 on this element, no SVG rebuild needed.
-// Shape/gloss is modeled on a glassy jelly figurine (round head, side
-// arm lobes, a seam ring at the neck, several separate specular
-// highlights) — the face stays on top of that for mood feedback
-// (happy/sad/sick/asleep), since a virtual pet needs to be able to
-// visibly react even though the reference figurine itself is blank.
-function renderPetCreature(pet) {
-    const species = getPetSpecies(pet.speciesId);
-    const c1 = pet.colorPrimary || species.colorPrimary;
-    const c2 = pet.colorSecondary || species.colorSecondary;
-    const sizeScale = pet.stage === "adult" ? 1 : pet.stage === "juvenile" ? 0.9 : 0.78;
-    const mood = pet.asleep ? "asleep" : isPetSick(pet) ? "sick" : pet.happiness < 30 ? "sad" : "happy";
-    return `
-        <div class="pet-creature-wrap ${mood}" style="--pet-color-1:${c1};--pet-color-2:${c2};--pet-scale:${sizeScale}">
-            <svg viewBox="0 0 220 280" class="pet-creature-svg">
-                <defs>
-                    <radialGradient id="petGloss" cx="35%" cy="25%" r="80%">
-                        <stop offset="0%" stop-color="#ffffff" stop-opacity=".98"/>
-                        <stop offset="28%" stop-color="var(--pet-color-1)" stop-opacity=".95"/>
-                        <stop offset="100%" stop-color="var(--pet-color-2)"/>
-                    </radialGradient>
-                    <radialGradient id="petGlossDark" cx="40%" cy="20%" r="85%">
-                        <stop offset="0%" stop-color="var(--pet-color-1)" stop-opacity=".85"/>
-                        <stop offset="100%" stop-color="var(--pet-color-2)"/>
-                    </radialGradient>
-                </defs>
-                <ellipse cx="110" cy="265" rx="66" ry="10" fill="rgba(15,60,35,.16)"/>
-
-                <!-- arms: two rounded lobes attached to the torso -->
-                <ellipse cx="46" cy="200" rx="26" ry="34" fill="url(#petGlossDark)" stroke="var(--pet-color-2)" stroke-width="3.5"/>
-                <ellipse cx="174" cy="200" rx="26" ry="34" fill="url(#petGlossDark)" stroke="var(--pet-color-2)" stroke-width="3.5"/>
-
-                <!-- torso -->
-                <path d="M56 260 C48 190 52 148 110 148 C168 148 172 190 164 260 Z" fill="url(#petGloss)" stroke="var(--pet-color-2)" stroke-width="4"/>
-
-                <!-- head -->
-                <circle cx="110" cy="80" r="64" fill="url(#petGloss)" stroke="var(--pet-color-2)" stroke-width="4"/>
-                <!-- seam ring where the head meets the body, like the figurine's neck rim -->
-                <ellipse cx="110" cy="146" rx="30" ry="8" fill="none" stroke="var(--pet-color-2)" stroke-width="3" opacity=".55"/>
-
-                <!-- multiple glossy highlights, like light catching curved glass -->
-                <ellipse cx="82" cy="48" rx="24" ry="16" fill="#fff" opacity=".8" transform="rotate(-18 82 48)"/>
-                <ellipse cx="145" cy="70" rx="7" ry="10" fill="#fff" opacity=".55"/>
-                <ellipse cx="90" cy="185" rx="16" ry="22" fill="#fff" opacity=".35"/>
-                <ellipse cx="150" cy="215" rx="6" ry="9" fill="#fff" opacity=".4"/>
-
-                <g class="pet-face">
-                    <circle cx="86" cy="82" r="7" class="pet-eye"/>
-                    <circle cx="134" cy="82" r="7" class="pet-eye"/>
-                    <path class="pet-mouth" d="M92 104 Q110 118 128 104" fill="none" stroke="#0f3d24" stroke-width="4" stroke-linecap="round"/>
-                </g>
-            </svg>
-        </div>
-    `;
-}
-
-// A small ambient scene the pet "lives in" — window, floor, a couple
-// of drifting bubbles — purely decorative for now (CSS/SVG only, no
-// image assets), and a natural place to hang furniture/room cosmetics
-// off of later without touching the pet-rendering code at all.
-function renderPetRoom(innerHtml) {
-    const bubbles = [18, 42, 68, 85].map((left, i) => `
-        <span class="pet-room-bubble" style="--left:${left}%;--delay:${i * 1.8}s;--size:${14 + (i % 3) * 8}px"></span>
-    `).join("");
-    return `
-        <div class="pet-room">
-            <div class="pet-room-window">
-                <span class="pet-room-cloud c1"></span>
-                <span class="pet-room-cloud c2"></span>
-            </div>
-            ${bubbles}
-            <div class="pet-room-floor"></div>
-            <div class="pet-room-rug"></div>
-            <div class="pet-room-stage">${innerHtml}</div>
-        </div>
-    `;
-}
-
-function renderPetCreatePrompt() {
-    const speciesOptions = PET_SPECIES.map(s => `
-        <label class="pet-species-option">
-            <input type="radio" name="petSpeciesChoice" value="${s.id}" ${s === PET_SPECIES[0] ? "checked" : ""}>
-            <div class="pet-species-card" style="--pet-color-1:${s.colorPrimary};--pet-color-2:${s.colorSecondary}">
-                <div class="pet-species-swatch"></div>
-                <div>
-                    <div class="pet-species-name">${escapeHtml(s.name)}</div>
-                    <div class="pet-species-desc">${escapeHtml(s.description)}</div>
-                </div>
-            </div>
-        </label>
-    `).join("");
-    return `
-        <h2 class="section-title">🐣 Питомец</h2>
-        <div class="card pet-create-card">
-            <p>У тебя пока нет питомца. Выбери персонажа и дай ему имя — раскраску и аксессуары можно будет менять позже.</p>
-            <div class="pet-species-list">${speciesOptions}</div>
-            <input id="newPetName" class="pet-name-input" placeholder="Имя питомца" maxlength="30">
-            <button class="primary full" onclick="submitCreatePet()">Завести питомца 🫧</button>
-        </div>
-    `;
-}
-
-function submitCreatePet() {
-    const speciesId = (document.querySelector('input[name="petSpeciesChoice"]:checked') || {}).value || PET_SPECIES[0].id;
-    const name = document.getElementById("newPetName").value;
-    createPet(speciesId, name);
-}
-
-// ------------------------------------------------------------
-// VISITING A FRIEND'S PET — the one social hook the pet had none of
-// before: you can look in on a friend's pet and top it up once a day
-// (see feed_friends_pet() in supabase.sql for the actual limit/boost,
-// enforced server-side, not just here). Doesn't touch db.pet (that's
-// always YOUR OWN pet, loaded once at login) — this fetches whichever
-// friend's pet on demand and renders a lightweight read-mostly view.
-// ------------------------------------------------------------
-async function visitFriendsPet(userId) {
-    if (userId === currentUserId) { navigate("pet"); return; }
-    currentPage = "pet";
-    selectedProfileId = userId;
-    document.querySelectorAll("[data-page]").forEach(btn => btn.classList.toggle("active", btn.dataset.page === "pet"));
-    const page = document.getElementById("page");
-    page.innerHTML = `<div class="empty">Заходим в гости…</div>`;
-    const { data, error } = await sb.from("pets").select("*").eq("owner_id", userId).maybeSingle();
-    if (error) { console.error(error); toast("Не удалось загрузить питомца."); navigate("profile", userId); return; }
-    if (!data) {
-        page.innerHTML = emptyState("🐣", "Питомца пока нет", "У этого человека ещё нет питомца.");
-        return;
-    }
-    renderFriendsPetView(userId, rowToPet(data));
-}
-
-function renderFriendsPetView(userId, pet) {
-    const owner = getUser(userId);
-    const page = document.getElementById("page");
-    const sick = isPetSick(pet);
-    page.innerHTML = `
-        <h2 class="section-title">🐣 Питомец ${escapeHtml(owner?.displayName || "")}</h2>
-        <div class="card pet-card">
-            <div class="pet-status-row">
-                <span class="pet-stage-badge">${petStageLabel(pet.stage)}</span>
-                ${pet.asleep ? `<span class="pet-flag asleep">💤 Спит</span>` : ""}
-                ${sick ? `<span class="pet-flag sick">🤒 Приболел</span>` : ""}
-            </div>
-            ${renderPetRoom(renderPetCreature(pet))}
-            <h3 class="pet-name">${escapeHtml(pet.name)}</h3>
-            <div id="friendsPetStats">
-                ${petStatBar("Сытость", "🍬", pet.hunger)}
-                ${petStatBar("Бодрость", "⚡", pet.energy)}
-                ${petStatBar("Радость", "💗", pet.happiness)}
-            </div>
-            <button id="feedFriendsPetBtn" class="primary full" onclick="feedFriendsPetAction('${userId}')">
-                😋 Покормить
-            </button>
-            <p class="pet-visit-note">Можно заходить раз в день — так у всех питомцев в сети есть шанс на гостей 🫧</p>
-        </div>
-        <button class="secondary" onclick="navigate('profile','${userId}')">← Назад в профиль</button>
-    `;
-}
-
-async function feedFriendsPetAction(userId) {
-    const btn = document.getElementById("feedFriendsPetBtn");
-    if (btn) { btn.disabled = true; btn.textContent = "Кормим…"; }
-    const { data, error } = await sb.rpc("feed_friends_pet", { target_owner_id: userId });
-    if (error) {
-        console.error(error);
-        toast(error.message?.includes("нет питомца") ? error.message : "Не удалось покормить питомца.");
-        if (btn) { btn.disabled = false; btn.textContent = "😋 Покормить"; }
-        return;
-    }
-    const row = Array.isArray(data) ? data[0] : data;
-    if (!row) return;
-    const statsEl = document.getElementById("friendsPetStats");
-    if (statsEl) {
-        statsEl.innerHTML = `
-            ${petStatBar("Сытость", "🍬", row.hunger)}
-            ${petStatBar("Бодрость", "⚡", row.energy)}
-            ${petStatBar("Радость", "💗", row.happiness)}
-        `;
-    }
-    if (row.already_fed) {
-        toast("Уже заходил(а) сегодня — возвращайся завтра 🌙");
-        if (btn) { btn.disabled = true; btn.textContent = "Уже покормлен(а) сегодня"; }
-    } else {
-        toast("Спасибо от питомца! 🎉");
-        if (btn) { btn.disabled = true; btn.textContent = "Покормлен(а) на сегодня"; }
-        createNotification({ userId, type: "pet_fed" });
-    }
-}
-
-function renderPet() {
-    const page = document.getElementById("page");
-    if (!page) return;
-    if (!db.pet) {
-        page.innerHTML = renderPetCreatePrompt();
-        return;
-    }
-    const pet = db.pet;
-    const sick = isPetSick(pet);
-    page.innerHTML = `
-        <h2 class="section-title">🐣 ${escapeHtml(pet.name)}</h2>
-        <div class="card pet-card">
-            <div class="pet-status-row">
-                <span class="pet-stage-badge">${petStageLabel(pet.stage)}</span>
-                ${pet.asleep ? `<span class="pet-flag asleep">💤 Спит</span>` : ""}
-                ${sick ? `<span class="pet-flag sick">🤒 Приболел</span>` : ""}
-            </div>
-            ${renderPetRoom(renderPetCreature(pet))}
-            <div class="pet-stats">
-                ${petStatBar("Сытость", "🍎", pet.hunger)}
-                ${petStatBar("Энергия", "⚡", pet.energy)}
-                ${petStatBar("Настроение", "🎈", pet.happiness)}
-                ${petStatBar("Чистота", "🫧", pet.cleanliness)}
-                ${petStatBar("Здоровье", "💚", pet.health)}
-            </div>
-            <div class="pet-actions">
-                <button class="secondary" onclick="feedPet()" ${pet.asleep ? "disabled" : ""}>🍎 Покормить</button>
-                <button class="secondary" onclick="playPet()" ${pet.asleep ? "disabled" : ""}>🎈 Поиграть</button>
-                <button class="secondary" onclick="cleanPet()" ${pet.asleep ? "disabled" : ""}>🫧 Помыть</button>
-                <button class="secondary" onclick="toggleSleepPet()">${pet.asleep ? "☀️ Разбудить" : "💤 Уложить спать"}</button>
-            </div>
-        </div>
-    `;
-}
-
 // Only ever meaningfully accurate for the CURRENTLY LOGGED IN person —
 // see the big comment on ACHIEVEMENTS above. Diffs against what's
 // already saved on their profile so it only writes to the DB (and only
@@ -864,8 +386,7 @@ let db = {
     blocks: [],
     stories: [],
     storyViews: [],
-    canvasItems: [], // whichever canvas room is currently open (see openCanvasRoom)
-    pet: null // this account's single companion, or null if none created yet
+    canvasItems: [] // whichever canvas room is currently open (see openCanvasRoom)
 };
 
 let currentUserId = null;
@@ -875,7 +396,7 @@ let selectedProfileId = null;
 // (Поиск/Комната/Питомец/Bubbles+/Настройки) — e.g. via a deep link or
 // a button elsewhere in the app — doesn't hide its own nav highlight
 // behind a collapsed "Ещё" toggle.
-let sidebarMoreExpanded = ["friends","music","rooms","groupRooms","roomChat","saved","pet","premium","edit"].includes(currentPage);
+let sidebarMoreExpanded = ["friends","music","rooms","saved","premium","edit"].includes(currentPage);
 function toggleSidebarMore(){
     sidebarMoreExpanded = !sidebarMoreExpanded;
     renderApp();
@@ -1042,6 +563,7 @@ async function toggleFollow(userId) {
     if (wasFollowing) db.follows = db.follows.filter(f => !(f.followerId === currentUserId && f.followedId === userId));
     else db.follows.push({ followerId: currentUserId, followedId: userId });
     if (currentPage === "profile") renderProfile(selectedProfileId || currentUserId);
+    else if (currentPage === "feed") refreshFeedSuggestions();
 
     const { error } = wasFollowing
         ? await sb.from("follows").delete().eq("follower_id", currentUserId).eq("followed_id", userId)
@@ -1225,9 +747,6 @@ function openCreateSheet() {
             </button>
             <button class="profile-menu-item" onclick="closeBubblesModal();musicTab='mine';navigate('music');">
                 <span class="profile-menu-icon">🎵</span> Трек
-            </button>
-            <button class="profile-menu-item" onclick="closeBubblesModal();openCreateRoomModal();">
-                <span class="profile-menu-icon">🫧</span> Комната
             </button>
         </div>
     `);
@@ -1739,13 +1258,11 @@ function bubblesNowStats() {
     const onlineUsers = db.users.filter(u => isUserOnline(u.lastSeen));
     const hourAgo = Date.now() - 60 * 60 * 1000;
     const newPosts = db.posts.filter(p => (p.wallOwnerId || p.authorId) === p.authorId && p.createdAt > hourAgo).length;
-    const activeRooms = db.rooms.filter(r => roomOnlineCount(r.id) > 0).length;
     const listening = onlineUsers.filter(u => u.currentTrack);
-    return { onlineCount: onlineUsers.length, newPosts, activeRooms, listening };
+    return { onlineCount: onlineUsers.length, newPosts, listening };
 }
 
-// Real posts and room-joins have real timestamps and interleave by
-// recency; who's listening right now doesn't have a "started at" (see
+// Real posts have real timestamps and sort by recency; who's listening right now doesn't have a "started at" (see
 // setListening — it's a status, not an event), so that's its own single
 // summary line instead of being forced into fake per-person timestamps.
 function bubblesNowEvents() {
@@ -1758,17 +1275,6 @@ function bubblesNowEvents() {
         const author = getUser(p.authorId);
         if (author) events.push({ at: p.createdAt, text: `📝 ${escapeHtml(author.displayName)} опубликовал(а) пост` });
     });
-
-    const recentCutoff = Date.now() - 15 * 60 * 1000;
-    db.roomMembers
-        .filter(m => m.createdAt > recentCutoff)
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .slice(0, 5)
-        .forEach(m => {
-            const user = getUser(m.userId);
-            const room = db.rooms.find(r => r.id === m.roomId);
-            if (user && room) events.push({ at: m.createdAt, text: `🫧 ${escapeHtml(user.displayName)} вошёл(-а) в «${escapeHtml(room.name)}»` });
-        });
 
     return events.sort((a, b) => b.at - a.at).slice(0, 6);
 }
@@ -1792,7 +1298,6 @@ function bubblesNowWidgetHtml() {
             <div class="bubbles-now-stats">
                 <div class="bubbles-now-stat"><strong>${stats.onlineCount}</strong><span>онлайн</span></div>
                 <div class="bubbles-now-stat"><strong>${stats.newPosts}</strong><span>новых постов</span></div>
-                <div class="bubbles-now-stat"><strong>${stats.activeRooms}</strong><span>активных комнат</span></div>
                 <div class="bubbles-now-stat"><strong>${stats.listening.length}</strong><span>слушают музыку</span></div>
             </div>
             ${
@@ -2057,7 +1562,6 @@ async function login(event) {
 
 async function logout(){
     stopPresenceHeartbeat();
-    stopPetHeartbeat();
     stopOnlineCountPolling();
     teardownRealtime();
     closeMusicPlayer();
@@ -2067,7 +1571,7 @@ async function logout(){
     teardownCallSignaling();
     selectedCanvasUserId = null;
     canvasBackground = "sky";
-    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],notifications:[],messages:[],music:[],reports:[],subscriptionRequests:[],blocks:[],stories:[],storyViews:[],canvasItems:[],pet:null};
+    db = {users:[],posts:[],comments:[],friends:[],friendRequests:[],notifications:[],messages:[],music:[],reports:[],subscriptionRequests:[],blocks:[],stories:[],storyViews:[],canvasItems:[]};
     showAuth("landing");
 }
 
@@ -2087,7 +1591,6 @@ function startApp(){
         return;
     }
     startPresenceHeartbeat();
-    if (db.pet) startPetHeartbeat();
     applySubscriptionTheme(me);
     setupMessagesRealtime();
     setupFriendRequestsRealtime();
@@ -2285,27 +1788,10 @@ function renderApp(){
 
                     <button
                         class="nav-btn"
-                        data-page="groupRooms"
-                        onclick="navigate('groupRooms')"
-                    >
-                        🫧 Комнаты
-                    </button>
-
-                    <button
-                        class="nav-btn"
                         data-page="saved"
                         onclick="navigate('saved')"
                     >
                         🔖 Сохранённое
-                    </button>
-
-                    <button
-                        class="nav-btn"
-                        data-page="pet"
-                        onclick="navigate('pet')"
-                    >
-                        🐣 Питомец
-                        <span id="petNeedsAttentionBadge" class="nav-badge hidden"></span>
                     </button>
 
                     <button
@@ -2397,17 +1883,8 @@ function renderApp(){
                     🎨 Комната
                 </button>
 
-                <button class="more-sheet-item" data-page="groupRooms" onclick="navigate('groupRooms'); closeMoreSheet();">
-                    🫧 Комнаты
-                </button>
-
                 <button class="more-sheet-item" data-page="saved" onclick="navigate('saved'); closeMoreSheet();">
                     🔖 Сохранённое
-                </button>
-
-                <button class="more-sheet-item" data-page="pet" onclick="navigate('pet'); closeMoreSheet();">
-                    🐣 Питомец
-                    <span id="petNeedsAttentionBadgeMobile" class="nav-badge hidden"></span>
                 </button>
 
                 <button class="more-sheet-item" data-page="premium" onclick="navigate('premium'); closeMoreSheet();">
@@ -2461,7 +1938,7 @@ function navigate(page, id = null){
     // button on someone's profile. navigate() only ever rebuilds #page,
     // not the sidebar itself, so the state flag alone wouldn't be
     // reflected on screen without also touching the DOM directly here.
-    if (["friends","music","rooms","groupRooms","roomChat","saved","pet","premium","edit"].includes(page) && !sidebarMoreExpanded) {
+    if (["friends","music","rooms","saved","premium","edit"].includes(page) && !sidebarMoreExpanded) {
         sidebarMoreExpanded = true;
         document.querySelector(".sidebar-more")?.classList.remove("hidden");
         const toggle = document.querySelector(".sidebar-more-toggle");
@@ -2504,11 +1981,8 @@ function navigate(page, id = null){
         case "friends": renderFriends(); break;
         case "messages": renderMessages(); break;
         case "rooms": if (!isFreshEntryToRooms) renderRooms(); break;
-        case "groupRooms": renderGroupRoomsList(); break;
-        case "roomChat": openRoomChat(id); break;
         case "playlist": renderPlaylistPage(id); break;
         case "music": renderMusic(); break;
-        case "pet": renderPet(); break;
         case "premium": renderPremium(); break;
         case "edit": renderEditProfile(); break;
         case "search": renderSearchResults((id != null ? id : userSearchQuery).trim().toLowerCase()); break;
@@ -2562,13 +2036,7 @@ function renderFeed(){
     // post about themselves. wallOwnerId defaults to authorId for
     // regular/self posts (see rowToPost), so this check is simply
     // "was this posted on someone else's wall".
-    const posts = [...db.posts]
-        .filter(p => (p.wallOwnerId || p.authorId) === p.authorId)
-        .sort((a,b) => {
-            if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-            if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
-            return b.createdAt - a.createdAt;
-        });
+    const posts = getFeedPosts();
     const visible = posts.slice(0, feedVisibleCount);
     const hasMore = posts.length > visible.length;
 
@@ -2582,6 +2050,12 @@ function renderFeed(){
 
         ${bubblesNowWidgetHtml()}
 
+        ${suggestionsHtml()}
+
+        <div class="profile-tabs feed-filter-tabs">
+            <button type="button" class="profile-tab${feedFilter === "all" ? " active" : ""}" onclick="setFeedFilter('all')">🌍 Все</button>
+            <button type="button" class="profile-tab${feedFilter === "mine" ? " active" : ""}" onclick="setFeedFilter('mine')">🫂 Друзья и подписки</button>
+        </div>
 
         <div class="card">
 
@@ -2659,6 +2133,12 @@ function renderFeed(){
             ${
                 visible.length
                 ? visible.map(renderPost).join("")
+                : feedFilter === "mine"
+                ? emptyState(
+                    "🫂",
+                    "Здесь пока ничего нет 🫧",
+                    "Добавь друзей или подпишись на кого-нибудь — их посты появятся здесь."
+                )
                 : emptyState(
                     "🌊",
                     "Лента пока пустая",
@@ -2680,6 +2160,26 @@ function renderFeed(){
     `;
 
     renderComposerMusicChip();
+    setupFeedInfiniteScroll();
+}
+
+// Auto-triggers loadMoreFeedPosts() once the "Показать ещё" button
+// scrolls near the viewport, so in practice you never actually have to
+// tap it — the button stays in the DOM as a visible loading cue and a
+// manual fallback (e.g. if IntersectionObserver isn't available), but
+// scrolling alone is enough. Keeps watching the SAME button element
+// across batches (loadMoreFeedPosts only updates its text or removes
+// it on the last page, never replaces it), so this only needs to run
+// once per renderFeed() rather than being re-armed after every batch.
+let feedScrollObserver = null;
+function setupFeedInfiniteScroll() {
+    if (feedScrollObserver) { feedScrollObserver.disconnect(); feedScrollObserver = null; }
+    const btn = document.getElementById("feedLoadMoreBtn");
+    if (!btn || !("IntersectionObserver" in window)) return;
+    feedScrollObserver = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting) loadMoreFeedPosts();
+    }, { rootMargin: "600px" });
+    feedScrollObserver.observe(btn);
 }
 
 // Appends the next batch straight into the DOM instead of calling
@@ -2688,11 +2188,7 @@ function renderFeed(){
 // already on screen) and reset scroll to the top, which is exactly
 // the annoying thing "load more" is supposed to avoid.
 function loadMoreFeedPosts(){
-    const posts = [...db.posts].sort((a,b) => {
-        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-        if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
-        return b.createdAt - a.createdAt;
-    });
+    const posts = getFeedPosts();
     const nextBatch = posts.slice(feedVisibleCount, feedVisibleCount + FEED_PAGE_SIZE);
     const list = document.getElementById("feedPostsList");
     if (list && nextBatch.length) list.insertAdjacentHTML("beforeend", nextBatch.map(renderPost).join(""));
@@ -2701,8 +2197,12 @@ function loadMoreFeedPosts(){
     const remaining = posts.length - feedVisibleCount;
     const btn = document.getElementById("feedLoadMoreBtn");
     if (btn) {
-        if (remaining > 0) btn.textContent = `Показать ещё (осталось ${remaining})`;
-        else btn.remove();
+        if (remaining > 0) {
+            btn.textContent = `Показать ещё (осталось ${remaining})`;
+        } else {
+            btn.remove();
+            if (feedScrollObserver) { feedScrollObserver.disconnect(); feedScrollObserver = null; }
+        }
     }
 }
 
@@ -2740,7 +2240,7 @@ function renderCommentRow(postId, comment, topComment){
                     ${escapeHtml(user?.displayName || "Пользователь")} ${user ? subBadge(user, { fontSize: "9px" }) : ""}
                 </strong>
 
-                ${escapeHtml(comment.text)}
+                ${renderRichText(comment.text)}
 
                 <div class="comment-actions">
 
@@ -2832,6 +2332,131 @@ function renderReplyBox(postId, threadId){
 
         </div>
     `;
+}
+
+
+/* ------------------------------------------------------------
+   MENTIONS, FEED FILTER, PEOPLE SUGGESTIONS
+   ------------------------------------------------------------ */
+
+// "@username" in a post/comment becomes a tappable link to that profile
+// (only when such a user actually exists — a stray "@foo" stays plain
+// text). Escapes first, then links, so user text can never inject HTML.
+function renderRichText(raw) {
+    return escapeHtml(raw || "").replace(/@([a-z0-9_]{2,32})/gi, (full, name) => {
+        const u = db.users.find(x => x.username === name.toLowerCase());
+        return u ? `<a class="mention" href="javascript:void(0)" onclick="event.stopPropagation();navigate('profile','${u.id}')">@${name}</a>` : full;
+    });
+}
+
+function mentionedUserIds(text) {
+    const ids = new Set();
+    const re = /@([a-z0-9_]{2,32})/gi;
+    let m;
+    while ((m = re.exec(text || ""))) {
+        const u = db.users.find(x => x.username === m[1].toLowerCase());
+        if (u && u.id !== currentUserId && !isBlockedByMe(u.id)) ids.add(u.id);
+    }
+    return [...ids];
+}
+
+// Max 5 pings per post/comment so a mention-spam post can't ring half
+// the network; skipIds = people already notified about this same
+// action another way (e.g. the post's author on a comment).
+function notifyMentions(text, postId, commentId = null, skipIds = []) {
+    mentionedUserIds(text)
+        .filter(id => !skipIds.includes(id))
+        .slice(0, 5)
+        .forEach(id => createNotification({ userId: id, type: "mention", postId, commentId }));
+}
+
+let feedFilter = "all"; // "all" | "mine" (friends + people I follow + me)
+
+function myFriendIds() {
+    return db.friends
+        .filter(f => f.user1 === currentUserId || f.user2 === currentUserId)
+        .map(f => f.user1 === currentUserId ? f.user2 : f.user1);
+}
+
+// The main feed's post list — shared by renderFeed and loadMoreFeedPosts
+// so both always agree on filtering/sort (loadMoreFeedPosts used to
+// rebuild its own copy WITHOUT the wall-post filter, so infinite scroll
+// could surface posts left on someone else's wall).
+function getFeedPosts() {
+    let allowed = null;
+    if (feedFilter === "mine") {
+        allowed = new Set([currentUserId, ...myFriendIds(), ...followingOf(currentUserId)]);
+    }
+    return [...db.posts]
+        .filter(p => (p.wallOwnerId || p.authorId) === p.authorId)
+        .filter(p => !allowed || allowed.has(p.authorId))
+        .sort((a, b) => {
+            if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+            if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
+            return b.createdAt - a.createdAt;
+        });
+}
+
+function setFeedFilter(filter) {
+    feedFilter = filter;
+    feedVisibleCount = FEED_PAGE_SIZE;
+    renderFeed();
+    replayPageTransition();
+}
+
+// People you may know: friends-of-friends first (most mutual friends on
+// top), then the newest members. Skips yourself, current friends,
+// anyone blocked either way, and anyone with a pending request.
+function suggestedPeople(limit = 6) {
+    const mine = new Set(myFriendIds());
+    const friendsOf = new Map();
+    db.friends.forEach(f => {
+        if (!friendsOf.has(f.user1)) friendsOf.set(f.user1, new Set());
+        if (!friendsOf.has(f.user2)) friendsOf.set(f.user2, new Set());
+        friendsOf.get(f.user1).add(f.user2);
+        friendsOf.get(f.user2).add(f.user1);
+    });
+    return db.users
+        .filter(u => u.id !== currentUserId && !u.banned && !mine.has(u.id)
+            && !isBlockedByMe(u.id)
+            && !outgoingRequestTo(u.id) && !incomingRequestFrom(u.id))
+        .map(u => {
+            const theirs = friendsOf.get(u.id) || new Set();
+            let mutual = 0;
+            theirs.forEach(id => { if (mine.has(id)) mutual++; });
+            return { user: u, mutual };
+        })
+        .sort((a, b) => (b.mutual - a.mutual) || ((b.user.createdAt || 0) - (a.user.createdAt || 0)))
+        .slice(0, limit);
+}
+
+function suggestionsHtml() {
+    const list = suggestedPeople();
+    if (!list.length) return "";
+    return `
+        <div id="feedSuggestions" class="suggestions-card">
+            <div class="suggestions-title">👋 Кого добавить</div>
+            <div class="suggestions-row">
+                ${list.map(({ user, mutual }) => `
+                    <div class="suggestion-item">
+                        <img loading="lazy" decoding="async" class="${avatarFrameClass(user).trim()}" src="${user.avatar || defaultAvatar()}" onclick="navigate('profile','${user.id}')">
+                        <strong onclick="navigate('profile','${user.id}')">${escapeHtml(user.displayName)}</strong>
+                        <small>${mutual ? `${mutual} общ. ${mutual === 1 ? "друг" : "друзей"}` : "@" + escapeHtml(user.username)}</small>
+                        <button type="button" class="primary" onclick="sendFriendRequest('${user.id}')">Добавить</button>
+                        <button type="button" class="secondary${isFollowing(user.id) ? " following" : ""}" onclick="toggleFollow('${user.id}')">${isFollowing(user.id) ? "✓ Подписан(а)" : "Подписаться"}</button>
+                    </div>
+                `).join("")}
+            </div>
+        </div>
+    `;
+}
+
+function refreshFeedSuggestions() {
+    const el = document.getElementById("feedSuggestions");
+    if (!el) return;
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = suggestionsHtml().trim();
+    if (wrapper.firstElementChild) el.replaceWith(wrapper.firstElementChild); else el.remove();
 }
 
 // Renders one poll's options as tap-to-vote bars — percentage fill grows
@@ -2932,7 +2557,7 @@ function renderPost(post){
 
             ${
                 post.text
-                ? `<div class="post-content">${escapeHtml(post.text)}</div>`
+                ? `<div class="post-content">${renderRichText(post.text)}</div>`
                 : ""
             }
 
@@ -3218,6 +2843,7 @@ async function createPost(targetWallId = null) {
         toast(targetWallId && targetWallId !== currentUserId ? "Пост опубликован на стене!" : "Пост опубликован!");
         haptic("success");
         recomputeAchievements();
+        notifyMentions(text, postId, null, targetWallId ? [targetWallId] : []);
         if (targetWallId) { createNotification({ userId: targetWallId, type: "wall_post", postId }); renderProfile(targetWallId); }
         else renderFeed();
     } finally {
@@ -3264,6 +2890,7 @@ async function createWallPost(userId){
         wallTargetUserId = null;
         recomputeAchievements();
         toast(userId === currentUserId ? "Пост опубликован на стене!" : "Сообщение оставлено на стене!");
+        notifyMentions(text, postId);
         renderProfile(userId);
     } catch (e){
         console.error(e);
@@ -3422,6 +3049,8 @@ async function addComment(postId, parentId = null) {
 
     const post = db.posts.find(p => p.id === postId);
     if (post) createNotification({ userId: post.authorId, type: "post_comment", postId, commentId: comment.id });
+    const alreadyPinged = [post?.authorId, parentId ? db.comments.find(c => c.id === parentId)?.authorId : null].filter(Boolean);
+    notifyMentions(text, postId, comment.id, alreadyPinged);
     // Replies additionally notify whoever's top-level comment is being
     // replied to — otherwise only the POST's author ever finds out about
     // new activity in a thread, and someone two replies deep in a
@@ -5029,6 +4658,7 @@ async function sendFriendRequest(userId) {
     createNotification({ userId, type: "friend_request" });
     if (currentPage === "profile") renderProfile(selectedProfileId || userId);
     else if (currentPage === "friends") renderFriends();
+    else if (currentPage === "feed") refreshFeedSuggestions();
     updateNavBadges();
 }
 
@@ -5363,9 +4993,11 @@ function notificationLine(n) {
         case "wall_post":
             return { text: `${name} оставил(а) запись на вашей стене 🧱`, onclick: `goToPost('${n.postId}')` };
         case "pet_fed":
-            return { text: `${name} покормил(а) вашего питомца 🍬`, onclick: `navigate('pet')` };
+            return { text: `${name} покормил(а) вашего питомца 🍬`, onclick: `navigate('profile','${n.actorId}')` };
         case "new_follower":
             return { text: `${name} подписался(ась) на вас 🔔`, onclick: `navigate('profile','${n.actorId}')` };
+        case "mention":
+            return { text: `${name} упомянул(а) вас 🏷️`, onclick: `goToPost('${n.postId}')` };
         case "story_reaction":
             return { text: `${name} отреагировал(а) на вашу историю`, onclick: `openStoryViewer('${n.actorId}')` };
         default:
@@ -5637,7 +5269,7 @@ function shareProfile(userId) {
    ============================================================ */
 
 // The profile header used to show up to 8 buttons side by side
-// (relationship action, follow, chat, room, pet, share, report, block).
+// (relationship action, follow, chat, room, share, report, block).
 // This collapses the less-frequent ones behind a single "⋯ Ещё" button
 // into an action-sheet, reusing the same generic modal the share
 // picker uses. closeBubblesModal() runs first in every handler so the
@@ -5654,9 +5286,6 @@ function openProfileMoreMenu(userId) {
         <div class="profile-menu-list">
             <button class="profile-menu-item" onclick="closeBubblesModal();openCanvasRoom('${userId}')">
                 <span class="profile-menu-icon">🎨</span> Комната
-            </button>
-            <button class="profile-menu-item" onclick="closeBubblesModal();visitFriendsPet('${userId}')">
-                <span class="profile-menu-icon">🐣</span> Питомец
             </button>
             <button class="profile-menu-item" onclick="closeBubblesModal();shareProfile('${userId}')">
                 <span class="profile-menu-icon">↗</span> Поделиться профилем
@@ -7484,16 +7113,6 @@ function renderMusic() {
         .map(p => db.music.find(m => m.id === p.musicId))
         .filter(Boolean);
 
-    // Lightweight "recommendations": a handful of tracks you haven't
-    // already saved, liked, or played — not a real ranking model, just
-    // enough to surface stuff you haven't seen yet. Reshuffles on every
-    // visit to the Music page.
-    const seenIds = new Set([...mySavedMusicIds, ...myRecentPlays.map(p => p.musicId)]);
-    const recommendedTracks = db.music
-        .filter(m => m.authorId !== currentUserId && !seenIds.has(m.id))
-        .sort(() => Math.random() - 0.5)
-        .slice(0, 5);
-
     document.getElementById("page").innerHTML = `
         <h1 class="section-title">🎵 Музыка</h1>
 
@@ -7526,12 +7145,6 @@ function renderMusic() {
                 ${
                     recentPlayedTracks.length
                     ? `<h3 class="rooms-subheading">🕓 Недавно прослушанное</h3>${recentPlayedTracks.map(renderMusicCard).join("")}`
-                    : ""
-                }
-
-                ${
-                    recommendedTracks.length
-                    ? `<h3 class="rooms-subheading">✨ Рекомендуем</h3>${recommendedTracks.map(renderMusicCard).join("")}`
                     : ""
                 }
 
@@ -8728,20 +8341,6 @@ async function declineSubscriptionRequest(requestId) {
 
 let userSearchQuery = "";
 let searchTab = "users"; // "users" | "posts" | "music"
-let selectedRoomId = null;
-let roomMessagesChannel = null;
-
-// A handful of preset themes so rooms can look visually distinct from
-// each other while staying inside Bubbles' own palette — not arbitrary
-// colors, just different combinations of the same Frutiger-Aero-ish
-// gradient stops already used elsewhere (see .cover / body backgrounds).
-const ROOM_THEMES = {
-    aqua: "linear-gradient(135deg,#72dcff,#b8f5ff)",
-    mint: "linear-gradient(135deg,#7ee5c9,#d3fff2)",
-    pink: "linear-gradient(135deg,#ff9fd0,#ffe0f0)",
-    lavender: "linear-gradient(135deg,#b39dff,#e3d8ff)",
-    peach: "linear-gradient(135deg,#ff9868,#ffe0c9)"
-};
 
 let searchRenderDebounceTimer = null;
 
@@ -8777,8 +8376,7 @@ function searchUsers(value, sourceId){
 const SEARCH_TABS = [
     { id: "users", label: "👤 Люди" },
     { id: "posts", label: "📝 Посты" },
-    { id: "music", label: "🎵 Музыка" },
-    { id: "rooms", label: "🫧 Комнаты" }
+    { id: "music", label: "🎵 Музыка" }
 ];
 
 function setSearchTab(tab) {
@@ -8807,11 +8405,7 @@ function renderSearchResults(query){
         .filter(m => m.title.toLowerCase().includes(q) || m.artist.toLowerCase().includes(q))
         .slice(0, 40);
 
-    const rooms = !q ? [] : db.rooms
-        .filter(r => r.isPublic && (r.name.toLowerCase().includes(q) || r.description.toLowerCase().includes(q)))
-        .slice(0, 40);
-
-    const counts = { users: users.length, posts: posts.length, music: music.length, rooms: rooms.length };
+    const counts = { users: users.length, posts: posts.length, music: music.length };
 
     let resultsHtml;
     if (!q) {
@@ -8820,8 +8414,6 @@ function renderSearchResults(query){
         resultsHtml = posts.length ? posts.map(renderPost).join("") : emptyState("📝", "Постов не найдено", "Попробуй другой запрос.");
     } else if (searchTab === "music") {
         resultsHtml = music.length ? music.map(musicProfileCard).join("") : emptyState("🎵", "Треков не найдено", "Попробуй другое название или исполнителя.");
-    } else if (searchTab === "rooms") {
-        resultsHtml = rooms.length ? `<div class="rooms-grid">${rooms.map(roomCardHtml).join("")}</div>` : emptyState("🫧", "Комнат не найдено", "Попробуй другой запрос.");
     } else {
         resultsHtml = users.length
             ? `<div class="friend-grid">${users.map(friendCard).join("")}</div>`
@@ -8932,25 +8524,6 @@ function rowToComment(row) {
         parentId: row.parent_comment_id || null,
         text: row.text || "",
         likes: [],
-        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
-    };
-}
-
-function rowToPet(row) {
-    return {
-        ownerId: row.owner_id,
-        speciesId: row.species_id || "aero_orb",
-        name: row.name || "Пузырёныш",
-        stage: row.stage || "baby",
-        hunger: Number(row.hunger),
-        energy: Number(row.energy),
-        happiness: Number(row.happiness),
-        cleanliness: Number(row.cleanliness),
-        health: Number(row.health),
-        asleep: !!row.asleep,
-        colorPrimary: row.color_primary || null,
-        colorSecondary: row.color_secondary || null,
-        lastTickAt: row.last_tick_at ? Date.parse(row.last_tick_at) : Date.now(),
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
@@ -9343,378 +8916,6 @@ function renderCanvasItem(item) {
     `;
 }
 
-/* ============================================================
-   GROUP ROOMS — public/private community chat spaces. Separate from
-   renderRooms() below (the personal decorable canvas "Комната") despite
-   the similar name in Russian; that one is unchanged.
-   ============================================================ */
-
-function roomMembersOf(roomId) {
-    return db.roomMembers.filter(m => m.roomId === roomId);
-}
-
-function isRoomMember(roomId) {
-    return db.roomMembers.some(m => m.roomId === roomId && m.userId === currentUserId);
-}
-
-function roomMemberRole(roomId) {
-    return db.roomMembers.find(m => m.roomId === roomId && m.userId === currentUserId)?.role || null;
-}
-
-function roomOnlineCount(roomId) {
-    return roomMembersOf(roomId).filter(m => isUserOnline(getUser(m.userId)?.lastSeen)).length;
-}
-
-function roomCardHtml(room) {
-    return `
-        <div class="room-card" onclick="navigate('roomChat','${room.id}')">
-            <div class="room-card-icon" style="background:${ROOM_THEMES[room.theme] || ROOM_THEMES.aqua}">${room.icon}</div>
-            <div class="room-card-main">
-                <h3>${escapeHtml(room.name)} ${room.isPublic ? "" : "🔒"}</h3>
-                <p>${escapeHtml(room.description || "Без описания")}</p>
-                <div class="room-card-meta">${roomMembersOf(room.id).length} ${pluralPeople(roomMembersOf(room.id).length)} · 🟢 ${roomOnlineCount(room.id)} онлайн</div>
-            </div>
-        </div>
-    `;
-}
-
-function renderGroupRoomsList() {
-    const page = document.getElementById("page");
-    const myRooms = db.rooms.filter(r => isRoomMember(r.id)).sort((a, b) => b.createdAt - a.createdAt);
-    const otherPublicRooms = db.rooms.filter(r => r.isPublic && !isRoomMember(r.id)).sort((a, b) => b.createdAt - a.createdAt);
-
-    page.innerHTML = `
-        <div class="rooms-topbar">
-            <h1 class="section-title" style="margin-bottom:0;">🫧 Комнаты</h1>
-            <div class="rooms-header-actions">
-                <button type="button" class="primary" onclick="openCreateRoomModal()">+ Создать</button>
-            </div>
-        </div>
-
-        ${
-            myRooms.length
-            ? `<h3 class="rooms-subheading">Мои комнаты</h3><div class="rooms-grid">${myRooms.map(roomCardHtml).join("")}</div>`
-            : ""
-        }
-
-        <h3 class="rooms-subheading">${myRooms.length ? "Другие публичные комнаты" : "Публичные комнаты"}</h3>
-        ${
-            otherPublicRooms.length
-            ? `<div class="rooms-grid">${otherPublicRooms.map(roomCardHtml).join("")}</div>`
-            : emptyState("🫧", "Комнат пока нет", "Создай первую — например, для музыки, игр или просто поболтать.")
-        }
-    `;
-}
-
-function openCreateRoomModal() {
-    const themeSwatches = Object.keys(ROOM_THEMES).map(key => `
-        <button type="button" class="room-theme-swatch${key === "aqua" ? " selected" : ""}" data-theme-key="${key}" style="background:${ROOM_THEMES[key]}" onclick="document.querySelectorAll('.room-theme-swatch').forEach(el=>el.classList.remove('selected'));this.classList.add('selected');"></button>
-    `).join("");
-
-    showBubblesModal(`
-        <div class="modal-header">
-            <h3>Новая комната</h3>
-            <button class="modal-close-btn" onclick="closeBubblesModal()">✕</button>
-        </div>
-        <div class="room-create-form">
-            <input id="newRoomIcon" maxlength="4" value="🫧" style="width:60px;text-align:center;font-size:22px;">
-            <input id="newRoomName" maxlength="60" placeholder="Название комнаты">
-            <textarea id="newRoomDescription" maxlength="200" placeholder="О чём эта комната?"></textarea>
-            <div class="room-theme-picker">${themeSwatches}</div>
-            <label class="room-public-toggle">
-                <input id="newRoomIsPublic" type="checkbox" checked>
-                Публичная — видна всем в списке комнат
-            </label>
-            <button type="button" class="primary full" onclick="submitCreateRoom()">Создать</button>
-        </div>
-    `);
-}
-
-async function submitCreateRoom() {
-    const name = document.getElementById("newRoomName")?.value.trim();
-    const description = document.getElementById("newRoomDescription")?.value.trim() || "";
-    const icon = document.getElementById("newRoomIcon")?.value.trim() || "🫧";
-    const isPublic = document.getElementById("newRoomIsPublic")?.checked ?? true;
-    const theme = document.querySelector(".room-theme-swatch.selected")?.dataset.themeKey || "aqua";
-
-    if (!name) { toast("Дай комнате название."); return; }
-
-    const roomId = uid("room");
-    const slug = name.toLowerCase().replace(/[^a-zа-я0-9]+/gi, "-").replace(/(^-|-$)/g, "") + "-" + roomId.slice(-6);
-
-    const { error } = await sb.from("rooms").insert({
-        id: roomId, name, slug, description, icon, theme, owner_id: currentUserId, is_public: isPublic
-    });
-    if (error) { console.error(error); toast("Не удалось создать комнату."); return; }
-
-    const { error: memberError } = await sb.from("room_members").insert({
-        room_id: roomId, user_id: currentUserId, role: "owner"
-    });
-    if (memberError) console.error(memberError);
-
-    db.rooms.push({ id: roomId, name, slug, description, icon, theme, ownerId: currentUserId, isPublic, createdAt: Date.now() });
-    db.roomMembers.push({ id: uid("rm"), roomId, userId: currentUserId, role: "owner", createdAt: Date.now() });
-
-    closeBubblesModal();
-    navigate("roomChat", roomId);
-}
-
-async function joinRoom(roomId) {
-    if (isRoomMember(roomId)) return;
-    db.roomMembers.push({ id: uid("rm"), roomId, userId: currentUserId, role: "member", createdAt: Date.now() });
-    renderRoomChatHeader(roomId);
-    const { error } = await sb.from("room_members").insert({ room_id: roomId, user_id: currentUserId, role: "member" });
-    if (error) {
-        console.error(error);
-        db.roomMembers = db.roomMembers.filter(m => !(m.roomId === roomId && m.userId === currentUserId));
-        renderRoomChatHeader(roomId);
-        toast("Не удалось вступить в комнату.");
-    }
-}
-
-async function leaveRoom(roomId) {
-    const room = db.rooms.find(r => r.id === roomId);
-    if (room && room.ownerId === currentUserId) {
-        toast("Владелец не может покинуть свою комнату — удали её в настройках.");
-        return;
-    }
-    const prevMembers = db.roomMembers;
-    db.roomMembers = db.roomMembers.filter(m => !(m.roomId === roomId && m.userId === currentUserId));
-    navigate("groupRooms");
-    const { error } = await sb.from("room_members").delete().eq("room_id", roomId).eq("user_id", currentUserId);
-    if (error) {
-        console.error(error);
-        db.roomMembers = prevMembers;
-        toast("Не удалось покинуть комнату.");
-    }
-}
-
-async function deleteRoom(roomId) {
-    const room = db.rooms.find(r => r.id === roomId);
-    if (!room || room.ownerId !== currentUserId) return;
-    if (!confirm(`Удалить комнату «${room.name}» безвозвратно?`)) return;
-    const { error } = await sb.from("rooms").delete().eq("id", roomId);
-    if (error) { console.error(error); toast("Не удалось удалить комнату."); return; }
-    db.rooms = db.rooms.filter(r => r.id !== roomId);
-    db.roomMembers = db.roomMembers.filter(m => m.roomId !== roomId);
-    navigate("groupRooms");
-}
-
-// Loads that room's message history once, on entry — not kept for every
-// room the way DM conversations are, see the roomMessages comment in
-// loadDB above.
-async function openRoomChat(roomId) {
-    selectedRoomId = roomId;
-    if (!isRoomMember(roomId)) {
-        const room = db.rooms.find(r => r.id === roomId);
-        if (room && !room.isPublic) { toast("Эта комната приватная."); navigate("groupRooms"); return; }
-    }
-    const page = document.getElementById("page");
-    page.innerHTML = `<div class="empty"><span class="loading-spinner"></span></div>`;
-
-    const { data, error } = await sb
-        .from("room_messages")
-        .select("id,room_id,author_id,text,pinned,pinned_at,created_at")
-        .eq("room_id", roomId)
-        .order("created_at", { ascending: true })
-        .limit(300);
-
-    if (error) console.error(error);
-    db.roomMessages = (data || []).map(row => ({
-        id: row.id, roomId: row.room_id, authorId: row.author_id, text: row.text,
-        pinned: !!row.pinned, pinnedAt: row.pinned_at ? Date.parse(row.pinned_at) : null,
-        createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
-    }));
-
-    renderRoomChat(roomId);
-    joinRoomMessagesChannel(roomId);
-}
-
-function renderRoomChatHeader(roomId) {
-    const el = document.getElementById("roomChatHeader");
-    if (el) el.outerHTML = roomChatHeaderHtml(roomId);
-}
-
-function roomChatHeaderHtml(roomId) {
-    const room = db.rooms.find(r => r.id === roomId);
-    if (!room) return "";
-    const member = isRoomMember(roomId);
-    const isOwner = room.ownerId === currentUserId;
-    return `
-        <div id="roomChatHeader" class="room-chat-header" style="background:${ROOM_THEMES[room.theme] || ROOM_THEMES.aqua}">
-            <button type="button" class="room-chat-back" onclick="navigate('groupRooms')">←</button>
-            <div class="room-chat-icon">${room.icon}</div>
-            <div class="room-chat-title">
-                <h3>${escapeHtml(room.name)} ${room.isPublic ? "" : "🔒"}</h3>
-                <small>${roomMembersOf(roomId).length} ${pluralPeople(roomMembersOf(roomId).length)} · 🟢 ${roomOnlineCount(roomId)} онлайн</small>
-            </div>
-            ${
-                member
-                ? `<button type="button" class="secondary" onclick="${isOwner ? `deleteRoom('${roomId}')` : `leaveRoom('${roomId}')`}">${isOwner ? "🗑" : "Выйти"}</button>`
-                : `<button type="button" class="primary" onclick="joinRoom('${roomId}')">Вступить</button>`
-            }
-        </div>
-    `;
-}
-
-function renderRoomChat(roomId) {
-    const room = db.rooms.find(r => r.id === roomId);
-    const page = document.getElementById("page");
-    if (!room) { page.innerHTML = emptyState("🫧", "Комната не найдена", ""); return; }
-
-    const member = isRoomMember(roomId);
-    const messages = db.roomMessages.filter(m => m.roomId === roomId).sort((a, b) => a.createdAt - b.createdAt);
-    const pinned = messages.filter(m => m.pinned);
-    const canPin = ["owner", "moderator"].includes(roomMemberRole(roomId));
-
-    const bubble = (m) => {
-        const author = getUser(m.authorId);
-        return `
-            <div class="room-message${m.authorId === currentUserId ? " mine" : ""}">
-                <img loading="lazy" decoding="async" class="mini-avatar" src="${author?.avatar || defaultAvatar()}" onclick="navigate('profile','${m.authorId}')">
-                <div class="room-message-body">
-                    <div class="room-message-meta">
-                        <strong onclick="navigate('profile','${m.authorId}')">${escapeHtml(author?.displayName || "?")}</strong>
-                        <small>${new Date(m.createdAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}</small>
-                    </div>
-                    <div class="room-message-bubble">${escapeHtml(m.text)}</div>
-                    ${
-                        canPin
-                        ? `<button type="button" class="room-message-pin-btn" onclick="toggleRoomMessagePin('${m.id}')">${m.pinned ? "📌 Открепить" : "📌 Закрепить"}</button>`
-                        : ""
-                    }
-                </div>
-            </div>
-        `;
-    };
-
-    page.innerHTML = `
-        ${roomChatHeaderHtml(roomId)}
-
-        <div class="card room-chat-card">
-
-            ${
-                pinned.length
-                ? `
-                    <div class="room-pinned-section">
-                        <div class="room-pinned-label">📌 Закреплённые</div>
-                        ${pinned.map(m => `<div class="room-pinned-item">${escapeHtml(m.text)}</div>`).join("")}
-                    </div>
-                `
-                : ""
-            }
-
-            ${room.description ? `<p class="room-description">${escapeHtml(room.description)}</p>` : ""}
-
-            <div id="roomMessagesList" class="room-chat-list">
-                ${messages.length ? messages.map(bubble).join("") : emptyState("💬", "Тут пока тихо", "Напиши первое сообщение.")}
-            </div>
-
-            ${
-                member
-                ? `
-                    <div class="room-composer">
-                        <input id="roomMessageInput" placeholder="Сообщение..." onkeydown="if(event.key==='Enter')sendRoomMessage('${roomId}')">
-                        <button type="button" class="primary" onclick="sendRoomMessage('${roomId}')">→</button>
-                    </div>
-                `
-                : `<p class="wall-subtitle" style="text-align:center;">Вступи в комнату, чтобы писать сообщения.</p>`
-            }
-
-        </div>
-    `;
-
-    const list = document.getElementById("roomMessagesList");
-    if (list) list.scrollTop = list.scrollHeight;
-}
-
-async function sendRoomMessage(roomId) {
-    const input = document.getElementById("roomMessageInput");
-    const text = input?.value.trim();
-    if (!text) return;
-    input.value = "";
-
-    const tempId = uid("roommsg");
-    const optimistic = { id: tempId, roomId, authorId: currentUserId, text, pinned: false, pinnedAt: null, createdAt: Date.now() };
-    db.roomMessages.push(optimistic);
-    renderRoomChat(roomId);
-
-    const { data, error } = await sb.from("room_messages")
-        .insert({ room_id: roomId, author_id: currentUserId, text })
-        .select("id,created_at")
-        .single();
-
-    if (error) {
-        console.error(error);
-        db.roomMessages = db.roomMessages.filter(m => m.id !== tempId);
-        renderRoomChat(roomId);
-        toast("Сообщение не отправлено.");
-        return;
-    }
-    // Swap the temp id for the real one so the later realtime INSERT
-    // echo of this same row (see joinRoomMessagesChannel) is recognized
-    // as a duplicate and skipped, instead of appearing twice.
-    const msg = db.roomMessages.find(m => m.id === tempId);
-    if (msg && data) { msg.id = data.id; msg.createdAt = Date.parse(data.created_at); }
-}
-
-async function toggleRoomMessagePin(messageId) {
-    const m = db.roomMessages.find(x => x.id === messageId);
-    if (!m) return;
-    const wasPinned = m.pinned;
-    m.pinned = !wasPinned;
-    m.pinnedAt = m.pinned ? Date.now() : null;
-    renderRoomChat(m.roomId);
-
-    const { error } = await sb.from("room_messages")
-        .update({ pinned: m.pinned, pinned_at: m.pinned ? new Date().toISOString() : null })
-        .eq("id", messageId);
-
-    if (error) {
-        console.error(error);
-        m.pinned = wasPinned;
-        m.pinnedAt = wasPinned ? m.pinnedAt : null;
-        renderRoomChat(m.roomId);
-        toast("Не удалось закрепить сообщение.");
-    }
-}
-
-// One channel for whichever room is currently open, same "tear down and
-// rebuild on room switch" pattern as joinTypingChannel for DMs.
-function joinRoomMessagesChannel(roomId) {
-    if (roomMessagesChannel) { sb.removeChannel(roomMessagesChannel); roomMessagesChannel = null; }
-    if (!roomId) return;
-    roomMessagesChannel = sb.channel("bubbles-room-" + roomId)
-        .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_messages", filter: `room_id=eq.${roomId}` }, (payload) => {
-            if (db.roomMessages.some(m => m.id === payload.new.id)) return; // our own optimistic echo
-            db.roomMessages.push({
-                id: payload.new.id, roomId: payload.new.room_id, authorId: payload.new.author_id,
-                text: payload.new.text, pinned: !!payload.new.pinned,
-                pinnedAt: payload.new.pinned_at ? Date.parse(payload.new.pinned_at) : null,
-                createdAt: Date.parse(payload.new.created_at)
-            });
-            if (selectedRoomId === roomId) renderRoomChat(roomId);
-        })
-        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "room_messages", filter: `room_id=eq.${roomId}` }, (payload) => {
-            const m = db.roomMessages.find(x => x.id === payload.new.id);
-            if (!m) return;
-            m.pinned = !!payload.new.pinned;
-            m.pinnedAt = payload.new.pinned_at ? Date.parse(payload.new.pinned_at) : null;
-            if (selectedRoomId === roomId) renderRoomChat(roomId);
-        })
-        .on("postgres_changes", { event: "INSERT", schema: "public", table: "room_members", filter: `room_id=eq.${roomId}` }, (payload) => {
-            if (!db.roomMembers.some(m => m.roomId === roomId && m.userId === payload.new.user_id)) {
-                db.roomMembers.push({ id: payload.new.id, roomId, userId: payload.new.user_id, role: payload.new.role || "member", createdAt: Date.now() });
-            }
-            if (selectedRoomId === roomId) renderRoomChatHeader(roomId);
-        })
-        .on("postgres_changes", { event: "DELETE", schema: "public", table: "room_members", filter: `room_id=eq.${roomId}` }, (payload) => {
-            db.roomMembers = db.roomMembers.filter(m => !(m.roomId === roomId && m.userId === payload.old.user_id));
-            if (selectedRoomId === roomId) renderRoomChatHeader(roomId);
-        })
-        .subscribe(logRealtimeStatus("room:" + roomId));
-}
-
 function renderRooms() {
     const page = document.getElementById("page");
     if (!selectedCanvasUserId) selectedCanvasUserId = currentUserId;
@@ -9978,23 +9179,11 @@ function updateNavBadges() {
     // "Профиль" is the only hint an admin gets that reports OR pending
     // Bubbles+ requests are waiting — both queues live on that same page.
     setNavBadge(["pendingReportsBadge","pendingReportsBadgeMobile"], isAdmin() ? pendingReports().length + pendingSubscriptionRequests().length : 0);
-    const petAttn = petNeedsAttention();
-    setNavBadge(["petNeedsAttentionBadge","petNeedsAttentionBadgeMobile"], petAttn ? 1 : 0);
-    // One combined dot on the "Ещё" bottom-nav button — otherwise a
-    // badge tucked inside the overflow sheet is invisible until you
-    // happen to open it.
-    const moreDot = document.getElementById("moreSheetDot");
-    if (moreDot) moreDot.classList.toggle("hidden", !petAttn);
+    // The "⋯" dot is no longer driven by anything (it used to light up
+    // for a hungry pet) — keep it hidden.
+    document.getElementById("moreSheetDot")?.classList.add("hidden");
 }
 
-// True if any fast stat has dropped low enough that a visit is
-// worthwhile — used only for the little sidebar badge, not for any
-// gameplay effect.
-function petNeedsAttention() {
-    if (!db.pet || db.pet.asleep) return false;
-    const p = db.pet;
-    return p.hunger < 25 || p.cleanliness < 25 || p.happiness < 25 || isPetSick(p);
-}
 
 // Kept as an alias since old inline handlers / other files may still call it.
 function updateMessagesBadge() {
@@ -10019,7 +9208,7 @@ async function loadDB() {
     try {
         const { data: { user } } = await sb.auth.getUser();
         currentUserId = user?.id || null;
-        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, rooms, roomMembers, musicLikes, musicPlays, playlists, playlistTracks, reports, subscriptionRequests, blocks, stories, storyViews, storyReactions, petRow] = await Promise.all([
+        const [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, musicLikes, musicPlays, playlists, playlistTracks, reports, subscriptionRequests, blocks, stories, storyViews, storyReactions] = await Promise.all([
             sb.from("profiles_public").select("id,username,display_name,gender,avatar,cover,bio,visible_last_seen,current_track,current_artist,role,banned,ban_reason,public_key,unlocked_achievements,achievement_level,custom_status_title,custom_status_icon,subscription_tier,subscription_expires_at,subscription_frame,subscription_theme,subscription_cover_effect,created_at,show_online_status,wall_visibility,music_visibility,who_can_message,who_can_friend_request").order("created_at", { ascending: true }),
             sb.from("posts").select("id,author_id,wall_owner_id,text,image,music_id,shared_post_id,likes,pinned,pinned_at,created_at").order("created_at", { ascending: false }).limit(150),
             sb.from("comments").select("id,post_id,author_id,parent_comment_id,text,created_at").order("created_at", { ascending: true }).limit(1000),
@@ -10039,8 +9228,6 @@ async function loadDB() {
             sb.from("poll_options").select("id,poll_id,text,position").order("position", { ascending: true }),
             sb.from("poll_votes").select("poll_id,option_id,user_id").limit(20000),
             sb.from("follows").select("follower_id,followed_id").limit(20000),
-            sb.from("rooms").select("id,name,slug,description,icon,theme,owner_id,is_public,created_at").limit(500),
-            sb.from("room_members").select("id,room_id,user_id,role,created_at").limit(10000),
             sb.from("music_likes").select("music_id,user_id").limit(10000),
             currentUserId ? sb.from("music_plays").select("music_id,played_at").eq("user_id", currentUserId).order("played_at", { ascending: false }).limit(200) : Promise.resolve({ data: [], error: null }),
             sb.from("playlists").select("id,owner_id,name,created_at"),
@@ -10061,13 +9248,9 @@ async function loadDB() {
             currentUserId ? sb.from("story_views").select("*") : Promise.resolve({ data: [], error: null }),
             // Same RLS shape as story_views: your own reactions, plus every
             // reaction on stories you authored.
-            currentUserId ? sb.from("story_reactions").select("*") : Promise.resolve({ data: [], error: null }),
-            // Canvas rooms are NOT loaded here — each one is fetched on
-            // demand (see openCanvasRoom) only when someone actually opens
-            // it, same reasoning as room_messages used to be.
-            currentUserId ? sb.from("pets").select("*").eq("owner_id", currentUserId).maybeSingle() : Promise.resolve({ data: null, error: null })
+            currentUserId ? sb.from("story_reactions").select("*") : Promise.resolve({ data: [], error: null })
         ]);
-        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, rooms, roomMembers, musicLikes, musicPlays, playlists, playlistTracks, reports, subscriptionRequests, blocks, stories, storyViews, storyReactions, petRow];
+        const result = [users, posts, comments, postLikes, commentLikes, friends, friendRequests, notifications, messages, messageReactions, music, musicSaves, postSaves, polls, pollOptions, pollVotes, follows, musicLikes, musicPlays, playlists, playlistTracks, reports, subscriptionRequests, blocks, stories, storyViews, storyReactions];
         const bad = result.find(x => x?.error);
         if (bad?.error)
             throw bad.error;
@@ -10089,25 +9272,9 @@ async function loadDB() {
             polls: (polls.data || []).map(row => ({ id: row.id, postId: row.post_id, createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
             pollOptions: (pollOptions.data || []).map(row => ({ id: row.id, pollId: row.poll_id, text: row.text, position: row.position || 0, votes: [] })),
             follows: (follows.data || []).map(row => ({ followerId: row.follower_id, followedId: row.followed_id })),
-            rooms: (rooms.data || []).map(row => ({
-                id: row.id, name: row.name, slug: row.slug, description: row.description || "",
-                icon: row.icon || "🫧", theme: row.theme || "aqua", ownerId: row.owner_id,
-                isPublic: !!row.is_public, createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
-            })),
-            roomMembers: (roomMembers.data || []).map(row => ({
-                id: row.id, roomId: row.room_id, userId: row.user_id, role: row.role || "member",
-                createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
-            })),
-            // Chat history for whichever room is currently open — loaded
-            // on demand by openRoom(), not eagerly here, same reasoning
-            // as canvasItems below: no point pulling every room's whole
-            // history into memory for a list screen that only needs
-            // member counts.
-            roomMessages: [],
             playlists: (playlists.data || []).map(row => ({ id: row.id, ownerId: row.owner_id, name: row.name, createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
             playlistTracks: (playlistTracks.data || []).map(row => ({ id: row.id, playlistId: row.playlist_id, musicId: row.music_id, position: row.position || 0, addedAt: row.added_at ? Date.parse(row.added_at) : Date.now() })),
-            canvasItems: [],
-            pet: petRow.data ? rowToPet(petRow.data) : null
+            canvasItems: []
         };
         // Attach each track's likes from music_likes, same two-step
         // attach as post/comment/poll-option likes above.
@@ -10135,11 +9302,6 @@ async function loadDB() {
             votesByOption.get(row.option_id).push(row.user_id);
         });
         db.pollOptions.forEach(option => { option.votes = votesByOption.get(option.id) || []; });
-        // Catches the pet up on however long the app was closed for
-        // (see tickPet's comment for why this — not the 30s heartbeat —
-        // is what applies the slower "away" decay rate), then starts
-        // the heartbeat that ticks it at the normal rate while open.
-        if (db.pet) await tickPet({ persist: true, awayCatchUp: true });
         // Ключ переписки (см. js/crypto.js) подтягивается лениво в
         // rowToMessage/sendMessage — тут больше не нужно ничего готовить
         // заранее и не нужно ничего спрашивать у человека.
@@ -10530,7 +9692,6 @@ function teardownRealtime() {
     removeChannelQuietly(friendRequestsChannel, "friend-requests");
     removeChannelQuietly(notificationsChannel, "notifications");
     removeChannelQuietly(socialChannel, "social");
-    removeChannelQuietly(roomMessagesChannel, "room");
     if (typingChannel) sb.removeChannel(typingChannel);
     messagesChannel = null;
     friendRequestsChannel = null;
@@ -10538,7 +9699,6 @@ function teardownRealtime() {
     typingChannel = null;
     typingChannelPartnerId = null;
     socialChannel = null;
-    roomMessagesChannel = null;
     selectedCanvasUserId = null;
     stopWatchingChatPartnerPresence();
 }
@@ -10647,37 +9807,6 @@ function logRealtimeStatus(label) {
     };
 }
 
-// Same reasoning as catchUpMessages above, for whichever room chat is
-// currently open — its realtime channel is only (re)subscribed when
-// reconnectRealtime() below decides to, same gap DMs had before
-// catchUpMessages existed.
-async function catchUpRoomMessages(roomId) {
-    if (!roomId) return;
-    const roomMsgs = db.roomMessages.filter(m => m.roomId === roomId);
-    const newestKnown = roomMsgs.reduce((max, m) => Math.max(max, m.createdAt || 0), 0);
-    try {
-        const { data, error } = await sb.from("room_messages")
-            .select("id,room_id,author_id,text,pinned,pinned_at,created_at")
-            .eq("room_id", roomId)
-            .gt("created_at", new Date(newestKnown || 0).toISOString())
-            .order("created_at", { ascending: true });
-        if (error || !data || !data.length) return;
-        let added = false;
-        for (const row of data) {
-            if (db.roomMessages.some(m => m.id === row.id)) continue;
-            db.roomMessages.push({
-                id: row.id, roomId: row.room_id, authorId: row.author_id, text: row.text,
-                pinned: !!row.pinned, pinnedAt: row.pinned_at ? Date.parse(row.pinned_at) : null,
-                createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
-            });
-            added = true;
-        }
-        if (added && selectedRoomId === roomId) renderRoomChat(roomId);
-    } catch (e) {
-        console.error("catchUpRoomMessages failed:", e);
-    }
-}
-
 function reconnectRealtime({ force = false } = {}) {
     if (!currentUserId || !sb?.realtime) return;
 
@@ -10705,11 +9834,6 @@ function reconnectRealtime({ force = false } = {}) {
         typingChannel = null; // force joinTypingChannel to actually rebuild it
         typingChannelPartnerId = null;
         joinTypingChannel(partnerId);
-    }
-    // Same idea for an open room chat's own channel + backlog.
-    if (selectedRoomId && currentPage === "roomChat") {
-        joinRoomMessagesChannel(selectedRoomId);
-        catchUpRoomMessages(selectedRoomId);
     }
 }
 
@@ -10943,14 +10067,12 @@ Object.assign(window,{
     toggleProfileMusicExpanded,toggleProfileFriendsExpanded,toggleProfileAchievementsExpanded,
     setProfileTab,goToProfileMedia,shareProfile,
     toggleSavePost,renderSaved,
-    openCreateRoomModal,submitCreateRoom,joinRoom,leaveRoom,deleteRoom,toggleRoomMessagePin,sendRoomMessage,
     setUserRole,setUserBanned,setCustomStatus,clearCustomStatus,backfillAchievementsForAllUsers,togglePinPost,
     toggleMoreSheet,openMoreSheet,closeMoreSheet,
     toggleSidebarMore,
     loadMoreFeedPosts,
     loadEarlierMessages,
     openCanvasRoom,setCanvasBackground,addCanvasText,addCanvasImage,openCanvasMusicPicker,toggleCanvasItemMusic,
-    visitFriendsPet,feedFriendsPetAction,
     openGraffitiTool,clearGraffitiCanvas,saveGraffiti,
     startCanvasItemDrag,selectCanvasItem,bringCanvasItemToFront,rotateCanvasItem,deleteCanvasItem,
     reportPost,reportComment,reportProfile,dismissReport,moderateDeleteReportedContent,
@@ -10962,6 +10084,5 @@ Object.assign(window,{
     openSharePicker,openShareToProfile,shareToProfile,openShareToChat,shareToChat,focusSharedPost,
     openMusicPicker,selectComposerMusic,removeComposerMusic,
     togglePollComposer,addPollOptionInput,voteInPoll,
-    openEditPost,renderEditPostModal,handleEditPostImageSelect,removeEditPostImage,removeEditPostMusic,saveEditPost,syncEditPostTextFromDom,
-    submitCreatePet,feedPet,playPet,cleanPet,toggleSleepPet
+    openEditPost,renderEditPostModal,handleEditPostImageSelect,removeEditPostImage,removeEditPostMusic,saveEditPost,syncEditPostTextFromDom
 });
