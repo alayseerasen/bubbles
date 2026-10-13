@@ -299,7 +299,7 @@ create table if not exists public.bubbles_notifications (
     id text primary key,
     user_id uuid not null references public.profiles(id) on delete cascade,
     actor_id uuid not null references public.profiles(id) on delete cascade,
-    type text not null check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed','new_follower','story_reaction')),
+    type text not null check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed','new_follower','story_reaction','mention')),
     post_id text references public.posts(id) on delete cascade,
     comment_id text references public.comments(id) on delete cascade,
     created_at timestamptz not null default now(),
@@ -319,7 +319,7 @@ create index if not exists bubbles_notifications_user_id_idx on public.bubbles_n
 -- fine to keep, there's no shape mismatch to fix here.
 alter table public.bubbles_notifications drop constraint if exists bubbles_notifications_type_check;
 alter table public.bubbles_notifications add constraint bubbles_notifications_type_check
-    check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed','new_follower','story_reaction'));
+    check (type in ('friend_request','friend_accept','post_like','post_comment','comment_reply','comment_like','wall_post','pet_fed','new_follower','story_reaction','mention'));
 
 -- ------------------------------------------------------------
 -- FRIEND REQUESTS (new — pending/accepted/declined handshake)
@@ -429,10 +429,22 @@ drop policy if exists rooms_select_public on public.rooms;
 -- PRIVATE room couldn't see the room's own name/description/icon row
 -- before this (only their own room_members row, via the policy below) —
 -- genuinely couldn't render anything for a private room they'd joined.
+-- security definer, чтобы проверка членства не шла через RLS room_members
+-- (иначе rooms -> room_members -> rooms = infinite recursion).
+create or replace function public.is_room_member(rid uuid)
+returns boolean
+language sql security definer set search_path = public stable as $$
+    select exists (
+        select 1 from public.room_members
+        where room_id = rid and user_id = auth.uid()
+    );
+$$;
+grant execute on function public.is_room_member(uuid) to authenticated, anon;
+
 create policy rooms_select_public on public.rooms for select using (
     is_public = true
     or auth.uid() = owner_id
-    or exists (select 1 from public.room_members m where m.room_id = rooms.id and m.user_id = auth.uid())
+    or public.is_room_member(id)
 );
 drop policy if exists rooms_insert_owner on public.rooms;
 create policy rooms_insert_owner on public.rooms for insert with check (auth.uid() = owner_id);
@@ -889,7 +901,9 @@ grant execute on function public.get_visible_ban_reason(uuid) to authenticated, 
 -- the masking purely cosmetic. Listing columns explicitly (and routing
 -- last_seen/ban_reason through the two functions above instead of a
 -- bare column reference) is what actually closes that.
-create or replace view public.profiles_public
+-- drop + create: порядок колонок изменился, create or replace падает с 42P16
+drop view if exists public.profiles_public;
+create view public.profiles_public
 with (security_invoker = true)
 as
 select

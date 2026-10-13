@@ -37,11 +37,28 @@
     }catch(e){}
 })();
 </script>
-<link rel="stylesheet" href="css/style.css?v=13">
+<link rel="stylesheet" href="css/style.css?v=16">
 </head>
 <body>
 
-<div id="app"></div>
+<!--
+    Static skeleton — shown the instant the HTML parses, before app.js
+    has even finished downloading, let alone run startApp()/loadDB().
+    renderApp() (or the auth screen) overwrites #app's innerHTML the
+    moment either one is ready, so this never lingers once there's
+    real content to show — but until then, #app was simply EMPTY,
+    meaning every single visit opened to a blank page for however long
+    auth + the initial data fetch took.
+-->
+<div id="app">
+    <div class="initial-skeleton">
+        <div class="initial-skeleton-logo">🫧 bubbles</div>
+        <div class="skeleton" style="width:100%;height:120px;border-radius:22px;margin-bottom:14px;"></div>
+        <div class="skeleton" style="width:60%;height:18px;border-radius:9px;margin-bottom:22px;"></div>
+        <div class="skeleton" style="width:100%;height:90px;border-radius:22px;margin-bottom:12px;"></div>
+        <div class="skeleton" style="width:100%;height:90px;border-radius:22px;"></div>
+    </div>
+</div>
 
 <!-- GLOBAL AUDIO PLAYER -->
 <div id="globalPlayer" class="global-player hidden">
@@ -112,7 +129,7 @@
 <script src="js/crypto.js?v=2"></script>
 <script src="js/sounds.js?v=1"></script>
 <script src="js/image-cropper.js?v=1"></script>
-<script src="js/app.js?v=19"></script>
+<script src="js/app.js?v=22"></script>
 <script src="js/calls.js?v=3"></script>
 <script src="js/telegram.js?v=1"></script>
 </body>
