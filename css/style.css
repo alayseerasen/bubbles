@@ -3636,6 +3636,9 @@ html::after{
 }
 
 
+/* ============================================================
+   DARK THEME
+   Overrides the colour variables from :root above.
    Toggle by setting data-theme="dark" on <html> (see js/theme.js).
    ============================================================ */
 
@@ -5214,6 +5217,173 @@ html::after{
     color:#3a2400;
 }
 
+/* ============================================================
+   SEASONAL EVENTS (js/events.js)
+   ------------------------------------------------------------
+   Each event gets one block like the halloween one below, keyed by
+   its id via the data-event attribute that events.js puts on <html>.
+   Kept ABOVE the Bubbles+ accent themes on purpose: a subscriber's
+   own chosen theme still wins over the event colours. --text and
+   --muted are deliberately NOT touched, so dark mode stays readable.
+   ============================================================ */
+:root[data-event="halloween"]{
+    --blue:#ff9a3d;
+    --blue2:#d9541a;
+    --cyan:#ffe3c2;
+    --green:#a77bff;
+    --green2:#6b3fc7;
+    /* html has its own background that shows through wherever body doesn't reach */
+    background:#ffb36b;
+}
+
+:root[data-event="halloween"] body{
+    background:
+        radial-gradient(circle at 15% 15%,rgba(255,255,255,.7) 0 5%,transparent 18%),
+        radial-gradient(circle at 85% 20%,rgba(255,215,170,.7) 0 4%,transparent 16%),
+        linear-gradient(180deg,#ffb36b 0%,#ffd9a8 42%,#fff1e0 100%);
+    background-attachment:fixed;
+}
+
+:root[data-event="halloween"] body:before,
+:root[data-event="halloween"] body:after{
+    background:rgba(255,200,140,.4);
+}
+
+/* The round topbar buttons use a hard-coded blue tint that turns muddy grey-green on orange. */
+:root[data-event="halloween"]:not([data-theme="dark"]) .notif-bell-btn,
+:root[data-event="halloween"]:not([data-theme="dark"]) .theme-toggle-btn,
+:root[data-event="halloween"]:not([data-theme="dark"]) .mobile-more-btn{
+    background:rgba(255,154,61,.2);
+}
+
+:root[data-theme="dark"][data-event="halloween"]{
+    background:#140a1f;
+}
+
+:root[data-theme="dark"][data-event="halloween"] body{
+    background:
+        radial-gradient(circle at 15% 15%,rgba(255,138,40,.12) 0 5%,transparent 18%),
+        radial-gradient(circle at 85% 20%,rgba(167,123,255,.12) 0 4%,transparent 16%),
+        linear-gradient(180deg,#140a1f 0%,#1f0f2e 42%,#1d0d06 100%);
+    background-attachment:fixed;
+}
+
+:root[data-theme="dark"][data-event="halloween"] body:before,
+:root[data-theme="dark"][data-event="halloween"] body:after{
+    background:rgba(255,138,40,.07);
+}
+
+/* Banner at the top of the feed. Colours come from the CSS variables, so
+   it automatically matches whichever event (or the plain theme) is on. */
+.event-banner{
+    display:flex;
+    gap:12px;
+    align-items:flex-start;
+    padding:14px 16px;
+    margin-bottom:16px;
+    border-radius:20px;
+    background:var(--white);
+    border:2px solid var(--blue);
+    box-shadow:var(--shadow);
+}
+
+.event-banner-teaser{ border-style:dashed; }
+
+.event-banner-emoji{
+    font-size:34px;
+    line-height:1;
+}
+
+.event-banner-body{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    min-width:0;
+}
+
+.event-banner-body strong{
+    font-size:1.05rem;
+    color:var(--text);
+}
+
+.event-banner-body span{
+    font-size:.9rem;
+    color:var(--muted);
+}
+
+.event-banner-btn{
+    align-self:flex-start;
+    border:0;
+    border-radius:999px;
+    padding:9px 16px;
+    font-weight:800;
+    color:#fff;
+    background:linear-gradient(135deg,var(--blue),var(--blue2));
+}
+
+.event-banner-done{
+    font-style:normal;
+    font-weight:700;
+    font-size:.88rem;
+    color:var(--blue2);
+}
+
+.event-banner-link{
+    align-self:flex-start;
+    background:none;
+    border:0;
+    padding:2px 0;
+    font-size:.8rem;
+    color:var(--muted);
+    text-decoration:underline;
+    box-shadow:none;
+}
+
+/* Dark mode, spelled out explicitly (same approach as the post/comment text
+   rules elsewhere in this file) instead of leaning on var(--text)/var(--white). */
+[data-theme="dark"] .event-banner{
+    background:rgba(34,46,58,.85);
+}
+
+[data-theme="dark"] .event-banner-body strong{
+    color:#fff;
+}
+
+[data-theme="dark"] .event-banner-body span,
+[data-theme="dark"] .event-banner-link{
+    color:#aebfc9;
+}
+
+/* Slowly drifting emoji over the whole screen. Taps go straight through
+   (pointer-events:none), and people who asked their phone for reduced
+   motion don't get it at all. */
+#eventFloaters{
+    position:fixed;
+    inset:0;
+    overflow:hidden;
+    pointer-events:none;
+    z-index:1;
+}
+
+.event-floater{
+    position:absolute;
+    top:-40px;
+    font-size:20px;
+    opacity:.4;
+    will-change:transform;
+    animation:event-float linear infinite;
+}
+
+@keyframes event-float{
+    0%{ transform:translate3d(0,-10vh,0) rotate(0deg); }
+    50%{ transform:translate3d(18px,55vh,0) rotate(15deg); }
+    100%{ transform:translate3d(-12px,110vh,0) rotate(-10deg); }
+}
+
+@media(prefers-reduced-motion: reduce){
+    #eventFloaters{ display:none; }
+}
+
 /* ------------------------------------------------------------
    Exclusive accent themes — layered on top of light/dark mode via a
    second attribute (data-sub-theme) so a subscriber can combine either
@@ -5640,7 +5810,17 @@ html::after{
     border:2px solid rgba(255,255,255,.8);
     box-shadow:0 12px 30px rgba(20,90,130,.18), inset 0 0 40px rgba(255,255,255,.25);
     overflow:hidden;
-    touch-action:none;
+    /* Swiping across EMPTY wall scrolls the page again (the wall is most of
+       the screen on a phone, so it used to be a dead zone you couldn't
+       scroll through). Items opt out of this below so they can be dragged. */
+    touch-action:pan-y;
+    /* Keeps item z-indexes (which only ever grow) inside the wall so they
+       can't fight with the nav bar / modals, and makes the wall a size
+       container: item sizes below are in cqw (1% of wall width), so a room
+       looks the same on every screen instead of only on the one it was
+       made on. */
+    isolation:isolate;
+    container-type:inline-size;
 }
 
 .canvas-empty{
@@ -5658,10 +5838,34 @@ html::after{
 
 .canvas-item{
     position:absolute;
+    /* THE fix for items shrinking/squashing as they move right: an
+       absolutely positioned box with width:auto is sized to the space
+       left between its `left` and the wall's right edge — so an item at
+       left:96% got ~4% of the wall to live in (images shrank to a dot,
+       text wrapped one letter per line). max-content ignores that. */
+    width:max-content;
+    max-width:46%;
     touch-action:none;
     user-select:none;
+    -webkit-user-select:none;
+    -webkit-touch-callout:none; /* iOS long-press menu cancels the touch mid-drag */
+    -webkit-tap-highlight-color:transparent;
+    transition:transform .18s ease; /* only the rotate animates — left/top follow the finger instantly */
+}
+
+.canvas-item-own{
     cursor:grab;
-    max-width:46%;
+}
+
+.canvas-item-dragging{
+    cursor:grabbing;
+    filter:drop-shadow(0 14px 18px rgba(20,90,130,.35));
+    transition:none;
+}
+
+.canvas-item img{
+    -webkit-user-drag:none;
+    pointer-events:none; /* the item itself receives the touch, never the <img> (no image preview/save menu) */
 }
 
 .canvas-item-selected{
@@ -5695,13 +5899,14 @@ html::after{
 
 .canvas-item-photo img{
     display:block;
-    width:100%;
-    max-width:140px;
+    width:140px;
+    max-width:100%;
     border-radius:6px;
     object-fit:cover;
 }
 
 .canvas-item-doodle{
+    display:block;
     width:150px;
     max-width:100%;
     filter:drop-shadow(0 6px 10px rgba(20,90,130,.25));
@@ -5720,25 +5925,45 @@ html::after{
     cursor:pointer;
 }
 
+/* Sizes relative to the wall (same numbers as above on a ~360px phone). */
+@supports (width:1cqw){
+    .canvas-item-text{ font-size:5.1cqw; padding:2.2cqw 3.9cqw; border-radius:3.9cqw; }
+    .canvas-item-photo{ padding:1.7cqw; border-radius:2.8cqw; }
+    .canvas-item-photo img{ width:38cqw; border-radius:1.7cqw; }
+    .canvas-item-doodle{ width:41cqw; }
+    .canvas-item-music{ width:15.5cqw; height:15.5cqw; font-size:6.6cqw; }
+}
+
+/* The one toolbar for the selected item — a child of the wall, NOT of the
+   item, so it stays upright and un-scaled no matter how the item is
+   rotated. Placed by positionCanvasToolbar() in app.js. */
 .canvas-item-toolbar{
     position:absolute;
-    bottom:-38px;
-    left:50%;
+    top:0;
+    left:0;
     transform:translateX(-50%);
-    display:flex;
-    gap:4px;
-    background:rgba(20,40,50,.85);
+    display:none;
+    gap:2px;
+    background:rgba(20,40,50,.88);
     border-radius:999px;
-    padding:4px 6px;
+    padding:3px 6px;
     white-space:nowrap;
+    z-index:2147483000;
+    box-shadow:0 6px 16px rgba(0,0,0,.25);
+}
+
+.canvas-item-toolbar.visible{
+    display:flex;
 }
 
 .canvas-item-toolbar button{
     background:none;
     border:none;
     color:#fff;
-    font-size:15px;
-    padding:4px 6px;
+    font-size:17px;
+    min-width:40px;
+    min-height:36px;
+    padding:0 6px;
     cursor:pointer;
 }
 
