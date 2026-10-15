@@ -13,6 +13,11 @@ const QUICK_REACTIONS = ["❤️", "😂", "👍", "😮", "😢"];
 // there's no reason the two surfaces need to share the exact same emoji.
 const POST_REACTIONS = ["❤️", "🫧", "✨", "😂", "😮"];
 const STORY_REACTIONS = ["❤️", "😂", "😮", "🔥", "👏"];
+// During a seasonal event (js/events.js) the story reaction row shows the event's emoji first —
+// see storyReactionChoices(). Falls back to this plain list if events.js didn't load.
+function storyReactionChoices(base) {
+    return typeof window.storyReactionChoicesForEvent === "function" ? window.storyReactionChoicesForEvent(base) : base;
+}
 
 /* ============================================================
    BUBBLES+ — subscription config
@@ -155,6 +160,20 @@ const ACHIEVEMENTS = [
     { id: "aero_visitor", icon: "🌐", title: "Гость Aero World", description: "Зашёл в Aero World под тем же аккаунтом" }, // manual — из aero-account.js
     { id: "aero_konami", icon: "🕹️", title: "Секретный код", description: "Нашёл пасхалку в Aero World" } // manual — из aero-account.js
 ];
+
+// Seasonal-event badges (js/events.js) are manual achievements too —
+// granted by the claim button on the event banner, never re-derived.
+if (typeof eventAchievementList === "function") ACHIEVEMENTS.push(...eventAchievementList());
+
+// Event badges only show up while their event is running, or once somebody
+// actually has one — otherwise everyone would carry a permanently locked
+// 🔒 «Новый год» in July.
+function visibleAchievements(user) {
+    const st = typeof seasonalEventState === "function" ? seasonalEventState() : null;
+    return ACHIEVEMENTS.filter(a => !a.eventId
+        || user.unlockedAchievements.includes(a.id)
+        || (st && st.phase === "active" && st.event.id === a.eventId));
+}
 
 // Ordered low → high; whichever's the LAST one your unlocked count
 // still clears wins. Nothing at 0 on purpose — no badge until you've
@@ -303,9 +322,10 @@ function renderAchievementsGrid(user) {
     // Collapsed view leads with whatever's actually unlocked (more fun to
     // look at + more relevant than just "the first N in config order"),
     // then fills the rest of the preview with locked ones.
-    const ordered = expanded ? ACHIEVEMENTS : [
-        ...ACHIEVEMENTS.filter(a => user.unlockedAchievements.includes(a.id)),
-        ...ACHIEVEMENTS.filter(a => !user.unlockedAchievements.includes(a.id))
+    const visible = visibleAchievements(user);
+    const ordered = expanded ? visible : [
+        ...visible.filter(a => user.unlockedAchievements.includes(a.id)),
+        ...visible.filter(a => !user.unlockedAchievements.includes(a.id))
     ];
     const shown = expanded ? ordered : ordered.slice(0, ACHIEVEMENTS_PREVIEW_COUNT);
     return `
@@ -325,10 +345,10 @@ function renderAchievementsGrid(user) {
             }).join("")}
         </div>
         ${
-            ACHIEVEMENTS.length > ACHIEVEMENTS_PREVIEW_COUNT
+            visible.length > ACHIEVEMENTS_PREVIEW_COUNT
             ? `
                 <button class="secondary full profile-expand-btn" onclick="toggleProfileAchievementsExpanded()">
-                    ${expanded ? "Свернуть ↑" : `Все ${ACHIEVEMENTS.length} →`}
+                    ${expanded ? "Свернуть ↑" : `Все ${visible.length} →`}
                 </button>
             `
             : ""
@@ -860,7 +880,7 @@ function renderStoryReactionBar() {
     const story = stories[storyViewerState.index];
     if (!story) return;
     const mine = db.storyReactions.find(r => r.storyId === story.id && r.userId === currentUserId);
-    el.innerHTML = STORY_REACTIONS.map(emoji => `
+    el.innerHTML = storyReactionChoices(STORY_REACTIONS).map(emoji => `
         <button type="button" class="story-reaction-btn${mine?.emoji === emoji ? " selected" : ""}" onclick="toggleStoryReaction('${story.id}','${emoji}')">${emoji}</button>
     `).join("");
 }
@@ -995,7 +1015,7 @@ function renderStoryViewer() {
                 : `
                     <div class="story-footer">
                         <div id="storyReactionBar" class="story-reaction-bar">
-                            ${STORY_REACTIONS.map(emoji => `
+                            ${storyReactionChoices(STORY_REACTIONS).map(emoji => `
                                 <button type="button" class="story-reaction-btn${myReaction?.emoji === emoji ? " selected" : ""}" onclick="toggleStoryReaction('${story.id}','${emoji}')">${emoji}</button>
                             `).join("")}
                         </div>
@@ -2047,6 +2067,8 @@ function renderFeed(){
         </h1>
 
         ${renderStoryRail()}
+
+        ${typeof eventBannerHtml === "function" ? eventBannerHtml() : ""}
 
         ${bubblesNowWidgetHtml()}
 
@@ -8529,28 +8551,49 @@ function rowToComment(row) {
 }
 
 function rowToCanvasItem(row) {
+    // Values come from the DB, and a room is shown to OTHER people too, so
+    // never trust them to be sane numbers — a NaN/huge value here used to
+    // make an item vanish or cover the whole wall.
+    const num = (v, fallback) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };
     return {
         id: row.id,
         ownerId: row.owner_id,
         type: row.type,
         content: row.content || "",
         color: row.color || "",
-        x: Number(row.x ?? 50),
-        y: Number(row.y ?? 50),
-        rotation: Number(row.rotation ?? 0),
-        scale: Number(row.scale ?? 1),
-        zIndex: row.z_index ?? 0,
+        x: Math.max(0, Math.min(100, num(row.x, 50))),
+        y: Math.max(0, Math.min(100, num(row.y, 50))),
+        rotation: num(row.rotation, 0),
+        scale: Math.max(0.3, Math.min(3, num(row.scale, 1))),
+        zIndex: Math.round(num(row.z_index, 0)),
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
 
-const CANVAS_BACKGROUNDS = {
+const CANVAS_BASE_BACKGROUNDS = {
     sky: "linear-gradient(160deg,#8be9ff,#c9f7ff 55%,#fdfff5)",
     candy: "linear-gradient(160deg,#ffb3e6,#c8b6ff 55%,#fff0fa)",
     sunset: "linear-gradient(160deg,#ffcf8f,#ff9fb0 55%,#fff2e6)",
     mint: "linear-gradient(160deg,#8ff5c9,#a9f0ff 55%,#f2fff9)",
     night: "linear-gradient(160deg,#2a2350,#4a3a7a 55%,#1a1633)"
 };
+
+// Event backgrounds (js/events.js) stay in this lookup forever, so a room
+// that picked one keeps showing it after the event is over.
+const CANVAS_BACKGROUNDS = {
+    ...CANVAS_BASE_BACKGROUNDS,
+    ...(typeof allEventCanvasBackgrounds === "function" ? allEventCanvasBackgrounds() : {})
+};
+
+// What the owner's picker offers: the usual ones, the running event's, and
+// whatever this room already uses (so an expired event background can still be seen/re-picked).
+function canvasBackgroundChoices() {
+    const base = Object.keys(CANVAS_BASE_BACKGROUNDS);
+    const extra = typeof activeEventCanvasBackgroundIds === "function" ? activeEventCanvasBackgroundIds() : [];
+    const keep = (canvasBackground && CANVAS_BACKGROUNDS[canvasBackground] && !base.includes(canvasBackground) && !extra.includes(canvasBackground))
+        ? [canvasBackground] : [];
+    return [...base, ...extra, ...keep];
+}
 
 // Everyone has exactly ONE room — themselves — so "opening a room" just
 // means "load this person's canvas_rooms row + canvas_items". Nothing
@@ -8572,17 +8615,54 @@ function renderCanvasRoomSkeleton() {
     `;
 }
 
+// Every openCanvasRoom() call takes a ticket. If a newer call starts (or the
+// person leaves the room tab) before an older fetch comes back, the old
+// result is thrown away instead of being painted over whatever is on
+// screen now — that used to yank people back into the room by itself.
+let canvasLoadToken = 0;
+
+function renderCanvasRoomError(userId) {
+    const page = document.getElementById("page");
+    if (!page) return;
+    page.innerHTML = `
+        <h1 class="section-title">🎨 Комната</h1>
+        <div class="card" style="text-align:center;">
+            <p>Не удалось загрузить комнату. Проверь интернет и попробуй ещё раз.</p>
+            <button type="button" class="primary" onclick="openCanvasRoom('${escapeHtml(userId)}')">Повторить</button>
+        </div>
+    `;
+}
+
 async function openCanvasRoom(userId) {
+    const token = ++canvasLoadToken;
+    resetCanvasDrag();
     selectedCanvasUserId = userId;
     canvasSelectedItemId = null;
     currentPage = "rooms";
-    const [roomResult, itemsResult] = await Promise.all([
-        sb.from("canvas_rooms").select("user_id,background").eq("user_id", userId).maybeSingle(),
-        sb.from("canvas_items").select("*").eq("owner_id", userId).order("z_index", { ascending: true })
-    ]);
+    renderCanvasRoomSkeleton();
+
+    let roomResult, itemsResult;
+    try {
+        [roomResult, itemsResult] = await Promise.all([
+            sb.from("canvas_rooms").select("user_id,background").eq("user_id", userId).maybeSingle(),
+            sb.from("canvas_items").select("*").eq("owner_id", userId).order("z_index", { ascending: true })
+        ]);
+    } catch (e) {
+        console.error(e);
+        if (token === canvasLoadToken && currentPage === "rooms") renderCanvasRoomError(userId);
+        return;
+    }
+
+    if (token !== canvasLoadToken || currentPage !== "rooms") return;
+
     if (roomResult.error) console.error(roomResult.error);
-    if (itemsResult.error) { console.error(itemsResult.error); toast("Не удалось загрузить комнату."); }
-    canvasBackground = roomResult.data?.background || "sky";
+    if (itemsResult.error) {
+        console.error(itemsResult.error);
+        renderCanvasRoomError(userId);
+        return;
+    }
+    const bg = roomResult.data?.background;
+    canvasBackground = Object.prototype.hasOwnProperty.call(CANVAS_BACKGROUNDS, bg) ? bg : "sky";
     db.canvasItems = (itemsResult.data || []).map(rowToCanvasItem);
     renderRooms();
     playRoomTheme();
@@ -8633,7 +8713,7 @@ async function addCanvasItem({ type, content, color = "" }) {
         createdAt: Date.now()
     };
     db.canvasItems.push(item);
-    renderRooms();
+    appendCanvasItemEl(item); // only touches the wall if it's actually on screen — no full re-render, no hijacking whatever page you're on
     const { error } = await sb.from("canvas_items").insert({
         id: item.id, owner_id: item.ownerId, type: item.type, content: item.content, color: item.color,
         x: item.x, y: item.y, rotation: item.rotation, scale: item.scale, z_index: item.zIndex
@@ -8641,8 +8721,8 @@ async function addCanvasItem({ type, content, color = "" }) {
     if (error) {
         console.error(error);
         db.canvasItems = db.canvasItems.filter(it => it.id !== item.id);
+        removeCanvasItemEl(item.id);
         toast("Не удалось добавить элемент.");
-        renderRooms();
     }
 }
 
@@ -8778,146 +8858,347 @@ async function saveGraffiti() {
 
 // ------------------------------------------------------------
 // DRAG TO REPOSITION (owner only) — pointer-based so it works the same
-// with touch and mouse. Position updates live while dragging for
-// instant feedback; the DB write only happens once, on release.
+// with touch and mouse. Position updates live while dragging; the DB
+// write happens once, on release.
+//
+// Rules this code keeps (each one fixes a "room does what it wants" bug):
+//  • the item keeps the spot you grabbed it by — it no longer jumps its
+//    centre under your finger
+//  • the WHOLE item (not just its centre) stays inside the wall, so
+//    nothing can end up half-cut-off or lost behind the edge
+//  • a tap (finger moved < 6px) selects, a drag drags — never both
+//  • a cancelled gesture (iOS system swipe, notification banner, call…)
+//    finishes the same way a normal release does, instead of leaving a
+//    half-dead drag behind
+//  • selecting / rotating / raising / deleting never rebuilds the whole
+//    wall — only the one element changes, so nothing flickers or reloads
+//  • a failed save puts the item back where the DB says it is
 // ------------------------------------------------------------
 let canvasDragState = null;
 let canvasSelectedItemId = null;
+let canvasLastDragEndAt = 0;
+const CANVAS_TAP_SLOP_PX = 6;
+const canvasSaveChains = new Map();
+
+// Saves for the same item run strictly one after another, so two quick
+// edits (drag, then rotate) can't land in the DB out of order.
+function saveCanvasItemFields(itemId, fields, onFail) {
+    const prev = canvasSaveChains.get(itemId) || Promise.resolve();
+    const next = prev.then(async () => {
+        const { error } = await sb.from("canvas_items").update(fields).eq("id", itemId);
+        if (error) {
+            console.error(error);
+            toast("Не удалось сохранить изменения.");
+            if (onFail) onFail();
+        }
+    }).catch(e => console.error(e));
+    canvasSaveChains.set(itemId, next);
+    next.then(() => { if (canvasSaveChains.get(itemId) === next) canvasSaveChains.delete(itemId); });
+    return next;
+}
+
+function getCanvasItemEl(itemId) {
+    const stage = document.getElementById("canvasStage");
+    if (!stage) return null;
+    for (const el of stage.querySelectorAll(".canvas-item")) {
+        if (el.dataset.canvasItemId === itemId) return el;
+    }
+    return null;
+}
+
+// The area item percentages are measured against: the wall's padding box
+// (inside its 2px border), re-measured whenever it's needed because the
+// page can scroll or resize at any moment.
+function getCanvasStageBox(stage) {
+    const r = stage.getBoundingClientRect();
+    return {
+        left: r.left + stage.clientLeft,
+        top: r.top + stage.clientTop,
+        width: stage.clientWidth,
+        height: stage.clientHeight
+    };
+}
+
+function canvasItemStyle(item) {
+    return `left:${item.x}%;top:${item.y}%;transform:translate(-50%,-50%) rotate(${item.rotation}deg) scale(${item.scale});z-index:${item.zIndex};`;
+}
+
+function applyCanvasItemStyle(item) {
+    const el = getCanvasItemEl(item.id);
+    if (el) el.style.cssText = canvasItemStyle(item);
+}
+
+// Drops any drag in progress WITHOUT saving anything — used when the wall
+// is about to be rebuilt or replaced.
+function resetCanvasDrag() {
+    const s = canvasDragState;
+    canvasDragState = null;
+    if (!s) return;
+    s.el.removeEventListener("pointermove", onCanvasItemDragMove);
+    s.el.removeEventListener("pointerup", onCanvasItemDragEnd);
+    s.el.removeEventListener("pointercancel", onCanvasItemDragEnd);
+    s.el.removeEventListener("lostpointercapture", onCanvasItemDragEnd);
+    s.el.classList.remove("canvas-item-dragging");
+    try { s.el.releasePointerCapture?.(s.pointerId); } catch (_) { /* already released */ }
+}
 
 function startCanvasItemDrag(event, itemId) {
     if (!isOwnCanvas()) return;
-    event.preventDefault();
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    const el = event.currentTarget;
     const stage = document.getElementById("canvasStage");
-    const el = document.querySelector(`[data-canvas-item-id="${itemId}"]`);
-    if (!stage || !el) return;
-    // Deliberately NOT calling selectCanvasItem() here — it triggers a
-    // full renderRooms() (rebuilds the whole canvas DOM), which would
-    // instantly detach the very `stage`/`el` nodes just captured above,
-    // before a single pointermove could ever reach them. That was the
-    // actual bug: dragging silently did nothing because the listeners
-    // below were being attached to elements already ripped out of the
-    // document. Selection (if this turns out to be a tap, not a drag)
-    // is handled once in onCanvasItemDragEnd instead, after we're done
-    // touching the DOM ourselves.
-    const stageRect = stage.getBoundingClientRect();
-    canvasDragState = { itemId, el, stageRect, startX: event.clientX, startY: event.clientY, moved: false };
-    el.setPointerCapture?.(event.pointerId);
+    itemId = itemId || el?.dataset?.canvasItemId;
+    const item = db.canvasItems.find(it => it.id === itemId);
+    if (!el || !stage || !item) return;
+
+    if (canvasDragState) {
+        // A second finger landing while one is already dragging: ignore it
+        // instead of juggling two drags. Anything else is a leftover from
+        // an interrupted gesture — clear it and carry on.
+        if (canvasDragState.el.isConnected && canvasDragState.pointerId !== event.pointerId) return;
+        resetCanvasDrag();
+    }
+
+    event.preventDefault();
+    const itemRect = el.getBoundingClientRect(); // axis-aligned box, so rotation is already accounted for
+    canvasDragState = {
+        itemId, el, stage,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        // where the item's centre sits relative to the finger — keeps the grab point under the finger
+        offX: itemRect.left + itemRect.width / 2 - event.clientX,
+        offY: itemRect.top + itemRect.height / 2 - event.clientY,
+        halfW: itemRect.width / 2,
+        halfH: itemRect.height / 2,
+        origX: item.x,
+        origY: item.y,
+        moved: false
+    };
+    try { el.setPointerCapture(event.pointerId); } catch (_) { /* not fatal: events still reach el while the finger is over it */ }
     el.addEventListener("pointermove", onCanvasItemDragMove);
-    el.addEventListener("pointerup", onCanvasItemDragEnd, { once: true });
+    el.addEventListener("pointerup", onCanvasItemDragEnd);
+    el.addEventListener("pointercancel", onCanvasItemDragEnd);
+    el.addEventListener("lostpointercapture", onCanvasItemDragEnd);
 }
 
 function onCanvasItemDragMove(event) {
-    if (!canvasDragState) return;
-    const { stageRect, el, itemId, startX, startY } = canvasDragState;
-    if (Math.abs(event.clientX - startX) > 3 || Math.abs(event.clientY - startY) > 3) canvasDragState.moved = true;
-    const item = db.canvasItems.find(it => it.id === itemId);
+    const s = canvasDragState;
+    if (!s || event.pointerId !== s.pointerId) return;
+
+    if (!s.moved) {
+        // Finger jitter during a tap shouldn't nudge the item.
+        if (Math.hypot(event.clientX - s.startX, event.clientY - s.startY) < CANVAS_TAP_SLOP_PX) return;
+        s.moved = true;
+        s.el.classList.add("canvas-item-dragging");
+        positionCanvasToolbar(); // hides the toolbar while the item is moving
+    }
+
+    const item = db.canvasItems.find(it => it.id === s.itemId);
     if (!item) return;
-    let x = ((event.clientX - stageRect.left) / stageRect.width) * 100;
-    let y = ((event.clientY - stageRect.top) / stageRect.height) * 100;
-    x = Math.max(4, Math.min(96, x));
-    y = Math.max(4, Math.min(96, y));
-    item.x = x;
-    item.y = y;
-    el.style.left = x + "%";
-    el.style.top = y + "%";
+
+    const box = getCanvasStageBox(s.stage); // measured on every move: the page may have scrolled since the drag began
+    if (!box.width || !box.height) return;
+    const clampAxis = (center, half, lo, hi) => {
+        const min = lo + half, max = hi - half;
+        return min > max ? (lo + hi) / 2 : Math.max(min, Math.min(max, center));
+    };
+    const cx = clampAxis(event.clientX + s.offX, s.halfW, box.left, box.left + box.width);
+    const cy = clampAxis(event.clientY + s.offY, s.halfH, box.top, box.top + box.height);
+    item.x = Math.round(((cx - box.left) / box.width) * 10000) / 100;
+    item.y = Math.round(((cy - box.top) / box.height) * 10000) / 100;
+    s.el.style.left = item.x + "%";
+    s.el.style.top = item.y + "%";
 }
 
-async function onCanvasItemDragEnd(event) {
-    if (!canvasDragState) return;
-    const { el, itemId, moved } = canvasDragState;
-    el.removeEventListener("pointermove", onCanvasItemDragMove);
-    canvasDragState = null;
+// Handles pointerup, pointercancel AND lostpointercapture the same way —
+// so there is exactly one way a drag can finish, and it's idempotent.
+function onCanvasItemDragEnd(event) {
+    const s = canvasDragState;
+    if (!s) return;
+    if (event && event.pointerId !== undefined && event.pointerId !== s.pointerId) return;
+    const isRealRelease = event?.type === "pointerup";
+    resetCanvasDrag();
 
-    // No real movement — treat it as a plain tap: select the item to
-    // show its little toolbar, same as before, just now the ONLY place
-    // that happens (there used to also be a separate onclick on the
-    // element itself, which combined with this could select-then-
-    // immediately-deselect on every drag release).
-    if (!moved) { selectCanvasItem(itemId); return; }
+    if (!s.moved) {
+        if (isRealRelease) selectCanvasItem(s.itemId); // a plain tap
+        return;
+    }
 
-    const item = db.canvasItems.find(it => it.id === itemId);
+    canvasLastDragEndAt = Date.now(); // lets a music disc ignore the click that follows a drag
+    positionCanvasToolbar();
+    const item = db.canvasItems.find(it => it.id === s.itemId);
     if (!item) return;
-    const { error } = await sb.from("canvas_items").update({ x: item.x, y: item.y }).eq("id", itemId);
-    if (error) console.error(error);
+    saveCanvasItemFields(s.itemId, { x: item.x, y: item.y }, () => {
+        item.x = s.origX;
+        item.y = s.origY;
+        applyCanvasItemStyle(item);
+        positionCanvasToolbar();
+    });
 }
 
 function selectCanvasItem(itemId) {
     canvasSelectedItemId = canvasSelectedItemId === itemId ? null : itemId;
-    renderRooms();
+    syncCanvasSelection();
 }
 
-async function bringCanvasItemToFront(itemId) {
-    const item = db.canvasItems.find(it => it.id === itemId);
-    if (!item || !isOwnCanvas()) return;
-    item.zIndex = nextCanvasZIndex();
-    renderRooms();
-    const { error } = await sb.from("canvas_items").update({ z_index: item.zIndex }).eq("id", itemId);
-    if (error) console.error(error);
+function deselectCanvasItem() {
+    if (!canvasSelectedItemId) return;
+    canvasSelectedItemId = null;
+    syncCanvasSelection();
 }
 
-async function rotateCanvasItem(itemId) {
+function syncCanvasSelection() {
+    const stage = document.getElementById("canvasStage");
+    if (stage) {
+        stage.querySelectorAll(".canvas-item").forEach(el => {
+            el.classList.toggle("canvas-item-selected", el.dataset.canvasItemId === canvasSelectedItemId);
+        });
+    }
+    positionCanvasToolbar();
+}
+
+// ONE toolbar for the whole wall, sitting beside the stage's items rather
+// than inside the selected item. Inside the item it used to rotate and
+// scale WITH it — after a few taps on ↻ the buttons were sideways or
+// upside down — and it was clipped off the wall for items near the bottom.
+// Now it's always upright, and flips above the item when there's no room below.
+function positionCanvasToolbar() {
+    const bar = document.getElementById("canvasToolbar");
+    if (!bar) return;
+    const stage = document.getElementById("canvasStage");
+    const el = canvasSelectedItemId && stage ? getCanvasItemEl(canvasSelectedItemId) : null;
+    if (!el || (canvasDragState && canvasDragState.moved)) {
+        bar.classList.remove("visible");
+        return;
+    }
+    bar.classList.add("visible"); // must be displayed before it can be measured
+    const box = getCanvasStageBox(stage);
+    const r = el.getBoundingClientRect();
+    const bw = bar.offsetWidth, bh = bar.offsetHeight, gap = 8, edge = 4;
+
+    let top = r.bottom - box.top + gap;
+    if (top + bh > box.height - edge) top = r.top - box.top - gap - bh; // no room below → go above
+    top = Math.max(edge, Math.min(top, box.height - bh - edge));
+    let left = r.left - box.left + r.width / 2;
+    left = Math.max(bw / 2 + edge, Math.min(left, box.width - bw / 2 - edge));
+
+    bar.style.top = top + "px";
+    bar.style.left = left + "px";
+}
+
+window.addEventListener("resize", () => {
+    if (currentPage === "rooms") positionCanvasToolbar();
+});
+
+function rotateCanvasItem(itemId) {
     const item = db.canvasItems.find(it => it.id === itemId);
     if (!item || !isOwnCanvas()) return;
+    const before = item.rotation;
     item.rotation = (item.rotation + 15) % 360;
-    renderRooms();
-    const { error } = await sb.from("canvas_items").update({ rotation: item.rotation }).eq("id", itemId);
-    if (error) console.error(error);
+    applyCanvasItemStyle(item);
+    positionCanvasToolbar();
+    setTimeout(positionCanvasToolbar, 220); // once the rotate animation has settled
+    saveCanvasItemFields(itemId, { rotation: item.rotation }, () => {
+        item.rotation = before;
+        applyCanvasItemStyle(item);
+        positionCanvasToolbar();
+    });
+}
+
+function bringCanvasItemToFront(itemId) {
+    const item = db.canvasItems.find(it => it.id === itemId);
+    if (!item || !isOwnCanvas()) return;
+    if (db.canvasItems.every(it => it === item || it.zIndex < item.zIndex)) return; // already on top
+    const before = item.zIndex;
+    item.zIndex = nextCanvasZIndex();
+    applyCanvasItemStyle(item);
+    saveCanvasItemFields(itemId, { z_index: item.zIndex }, () => {
+        item.zIndex = before;
+        applyCanvasItemStyle(item);
+    });
 }
 
 async function deleteCanvasItem(itemId) {
     if (!isOwnCanvas()) return;
+    const item = db.canvasItems.find(it => it.id === itemId);
+    if (!item) return;
     if (!confirm("Убрать этот элемент со стены?")) return;
     db.canvasItems = db.canvasItems.filter(it => it.id !== itemId);
-    canvasSelectedItemId = null;
-    renderRooms();
+    removeCanvasItemEl(itemId);
     const { error } = await sb.from("canvas_items").delete().eq("id", itemId);
-    if (error) console.error(error);
+    if (error) {
+        // The DB still has it — put it back so the wall never shows something different from what's saved.
+        console.error(error);
+        db.canvasItems.push(item);
+        appendCanvasItemEl(item);
+        toast("Не удалось удалить элемент.");
+    }
 }
 
+// Adds/removes ONE element on the wall without touching the others — and
+// only if the wall is actually on screen, so a slow upload finishing after
+// you've moved on can no longer drag you back to the room.
+function appendCanvasItemEl(item) {
+    const stage = document.getElementById("canvasStage");
+    if (!stage || currentPage !== "rooms" || selectedCanvasUserId !== item.ownerId) return;
+    stage.querySelector(".canvas-empty")?.remove();
+    stage.insertAdjacentHTML("beforeend", renderCanvasItem(item));
+}
+
+function removeCanvasItemEl(itemId) {
+    if (canvasSelectedItemId === itemId) canvasSelectedItemId = null;
+    const stage = document.getElementById("canvasStage");
+    if (!stage) return;
+    getCanvasItemEl(itemId)?.remove();
+    if (!db.canvasItems.length) renderRooms(); // brings back the "empty wall" hint
+    else positionCanvasToolbar();
+}
+
+// A drag ends with a click on the same element; for a music disc that
+// click would start/stop the track every time you moved it.
+function onCanvasMusicTap(musicId) {
+    if (Date.now() - canvasLastDragEndAt < 400) return;
+    toggleCanvasItemMusic(musicId);
+}
+
+// Colours come straight from the DB, and other people's browsers render
+// them — only accept a plain hex colour, never raw text into style="".
+function safeCanvasColor(color) {
+    return /^#[0-9a-f]{3,8}$/i.test(color || "") ? color : "#333";
+}
+
+// Everything that comes from the DB is escaped before it goes into HTML:
+// a room is shown to OTHER people, so item.content / item.id are not
+// something to trust (they used to be pasted into src="" / onclick="" as-is).
 function renderCanvasItem(item) {
     const selected = item.id === canvasSelectedItemId;
     const owner = isOwnCanvas();
-    const baseStyle = `left:${item.x}%;top:${item.y}%;transform:translate(-50%,-50%) rotate(${item.rotation}deg) scale(${item.scale});z-index:${item.zIndex};`;
-    const dragHandlers = owner
-        ? `onpointerdown="startCanvasItemDrag(event,'${item.id}')"`
-        : "";
+    const handlers = owner ? `onpointerdown="startCanvasItemDrag(event)"` : "";
 
     let inner = "";
     if (item.type === "text") {
-        inner = `<div class="canvas-item-text" style="color:${item.color || "#333"};">${escapeHtml(item.content)}</div>`;
+        inner = `<div class="canvas-item-text" style="color:${safeCanvasColor(item.color)};">${escapeHtml(item.content)}</div>`;
     } else if (item.type === "image" || item.type === "gif") {
-        inner = `<div class="canvas-item-photo"><img loading="lazy" decoding="async" src="${item.content}"></div>`;
+        inner = `<div class="canvas-item-photo"><img draggable="false" decoding="async" alt="" src="${escapeHtml(item.content)}" onload="positionCanvasToolbar()"></div>`;
     } else if (item.type === "doodle") {
-        inner = `<img loading="lazy" decoding="async" class="canvas-item-doodle" src="${item.content}">`;
+        inner = `<img draggable="false" decoding="async" alt="" class="canvas-item-doodle" src="${escapeHtml(item.content)}" onload="positionCanvasToolbar()">`;
     } else if (item.type === "music") {
         const track = db.music.find(m => m.id === item.content);
         inner = `
-            <div class="canvas-item-music" onclick="${owner && selected ? "" : `toggleCanvasItemMusic('${item.content}')`}" title="${track ? escapeHtml(track.title) : "Трек удалён"}">
+            <div class="canvas-item-music" data-music-id="${escapeHtml(item.content)}" onclick="onCanvasMusicTap(this.dataset.musicId)" title="${track ? escapeHtml(track.title) : "Трек удалён"}">
                 💿
             </div>
         `;
     }
 
-    return `
-        <div class="canvas-item ${selected ? "canvas-item-selected" : ""}" data-canvas-item-id="${item.id}" style="${baseStyle}" ${dragHandlers}>
-            ${inner}
-            ${
-                owner && selected
-                ? `
-                    <div class="canvas-item-toolbar">
-                        <button type="button" onclick="event.stopPropagation();rotateCanvasItem('${item.id}')" title="Повернуть">↻</button>
-                        <button type="button" onclick="event.stopPropagation();bringCanvasItemToFront('${item.id}')" title="Наверх">⬆️</button>
-                        <button type="button" onclick="event.stopPropagation();deleteCanvasItem('${item.id}')" title="Удалить">🗑️</button>
-                    </div>
-                  `
-                : ""
-            }
-        </div>
-    `;
+    return `<div class="canvas-item${owner ? " canvas-item-own" : ""}${selected ? " canvas-item-selected" : ""}" data-canvas-item-id="${escapeHtml(item.id)}" style="${canvasItemStyle(item)}" ${handlers}>${inner}</div>`;
 }
 
 function renderRooms() {
     const page = document.getElementById("page");
+    if (!page) return;
+    resetCanvasDrag(); // the wall is about to be replaced, so any drag on the old one is void
     if (!selectedCanvasUserId) selectedCanvasUserId = currentUserId;
     if (db.canvasItems === undefined) db.canvasItems = [];
     const owner = getUser(selectedCanvasUserId);
@@ -8945,7 +9226,7 @@ function renderRooms() {
                     <button type="button" class="secondary" onclick="openGraffitiTool()">🖌️ Граффити</button>
                 </div>
                 <div class="canvas-bg-picker">
-                    ${Object.keys(CANVAS_BACKGROUNDS).map(bg => `
+                    ${canvasBackgroundChoices().map(bg => `
                         <button type="button" class="canvas-bg-swatch ${bg === canvasBackground ? "active" : ""}" style="background:${CANVAS_BACKGROUNDS[bg]};" onclick="setCanvasBackground('${bg}')" title="${bg}"></button>
                     `).join("")}
                 </div>
@@ -8953,7 +9234,18 @@ function renderRooms() {
             : ""
         }
 
-        <div class="canvas-stage" id="canvasStage" style="background:${CANVAS_BACKGROUNDS[canvasBackground] || CANVAS_BACKGROUNDS.sky};" onclick="if(event.target.id==='canvasStage') canvasSelectedItemId=null, renderRooms()">
+        <div class="canvas-stage" id="canvasStage" style="background:${CANVAS_BACKGROUNDS[canvasBackground] || CANVAS_BACKGROUNDS.sky};" onclick="if(event.target.id==='canvasStage') deselectCanvasItem()">
+            ${
+                mine
+                ? `
+                    <div class="canvas-item-toolbar" id="canvasToolbar">
+                        <button type="button" onclick="rotateCanvasItem(canvasSelectedItemId)" title="Повернуть">↻</button>
+                        <button type="button" onclick="bringCanvasItemToFront(canvasSelectedItemId)" title="Наверх">⬆️</button>
+                        <button type="button" onclick="deleteCanvasItem(canvasSelectedItemId)" title="Удалить">🗑️</button>
+                    </div>
+                  `
+                : ""
+            }
             ${
                 db.canvasItems.length
                 ? db.canvasItems.map(renderCanvasItem).join("")
@@ -8961,6 +9253,7 @@ function renderRooms() {
             }
         </div>
     `;
+    requestAnimationFrame(positionCanvasToolbar);
 }
 
 function rowToFriend(row) {
