@@ -3829,6 +3829,15 @@ html::after{
 
 [data-theme="dark"] .nav-btn{ color:#89a5b3; }
 [data-theme="dark"] .nav-btn:hover{ background:rgba(79,201,245,.12); }
+
+/* Bottom "Ещё" sheet (mobile): its white background is hard-coded, so it needs its own dark colours —
+   otherwise the white dark-mode text lands on white and the menu looks empty. */
+[data-theme="dark"] .more-sheet{
+    background:#16232d;
+    box-shadow:0 -10px 40px rgba(0,0,0,.5);
+}
+[data-theme="dark"] .more-sheet-handle{ background:#355966; }
+[data-theme="dark"] .more-sheet-item{ border-bottom-color:rgba(255,255,255,.08); }
 [data-theme="dark"] .back-button{ border-top-color:#233542; }
 
 /* CARDS / POSTS */
