@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
@@ -10,9 +10,9 @@
 <link rel="icon" href="icons/icon-192.png">
 <!--
   iOS-specific PWA tags. Web Push on iPhone ONLY works inside a web app
-  that was added to the Home Screen — a normal Safari tab can never
+  that was added to the Home Screen вЂ” a normal Safari tab can never
   receive push, no matter what the JS does. These three tags are what
-  makes "Поделиться → На экран Домой" actually create a standalone app
+  makes "РџРѕРґРµР»РёС‚СЊСЃСЏ в†’ РќР° СЌРєСЂР°РЅ Р”РѕРјРѕР№" actually create a standalone app
   (its own window, no Safari chrome, correct status bar) instead of just
   a bookmark that reopens inside Safari:
 -->
@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <!--
-  Fredoka for headings/logo (round, bubble-lettered — matches the
+  Fredoka for headings/logo (round, bubble-lettered вЂ” matches the
   Frutiger Aero/Y2K look far more honestly than faking it with Arial +
   negative letter-spacing) and Nunito for body text (same font already
   used on Aero World, for a consistent feel between the two).
@@ -37,23 +37,23 @@
     }catch(e){}
 })();
 </script>
-<link rel="stylesheet" href="css/style.css?v=21">
+<link rel="stylesheet" href="css/style.css?v=22">
 <script src="js/events.js?v=1"></script>
 </head>
 <body>
 
 <!--
-    Static skeleton — shown the instant the HTML parses, before app.js
+    Static skeleton вЂ” shown the instant the HTML parses, before app.js
     has even finished downloading, let alone run startApp()/loadDB().
     renderApp() (or the auth screen) overwrites #app's innerHTML the
     moment either one is ready, so this never lingers once there's
-    real content to show — but until then, #app was simply EMPTY,
+    real content to show вЂ” but until then, #app was simply EMPTY,
     meaning every single visit opened to a blank page for however long
     auth + the initial data fetch took.
 -->
 <div id="app">
     <div class="initial-skeleton">
-        <div class="initial-skeleton-logo">🫧 bubbles</div>
+        <div class="initial-skeleton-logo">рџ«§ bubbles</div>
         <div class="skeleton" style="width:100%;height:120px;border-radius:22px;margin-bottom:14px;"></div>
         <div class="skeleton" style="width:60%;height:18px;border-radius:9px;margin-bottom:22px;"></div>
         <div class="skeleton" style="width:100%;height:90px;border-radius:22px;margin-bottom:12px;"></div>
@@ -70,23 +70,23 @@
         <div class="global-player-info" onclick="openFullPlayer()">
             <img id="globalPlayerCover" src="" alt="">
             <div class="global-player-text">
-                <div id="globalPlayerTitle">Ничего не играет</div>
+                <div id="globalPlayerTitle">РќРёС‡РµРіРѕ РЅРµ РёРіСЂР°РµС‚</div>
                 <div id="globalPlayerArtist"></div>
             </div>
         </div>
-        <button onclick="closeMusicPlayer()" title="Закрыть">✕</button>
+        <button onclick="closeMusicPlayer()" title="Р—Р°РєСЂС‹С‚СЊ">вњ•</button>
     </div>
     <div class="global-player-controls">
-        <button onclick="playPrevTrack()" title="Предыдущий трек">⏮️</button>
+        <button onclick="playPrevTrack()" title="РџСЂРµРґС‹РґСѓС‰РёР№ С‚СЂРµРє">вЏ®пёЏ</button>
         <audio id="globalAudio" controls preload="metadata"></audio>
-        <button onclick="playNextTrack()" title="Следующий трек">⏭️</button>
+        <button onclick="playNextTrack()" title="РЎР»РµРґСѓСЋС‰РёР№ С‚СЂРµРє">вЏ­пёЏ</button>
     </div>
 </div>
 
 <!-- FULL-SCREEN PLAYER -->
 <div id="fullPlayer" class="full-player hidden" onclick="if(event.target===this) closeFullPlayer()">
     <div class="full-player-sheet">
-        <button class="full-player-close" onclick="closeFullPlayer()">⌄</button>
+        <button class="full-player-close" onclick="closeFullPlayer()">вЊ„</button>
         <img id="fullPlayerCover" class="full-player-cover" src="" alt="">
         <div id="fullPlayerTitle" class="full-player-title"></div>
         <div id="fullPlayerArtist" class="full-player-artist"></div>
@@ -98,15 +98,15 @@
             <span id="fullPlayerDuration">0:00</span>
         </div>
         <div class="full-player-controls">
-            <button onclick="playPrevTrack()" title="Предыдущий">⏮️</button>
-            <button id="fullPlayerPlayPause" class="full-player-play-btn" onclick="toggleGlobalPlayPause()" title="Play/Pause">⏸️</button>
-            <button onclick="playNextTrack()" title="Следующий">⏭️</button>
+            <button onclick="playPrevTrack()" title="РџСЂРµРґС‹РґСѓС‰РёР№">вЏ®пёЏ</button>
+            <button id="fullPlayerPlayPause" class="full-player-play-btn" onclick="toggleGlobalPlayPause()" title="Play/Pause">вЏёпёЏ</button>
+            <button onclick="playNextTrack()" title="РЎР»РµРґСѓСЋС‰РёР№">вЏ­пёЏ</button>
         </div>
-        <button id="fullPlayerLikeBtn" class="full-player-like-btn" onclick="toggleMusicLike(currentlyPlayingMusicId);renderFullPlayer();">🤍</button>
+        <button id="fullPlayerLikeBtn" class="full-player-like-btn" onclick="toggleMusicLike(currentlyPlayingMusicId);renderFullPlayer();">рџ¤Ќ</button>
     </div>
 </div>
 
-<!-- FLOATING CALL BAR (звонки) -->
+<!-- FLOATING CALL BAR (Р·РІРѕРЅРєРё) -->
 <div id="callBar" class="call-bar hidden"></div>
 
 <div id="toastContainer"></div>
@@ -114,7 +114,7 @@
 <!--
   CACHE-BUSTING: every local script/style below carries ?v=N. iOS
   "Add to Home Screen" apps in particular cache extremely aggressively
-  and often won't pick up new code on a normal reload — bumping this
+  and often won't pick up new code on a normal reload вЂ” bumping this
   number on every deploy forces the browser to treat the file as new
   and fetch it fresh, instead of quietly continuing to run old code
   while looking like nothing changed. BUMP THIS EVERY TIME YOU UPDATE
@@ -128,10 +128,10 @@
 <script src="js/supabase.js?v=2"></script>
 <script src="js/theme.js?v=2"></script>
 <script src="js/crypto.js?v=2"></script>
-<script src="js/sounds.js?v=1"></script>
+<script src="js/sounds.js?v=2"></script>
 <script src="js/image-cropper.js?v=1"></script>
-<script src="js/app.js?v=24"></script>
-<script src="js/calls.js?v=3"></script>
+<script src="js/app.js?v=25"></script>
+<script src="js/calls.js?v=4"></script>
 <script src="js/telegram.js?v=1"></script>
 </body>
 </html>

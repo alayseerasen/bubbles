@@ -970,6 +970,17 @@ returns boolean language sql security definer set search_path = public stable as
 $$;
 grant execute on function public.under_reaction_rate_limit(uuid) to authenticated;
 
+-- Notifications are insertable by anyone FOR anyone else (that's how a
+-- like/comment notifies its recipient), which also makes them an easy
+-- way to spam somebody's phone through the push webhook. Same cap as the
+-- other cheap actions, per actor.
+create or replace function public.under_notification_rate_limit(who uuid)
+returns boolean language sql security definer set search_path = public stable as $$
+    select count(*) < 60 from public.bubbles_notifications
+    where actor_id = who and created_at > now() - interval '60 seconds';
+$$;
+grant execute on function public.under_notification_rate_limit(uuid) to authenticated;
+
 -- ------------------------------------------------------------
 -- CALL INVITES
 -- The actual call signaling (offer/answer/ICE) all happens over an
@@ -1121,6 +1132,14 @@ begin
         new.image := old.image;
         new.likes := old.likes;
     end if;
+
+    -- Who wrote it, whose wall it's on, and when it was posted are
+    -- immutable. Otherwise the author could use their normal edit update
+    -- to move a post onto somebody else's wall (or a private wall) or
+    -- backdate it, bypassing every wall/privacy check posts_insert does.
+    new.author_id := old.author_id;
+    new.wall_owner_id := old.wall_owner_id;
+    new.created_at := old.created_at;
 
     if new.pinned and not old.pinned then
         if (select count(*) from public.posts where pinned = true and id <> new.id) >= 2 then
@@ -1492,7 +1511,27 @@ using (
     )
 );
  drop policy if exists posts_insert on public.posts;
-create policy posts_insert on public.posts for insert with check (auth.uid() = author_id and not public.is_banned() and public.under_post_rate_limit(author_id));
+create policy posts_insert on public.posts for insert with check (
+    auth.uid() = author_id
+    and not public.is_banned()
+    and public.under_post_rate_limit(author_id)
+    -- You may always post on your own wall; on someone else's wall only if
+    -- neither side blocked the other AND that wall is visible to you
+    -- (public, or friends-only and you're actually friends). Without this,
+    -- a direct API call could drop a post onto a blocked user's wall or a
+    -- friends-only wall you can't even read.
+    and (
+        wall_owner_id = auth.uid()
+        or (
+            not public.is_blocked(wall_owner_id, auth.uid())
+            and not public.is_blocked(auth.uid(), wall_owner_id)
+            and (
+                (select coalesce(p.wall_visibility, 'everyone') from public.profiles p where p.id = posts.wall_owner_id) = 'everyone'
+                or public.are_friends(wall_owner_id, auth.uid())
+            )
+        )
+    )
+);
  drop policy if exists posts_update on public.posts;
 create policy posts_update on public.posts for update using (auth.uid() = author_id) with check (auth.uid() = author_id);
  drop policy if exists posts_delete on public.posts;
@@ -1500,10 +1539,20 @@ create policy posts_delete on public.posts for delete using (auth.uid() = author
 
 -- Comments
  drop policy if exists comments_select on public.comments;
+-- Also requires the parent post to actually be visible to you: without the
+-- EXISTS, comments on a friends-only wall (or on a post by someone who
+-- blocked you) were readable by anyone, even logged out, because the post
+-- itself was hidden but its comments weren't. The subquery runs under
+-- posts_select, so it inherits exactly the same visibility rules.
 create policy comments_select on public.comments for select
 using (
-    auth.uid() is null
-    or (not public.is_blocked(author_id, auth.uid()) and not public.is_blocked(auth.uid(), author_id))
+    (
+        auth.uid() is null
+        or (not public.is_blocked(author_id, auth.uid()) and not public.is_blocked(auth.uid(), author_id))
+    )
+    and exists (
+        select 1 from public.posts p where p.id = comments.post_id
+    )
 );
  drop policy if exists comments_insert on public.comments;
 create policy comments_insert on public.comments for insert with check (auth.uid() = author_id and not public.is_banned() and public.under_comment_rate_limit(author_id));
@@ -1544,7 +1593,24 @@ create policy comment_likes_delete on public.comment_likes for delete using (aut
 -- restricted to the two people involved — see below.)
 create policy friendships_select on public.friendships for select using (true);
  drop policy if exists friendships_insert on public.friendships;
-create policy friendships_insert on public.friendships for insert with check (auth.uid() = user1 or auth.uid() = user2);
+-- A friendship may only be created by one of its two people, and only once
+-- an accepted friend_requests row between exactly those two people exists.
+-- Without that second half, anyone could insert a "friendship" with any
+-- stranger (or with someone who has friend requests disabled / has blocked
+-- them) simply by calling the API directly.
+create policy friendships_insert on public.friendships for insert with check (
+    (auth.uid() = user1 or auth.uid() = user2)
+    and user1 <> user2
+    and not public.is_banned()
+    and exists (
+        select 1 from public.friend_requests fr
+        where fr.status = 'accepted'
+          and (
+              (fr.from_user = friendships.user1 and fr.to_user = friendships.user2)
+              or (fr.from_user = friendships.user2 and fr.to_user = friendships.user1)
+          )
+    )
+);
  drop policy if exists friendships_delete on public.friendships;
 create policy friendships_delete on public.friendships for delete using (auth.uid() = user1 or auth.uid() = user2);
 
@@ -1648,7 +1714,7 @@ create policy message_reactions_delete on public.message_reactions for delete us
  drop policy if exists bubbles_notifications_select on public.bubbles_notifications;
 create policy bubbles_notifications_select on public.bubbles_notifications for select using (auth.uid() = user_id);
  drop policy if exists bubbles_notifications_insert on public.bubbles_notifications;
-create policy bubbles_notifications_insert on public.bubbles_notifications for insert with check (auth.uid() = actor_id and not public.is_banned());
+create policy bubbles_notifications_insert on public.bubbles_notifications for insert with check (auth.uid() = actor_id and not public.is_banned() and public.under_notification_rate_limit(actor_id));
  drop policy if exists bubbles_notifications_update on public.bubbles_notifications;
 create policy bubbles_notifications_update on public.bubbles_notifications for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
  drop policy if exists bubbles_notifications_delete on public.bubbles_notifications;
@@ -1737,7 +1803,13 @@ create policy post_saves_delete on public.post_saves for delete using (auth.uid(
 -- question/options don't change, same as everywhere else in this app
 -- that treats "posted" as final for that kind of content).
  drop policy if exists polls_select on public.polls;
-create policy polls_select on public.polls for select using (true);
+-- Same reasoning as comments_select: a poll on a post you can't see
+-- shouldn't be readable, and the EXISTS runs under posts_select.
+create policy polls_select on public.polls for select using (
+    exists (
+        select 1 from public.posts p where p.id = polls.post_id
+    )
+);
  drop policy if exists polls_insert on public.polls;
 create policy polls_insert on public.polls for insert with check (
     exists (select 1 from public.posts p where p.id = post_id and p.author_id = auth.uid())
@@ -1749,7 +1821,11 @@ create policy polls_delete on public.polls for delete using (
 );
 
  drop policy if exists poll_options_select on public.poll_options;
-create policy poll_options_select on public.poll_options for select using (true);
+create policy poll_options_select on public.poll_options for select using (
+    exists (
+        select 1 from public.polls pl where pl.id = poll_options.poll_id
+    )
+);
  drop policy if exists poll_options_insert on public.poll_options;
 create policy poll_options_insert on public.poll_options for insert with check (
     exists (
@@ -1761,7 +1837,11 @@ create policy poll_options_insert on public.poll_options for insert with check (
 
 -- Poll votes — same one-row-per-(poll,user) pattern as post_likes.
  drop policy if exists poll_votes_select on public.poll_votes;
-create policy poll_votes_select on public.poll_votes for select using (true);
+create policy poll_votes_select on public.poll_votes for select using (
+    exists (
+        select 1 from public.polls pl where pl.id = poll_votes.poll_id
+    )
+);
  drop policy if exists poll_votes_insert on public.poll_votes;
 create policy poll_votes_insert on public.poll_votes for insert with check (auth.uid() = user_id and public.under_like_rate_limit(user_id));
 -- Needed for voteInPoll's upsert: switching your vote to a different
