@@ -1,0 +1,185 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>call side</title>
+<style>
+  body { font-family: sans-serif; padding: 8px; }
+  #callBar { position: relative; }
+</style>
+</head>
+<body>
+<div id="callBar" class="call-bar hidden"></div>
+
+<script>
+const ME = new URLSearchParams(location.search).get("me");
+const USERS = {
+    user_a: { id: "user_a", displayName: "Alice", avatar: "" },
+    user_b: { id: "user_b", displayName: "Bob", avatar: "" }
+};
+const currentUserId = ME;
+const db = { users: [USERS.user_a, USERS.user_b] };
+
+function escapeHtml(v) {
+    return String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function safeId(v) {
+    const id = String(v ?? "");
+    return /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : "";
+}
+function isSafeUrl(value, dataPattern) {
+    const raw = String(value ?? "").trim();
+    if (!raw) return false;
+    if (/^data:/i.test(raw)) return dataPattern.test(raw);
+    const scheme = raw.match(/^([a-z][a-z0-9+.-]*):/i);
+    return !scheme || /^https?$/i.test(scheme[1]) || /^blob$/i.test(scheme[1]);
+}
+function sanitizeUrlString(raw) {
+    return raw.replace(/[\u0000-\u0020"'<>`\\]/g, ch => "%" + ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0"));
+}
+function safeImageUrl(value) {
+    const raw = String(value ?? "").trim();
+    if (!isSafeUrl(raw, /^data:image\//i)) return "";
+    return sanitizeUrlString(raw);
+}
+function defaultAvatar() { return "../icons/icon-192.png"; }
+function getUser(id) { return db.users.find(u => u.id === id); }
+function uid(p) { return p + "_" + Math.random().toString(36).slice(2, 8); }
+function toast(m) { console.log("[toast]", ME, m); }
+
+function showBubblesModal(html) {
+    let el = document.getElementById("bubblesModalOverlay");
+    if (!el) { el = document.createElement("div"); el.id = "bubblesModalOverlay"; document.body.appendChild(el); }
+    el.innerHTML = `<div class="bubbles-modal-card">${html}</div>`;
+}
+function closeBubblesModal() { document.getElementById("bubblesModalOverlay")?.remove(); }
+function playSound(name) { console.log("[sound]", ME, name); }
+function startSoundLoop() { return () => {}; }
+
+/* ---------------- mock media ---------------- */
+const AC = window.AudioContext || window.webkitAudioContext;
+let ac, osc, dest;
+function audioStream() {
+    if (!dest) {
+        ac = new AC();
+        osc = ac.createOscillator();
+        dest = ac.createMediaStreamDestination();
+        osc.connect(dest);
+        osc.start();
+    }
+    return dest.stream;
+}
+function canvasStream(color) {
+    const c = document.createElement("canvas");
+    c.width = 320; c.height = 240;
+    const g = c.getContext("2d");
+    setInterval(() => { g.fillStyle = color; g.fillRect(0, 0, 320, 240); }, 100);
+    return c.captureStream(10);
+}
+navigator.mediaDevices.getUserMedia = async (constraints) => (constraints && constraints.video) ? canvasStream("#0a8548") : audioStream();
+navigator.mediaDevices.getDisplayMedia = async () => canvasStream("#1d4ed8");
+navigator.mediaDevices.enumerateDevices = async () => [];
+
+/* ---------------- mock supabase realtime ---------------- */
+const localChannels = new Map();
+const stats = { sent: 0, got: 0 };
+const sb = {
+    channel(topic) {
+        const existing = localChannels.get(topic);
+        if (existing) return existing.ch;
+        const handlers = {};
+        const entry = { joined: false, handlers, ch: null };
+        const ch = {
+            topic,
+            on(_type, filter, cb) { (handlers[filter.event] = handlers[filter.event] || []).push(cb); return ch; },
+            subscribe(cb) {
+                entry.joined = true;
+                parent.postMessage({ kind: "join", topic }, "*");
+                setTimeout(() => cb && cb("SUBSCRIBED"), 20);
+                return ch;
+            },
+            send({ event, payload }) {
+                // real supabase-js JSON-сериализует payload; postMessage же
+                // не умеет клонировать RTCSessionDescription как есть
+                parent.postMessage({ kind: "bc", topic, event, payload: JSON.parse(JSON.stringify(payload)) }, "*");
+                stats.sent++;
+                return Promise.resolve("ok");
+            },
+            _deliver(event, payload) {
+                (handlers[event] || []).forEach(cb => cb({ payload }));
+            }
+        };
+        entry.ch = ch;
+        localChannels.set(topic, entry);
+        return ch;
+    },
+    removeChannel(ch) {
+        localChannels.delete(ch.topic);
+        parent.postMessage({ kind: "leave", topic: ch.topic }, "*");
+        return Promise.resolve();
+    },
+    from() {
+        return {
+            insert: async () => ({ error: null }),
+            update: () => ({ eq: async () => ({ error: null }) })
+        };
+    }
+};
+
+addEventListener("message", (e) => {
+    const d = e.data || {};
+    if (d.kind !== "bc") return;
+    const entry = localChannels.get(d.topic);
+    if (entry && entry.joined) { stats.got++; entry.ch._deliver(d.event, d.payload); }
+});
+
+window.__debug = {
+    state: () => callState,
+    renderCallBar: () => renderCallBar(),
+    // Подменяем «полученные» дорожки: ICE в этом окружении не собирается
+    // вообще (0 кандидатов), поэтому реальное соединение здесь не поднять.
+    setRemoteTracksFromCanvas: () => {
+        if (!callState.pc) return null;
+        const cam = canvasStream("#0a8548").getVideoTracks()[0];
+        const screen = canvasStream("#1d4ed8").getVideoTracks()[0];
+        callState.pc.getReceivers = () => [{ track: cam }, { track: screen }];
+        return { cam: cam.id, screen: screen.id };
+    }
+};
+
+window.__api = () => ({
+    me: ME,
+    status: callState.status,
+    answered: callState.answered,
+    polite: callState.polite,
+    pcState: callState.pc ? callState.pc.connectionState : null,
+    signaling: callState.pc ? callState.pc.signalingState : null,
+    remoteVideoOn: callState.remoteVideoOn,
+    remoteScreenOn: callState.remoteScreenOn,
+    camOn: callState.camOn,
+    screenOn: callState.screenOn,
+    modalOpen: !!document.getElementById("bubblesModalOverlay"),
+    barHidden: document.getElementById("callBar").classList.contains("hidden"),
+    barText: (document.getElementById("callBar")?.textContent || "").trim().slice(0, 60),
+    timer: document.getElementById("callBarTimer")?.textContent || "",
+    camTile: !!document.getElementById("callTile-cam-remote")?.srcObject,
+    screenTile: !!document.getElementById("callTile-screen-remote")?.srcObject,
+    camTileTrack: document.getElementById("callTile-cam-remote")?.srcObject?.getVideoTracks?.()[0]?.id || null,
+    screenTileTrack: document.getElementById("callTile-screen-remote")?.srcObject?.getVideoTracks?.()[0]?.id || null,
+    localCamTrack: callState.localStream?.getVideoTracks?.()[0]?.id || null,
+    localScreenTrack: callState.screenStream?.getVideoTracks?.()[0]?.id || null,
+    queued: callState.signalQueue.length,
+    pending: callState.pendingCandidates.length,
+    iceGathering: callState.pc ? callState.pc.iceGatheringState : null,
+    iceConnection: callState.pc ? callState.pc.iceConnectionState : null,
+    localType: callState.pc?.localDescription?.type || null,
+    remoteType: callState.pc?.remoteDescription?.type || null,
+    localCands: (callState.pc?.localDescription?.sdp?.match(/a=candidate/g) || []).length,
+    remoteCands: (callState.pc?.remoteDescription?.sdp?.match(/a=candidate/g) || []).length,
+    sent: stats.sent, got: stats.got
+});
+</script>
+<script src="../js/calls.js?e2e"></script>
+<script>initCallSignaling();</script>
+</body>
+</html>
