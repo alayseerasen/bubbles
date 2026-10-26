@@ -56,7 +56,8 @@ function saveCallSettings() {
 let callSettings = loadCallSettings();
 let ringChannel = null; // персональный канал "мне звонят", живёт всё время, пока открыт сайт
 
-// status: "idle" | "calling" (я звоню, жду ответа) | "ringing" (мне звонят) | "connected"
+// status: "idle" | "calling" (я звоню, жду ответа) | "ringing" (мне звонят)
+//       | "connected" (собеседник взял трубку)
 let callState = {
     status: "idle",
     callId: null,
@@ -65,17 +66,28 @@ let callState = {
     remoteAvatar: "",
     inviteRowId: null,
     channel: null,
+    channelReady: false,   // канал звонка реально подписан (до этого send() уходит в никуда)
+    signalQueue: [],       // сигналы, которые некуда было отправить до подписки
     pc: null,
+    isCaller: false,
+    answered: false,       // собеседник взял трубку (не то же самое, что "мы подписались")
     polite: false,
     makingOffer: false,
     ignoreOffer: false,
     localStream: null,
     screenStream: null,
+    camSender: null,       // RTCRtpSender камеры — ищем именно его, а не по label
+    screenSender: null,    // RTCRtpSender показа экрана
     micOn: true,
     camOn: false,
     screenOn: false,
     remoteVideoOn: false,
     remoteScreenOn: false,
+    remoteCamTrackId: null,    // id дорожек, которые собеседник объявил в "state"
+    remoteScreenTrackId: null,
+    pendingCandidates: [], // ICE до того, как применён remote description
+    connectedAt: null,
+    durationTimer: null,
     expanded: false, // big spotlight view vs. the compact floating bar
     ringTimeout: null,
     stopRingtone: null
@@ -91,10 +103,15 @@ function initCallSignaling() {
     ringChannel = sb.channel("call-ring-" + currentUserId)
         .on("broadcast", { event: "invite" }, ({ payload }) => handleIncomingInvite(payload))
         .on("broadcast", { event: "cancel" }, ({ payload }) => {
-            if (callState.status === "ringing" && callState.callId === payload.callId) endCallLocally("Звонок отменён.");
+            if (callState.status === "ringing" && callState.callId === payload?.callId) endCallLocally("Звонок отменён.");
         })
         .on("broadcast", { event: "decline" }, ({ payload }) => {
-            if (callState.status === "calling" && callState.callId === payload.callId) endCallLocally(payload.reason === "busy" ? "Собеседник сейчас на другом звонке." : "Звонок отклонён.");
+            if (callState.status !== "calling" || callState.callId !== payload?.callId) return;
+            endCallLocally(
+                payload.reason === "busy" ? "Собеседник сейчас на другом звонке."
+                : payload.reason === "timeout" ? "Собеседник не отвечает."
+                : "Звонок отклонён."
+            );
         })
         .subscribe();
 }
@@ -104,26 +121,48 @@ function teardownCallSignaling() {
     if (callState.status !== "idle") endCallLocally();
 }
 
+// Персональный канал "мне звонят" принадлежит собеседнику, мы в нём не
+// подписаны — supabase-js отправит такое сообщение через REST-fallback
+// broadcast, этого достаточно для одноразового сигнала.
+function sendRingEvent(userId, event, payload) {
+    const id = safeId(userId);
+    if (!id) return;
+    try {
+        sb.channel("call-ring-" + id).send({ type: "broadcast", event, payload })
+            .catch((e) => console.error("Не удалось отправить сигнал звонка:", event, e));
+    } catch (e) { console.error("Не удалось отправить сигнал звонка:", event, e); }
+}
+
 function handleIncomingInvite(payload) {
+    const callId = safeId(payload?.callId);
+    const from = safeId(payload?.from);
+    // Битый/поддельный payload (в broadcast может прийти что угодно) не
+    // должен ронять ринг-экран и уж тем более подставляться в разметку.
+    if (!callId || !from || from === currentUserId) return;
+
     if (callState.status !== "idle") {
         // Уже на другом звонке — сразу "занято", не мучаем модалкой.
-        sb.channel("call-ring-" + payload.from).send({ type: "broadcast", event: "decline", payload: { callId: payload.callId, reason: "busy" } })
-            .then(() => {});
+        sendRingEvent(from, "decline", { callId, reason: "busy" });
         return;
     }
 
     callState.status = "ringing";
-    callState.callId = payload.callId;
-    callState.remoteUserId = payload.from;
+    callState.callId = callId;
+    callState.remoteUserId = from;
     callState.remoteName = payload.name || "Кто-то";
     callState.remoteAvatar = payload.avatar || "";
-    callState.inviteRowId = payload.inviteRowId || null;
+    callState.inviteRowId = safeId(payload.inviteRowId) || null;
 
     playRingtone();
     renderIncomingCallModal();
 
     callState.ringTimeout = setTimeout(() => {
-        if (callState.status === "ringing") endCallLocally("Пропущенный звонок.");
+        if (callState.status !== "ringing") return;
+        // Сообщаем звонящему, что трубку не взяли — иначе он висит в
+        // "Звоним…" до собственного таймаута.
+        sendRingEvent(callState.remoteUserId, "decline", { callId: callState.callId, reason: "timeout" });
+        markCallInviteStatus("missed");
+        endCallLocally("Пропущенный звонок.");
     }, CALL_RING_TIMEOUT_MS);
 }
 
@@ -133,6 +172,9 @@ function handleIncomingInvite(payload) {
 
 async function startDirectCall(partnerId) {
     if (callState.status !== "idle") { toast("Ты уже на звонке."); return; }
+
+    partnerId = safeId(partnerId);
+    if (!partnerId || partnerId === currentUserId) return;
 
     const partner = getUser(partnerId);
     if (!partner) return;
@@ -156,8 +198,14 @@ async function startDirectCall(partnerId) {
     callState.remoteAvatar = partner.avatar;
     callState.localStream = localStream;
     callState.polite = currentUserId > partnerId; // одинаковая детерминированная роль с обеих сторон
+    callState.isCaller = true;
 
-    joinCallChannel(callId, partnerId);
+    // Важно: статус остаётся "calling" до тех пор, пока собеседник реально
+    // не возьмёт трубку (см. handlePeerReady). Раньше здесь сразу
+    // выставлялся "connected" — из-за этого таймаут "не отвечает" не
+    // срабатывал никогда, кнопка отмены перестала работать (она проверяет
+    // status === "calling"), а модалка "Звоним…" висела до перезагрузки.
+    joinCallChannel(callId, partnerId, { caller: true });
 
     // Reaches the callee even if their app isn't open to receive the
     // broadcast below — this insert fires a push notification via a
@@ -171,20 +219,21 @@ async function startDirectCall(partnerId) {
     sb.from("call_invites").insert({ id: inviteRowId, call_id: callId, caller_id: currentUserId, callee_id: partnerId })
         .then(({ error }) => { if (error) console.error("call_invites insert failed:", error); });
 
-    sb.channel("call-ring-" + partnerId).send({
-        type: "broadcast",
-        event: "invite",
-        payload: { callId, from: currentUserId, name: me?.displayName || "Кто-то", avatar: me?.avatar || "", inviteRowId }
+    sendRingEvent(partnerId, "invite", {
+        callId,
+        from: currentUserId,
+        name: me?.displayName || "Кто-то",
+        avatar: me?.avatar || "",
+        inviteRowId
     });
 
     renderOutgoingCallModal();
 
     callState.ringTimeout = setTimeout(() => {
-        if (callState.status === "calling") {
-            sb.channel("call-ring-" + partnerId).send({ type: "broadcast", event: "cancel", payload: { callId } });
-            markCallInviteStatus("missed");
-            endCallLocally("Абонент не отвечает.");
-        }
+        if (callState.status !== "calling") return;
+        sendRingEvent(partnerId, "cancel", { callId });
+        markCallInviteStatus("missed");
+        endCallLocally("Абонент не отвечает.");
     }, CALL_RING_TIMEOUT_MS);
 }
 
@@ -198,7 +247,7 @@ function markCallInviteStatus(status) {
 
 function cancelOutgoingCall() {
     if (callState.status !== "calling") return;
-    sb.channel("call-ring-" + callState.remoteUserId).send({ type: "broadcast", event: "cancel", payload: { callId: callState.callId } });
+    sendRingEvent(callState.remoteUserId, "cancel", { callId: callState.callId });
     markCallInviteStatus("cancelled");
     endCallLocally();
 }
@@ -224,15 +273,16 @@ async function acceptIncomingCall() {
 
     callState.localStream = localStream;
     callState.polite = currentUserId > callState.remoteUserId;
+    callState.isCaller = false;
     if (callState.ringTimeout) { clearTimeout(callState.ringTimeout); callState.ringTimeout = null; }
     markCallInviteStatus("answered");
 
-    joinCallChannel(callState.callId, callState.remoteUserId);
+    joinCallChannel(callState.callId, callState.remoteUserId, { caller: false });
 }
 
 function declineIncomingCall() {
     if (callState.status !== "ringing") return;
-    sb.channel("call-ring-" + callState.remoteUserId).send({ type: "broadcast", event: "decline", payload: { callId: callState.callId } });
+    sendRingEvent(callState.remoteUserId, "decline", { callId: callState.callId });
     markCallInviteStatus("declined");
     stopRingtone();
     closeBubblesModal();
@@ -243,32 +293,89 @@ function declineIncomingCall() {
    КАНАЛ ЗВОНКА (сигналинг + сам WebRTC)
    ------------------------------------------------------------ */
 
-function joinCallChannel(callId, partnerId) {
+function joinCallChannel(callId, partnerId, { caller = false } = {}) {
     const channel = sb.channel("call:" + callId)
         .on("broadcast", { event: "signal" }, ({ payload }) => {
-            if (payload.to !== currentUserId) return;
+            if (payload?.to !== currentUserId) return;
             handleSignal(payload.data);
         })
+        .on("broadcast", { event: "ready" }, ({ payload }) => {
+            if (payload?.from !== callState.remoteUserId) return;
+            handlePeerReady();
+        })
         .on("broadcast", { event: "state" }, ({ payload }) => {
-            if (payload.from !== callState.remoteUserId) return;
+            if (payload?.from !== callState.remoteUserId) return;
             const remoteScreenJustStarted = !!payload.screen && !callState.remoteScreenOn;
             callState.remoteVideoOn = !!payload.video;
             callState.remoteScreenOn = !!payload.screen;
+            // Какой удалённый трек камера, а какой — показ экрана, знает
+            // только сам собеседник: у полученного трека label всегда
+            // "remote video", а не тот, что мы выставили у себя. Поэтому
+            // он присылает id дорожек, а мы по ним раскладываем плитки.
+            callState.remoteCamTrackId = safeId(payload.camTrackId) || null;
+            callState.remoteScreenTrackId = safeId(payload.screenTrackId) || null;
             // Whoever's screen it is, seeing it shouldn't require squinting
             // at a tiny floating window — auto-expand the moment it starts.
             if (remoteScreenJustStarted) callState.expanded = true;
             renderCallBar();
         })
         .on("broadcast", { event: "hangup" }, ({ payload }) => {
-            if (payload.from !== callState.remoteUserId) return;
+            if (payload?.from !== callState.remoteUserId) return;
             endCallLocally("Собеседник завершил звонок.");
         })
-        .subscribe();
+        .subscribe((status, err) => {
+            if (status === "SUBSCRIBED") {
+                callState.channelReady = true;
+                if (caller && !callState.answered) {
+                    // Пока мы подписывались, в очередь попал offer, отправленный
+                    // в пустоту (трубку ещё не взяли). Он устарел: свежий
+                    // уйдёт из handlePeerReady вместе со всеми собранными ICE.
+                    callState.signalQueue.length = 0;
+                } else {
+                    flushQueuedSignals();
+                }
+                // "Я в комнате". Именно этот сигнал закрывает у звонящего
+                // экран "Звоним…" и заставляет его переотправить offer:
+                // offer, созданный во время гудков, улетел в пустоту —
+                // принимающая сторона ещё не была подписана на канал.
+                if (!caller) sendCallEvent("ready", { from: currentUserId });
+                broadcastMyState();
+            } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+                console.error(`❌ realtime [call] ${status}`, err || "");
+            }
+        });
 
     callState.channel = channel;
-    callState.status = "connected";
+    callState.isCaller = caller;
+
+    // У звонящего статус остаётся "calling": трубку ещё не взяли, панель
+    // звонка показывать рано (висит модалка "Звоним…", её закроет ready).
+    if (!caller) {
+        callState.status = "connected";
+        callState.answered = true;
+    }
+
     setupPeerConnection();
+
+    if (!caller) renderCallBar();
+}
+
+// Собеседник взял трубку (пришёл "ready" по каналу звонка).
+function handlePeerReady() {
+    if (callState.status !== "calling") return;
+    if (callState.ringTimeout) { clearTimeout(callState.ringTimeout); callState.ringTimeout = null; }
+
+    callState.answered = true;
+    callState.status = "connected";
+    closeBubblesModal();
     renderCallBar();
+
+    // Переотправляем свой offer вместе с уже собранными ICE-кандидатами —
+    // тот, что уходил во время гудков, до собеседника не дошёл.
+    const pc = callState.pc;
+    if (pc && pc.signalingState === "have-local-offer" && pc.localDescription?.type === "offer") {
+        sendSignal({ description: pc.localDescription });
+    }
 }
 
 function setupPeerConnection() {
@@ -295,18 +402,20 @@ function setupPeerConnection() {
     pc.onicecandidate = ({ candidate }) => { if (candidate) sendSignal({ candidate }); };
 
     pc.ontrack = (event) => {
-        const isScreen = event.track.label === "screen";
-        requestAnimationFrame(() => {
-            const el = document.getElementById(isScreen ? "callTile-screen-remote" : "callTile-cam-remote");
-            if (el && event.track.kind === "video") el.srcObject = event.streams[0] || new MediaStream([event.track]);
-            if (event.track.kind === "audio") {
-                const audioEl = document.getElementById("callRemoteAudio");
-                if (audioEl) {
-                    audioEl.srcObject = event.streams[0] || new MediaStream([event.track]);
-                    if (callSettings.speakerId && audioEl.setSinkId) audioEl.setSinkId(callSettings.speakerId).catch(() => {});
-                }
-            }
-        });
+        if (event.track.kind === "audio") {
+            requestAnimationFrame(() => {
+                let audioEl = document.getElementById("callRemoteAudio");
+                if (!audioEl) { renderCallBar(); audioEl = document.getElementById("callRemoteAudio"); }
+                if (!audioEl) return;
+                audioEl.srcObject = event.streams[0] || new MediaStream([event.track]);
+                if (callSettings.speakerId && audioEl.setSinkId) audioEl.setSinkId(callSettings.speakerId).catch(() => {});
+            });
+            return;
+        }
+        // Видео: раскладываем по плиткам после того, как узнаем от
+        // собеседника id дорожек (label у входящего трека всегда
+        // "remote video", поэтому старый поиск по label не срабатывал).
+        requestAnimationFrame(() => attachRemoteVideoTracks());
     };
 
     let connectedSoundPlayed = false;
@@ -322,6 +431,12 @@ function setupPeerConnection() {
             iceRestartAttempted = false;
             if (reconnectFailTimeout) { clearTimeout(reconnectFailTimeout); reconnectFailTimeout = null; }
             hideReconnectingBanner();
+            // Время разговора считаем от реального соединения, а не от
+            // нажатия "позвонить": гудки — не разговор.
+            if (callState.pc === pc) {
+                if (!callState.connectedAt) { callState.connectedAt = Date.now(); startCallTimer(); }
+                renderCallBar();
+            }
         }
 
         if (pc.connectionState === "disconnected") {
@@ -355,6 +470,10 @@ function setupPeerConnection() {
                 endCallLocally("Связь со собеседником прервалась.");
             }
         }
+
+        // Панель звонка показывает "соединение…", пока мост реально не
+        // поднялся, — иначе выглядит как рабочий звонок без звука.
+        if (callState.pc === pc) renderCallBar();
     };
 }
 
@@ -369,7 +488,10 @@ async function attemptIceRestart(pc) {
         // creating a re-offer with iceRestart set.
         const offer = await pc.createOffer({ iceRestart: true });
         await pc.setLocalDescription(offer);
-        sendSignal({ type: "offer", sdp: pc.localDescription });
+        // Раньше здесь уходило { type: "offer", sdp }, а приёмник умеет
+        // только { description } / { candidate } — то есть этот
+        // fallback-путь не работал вообще.
+        sendSignal({ description: pc.localDescription });
     } catch (e) {
         console.error("ICE restart failed:", e);
     }
@@ -386,13 +508,45 @@ function hideReconnectingBanner() {
     document.querySelector(".call-reconnecting-badge")?.remove();
 }
 
+function sendCallEvent(event, payload) {
+    if (!callState.channel) return;
+    try {
+        callState.channel.send({ type: "broadcast", event, payload })
+            .catch((e) => console.error(`Не удалось отправить "${event}" в звонке:`, e));
+    } catch (e) { console.error(`Не удалось отправить "${event}" в звонке:`, e); }
+}
+
+// Сигналинг до того, как канал подписан, раньше просто терялся: channel.send()
+// в этот момент уходит в REST-fallback и разлетается в пустоту (собеседник
+// ещё не в канале). Теперь такие сигналы ждут в очереди и уходят сразу
+// после SUBSCRIBED.
 function sendSignal(data) {
-    callState.channel?.send({ type: "broadcast", event: "signal", payload: { to: callState.remoteUserId, from: currentUserId, data } });
+    if (!callState.channel) return;
+    if (!callState.channelReady) {
+        callState.signalQueue.push(data);
+        if (callState.signalQueue.length > 200) callState.signalQueue.shift();
+        return;
+    }
+    sendCallEvent("signal", { to: callState.remoteUserId, from: currentUserId, data });
+}
+
+function flushQueuedSignals() {
+    const queued = callState.signalQueue.splice(0);
+    queued.forEach((data) => sendCallEvent("signal", { to: callState.remoteUserId, from: currentUserId, data }));
+}
+
+function flushPendingCandidates() {
+    const pc = callState.pc;
+    if (!pc || !pc.remoteDescription) return;
+    const queued = callState.pendingCandidates.splice(0);
+    queued.forEach((candidate) => {
+        pc.addIceCandidate(candidate).catch(() => { /* кандидат от отклонённого offer — уже неактуален */ });
+    });
 }
 
 async function handleSignal(data) {
     const pc = callState.pc;
-    if (!pc) return;
+    if (!pc || !data) return;
     try {
         if (data.description) {
             const offerCollision = data.description.type === "offer" && (callState.makingOffer || pc.signalingState !== "stable");
@@ -404,11 +558,17 @@ async function handleSignal(data) {
                 desc = { ...desc, sdp: boostOpusBitrate(desc.sdp) };
             }
             await pc.setRemoteDescription(desc);
+            flushPendingCandidates();
             if (data.description.type === "offer") {
                 await pc.setLocalDescription();
                 sendSignal({ description: pc.localDescription });
             }
         } else if (data.candidate) {
+            // Кандидаты прилетают быстрее, чем применяется offer/answer.
+            // addIceCandidate до setRemoteDescription бросает исключение —
+            // раньше такие кандидаты просто пропадали, и звонок мог
+            // "соединиться" без звука.
+            if (!pc.remoteDescription) { callState.pendingCandidates.push(data.candidate); return; }
             try { await pc.addIceCandidate(data.candidate); }
             catch (e) { if (!callState.ignoreOffer) console.error(e); }
         }
@@ -418,7 +578,16 @@ async function handleSignal(data) {
 }
 
 function broadcastMyState() {
-    callState.channel?.send({ type: "broadcast", event: "state", payload: { from: currentUserId, video: callState.camOn, screen: callState.screenOn } });
+    if (!callState.channel || !callState.channelReady) return;
+    const camTrack = callState.localStream?.getVideoTracks()[0] || null;
+    const screenTrack = callState.screenStream?.getVideoTracks()[0] || null;
+    sendCallEvent("state", {
+        from: currentUserId,
+        video: !!(callState.camOn && camTrack),
+        screen: !!(callState.screenOn && screenTrack),
+        camTrackId: camTrack?.id || null,
+        screenTrackId: screenTrack?.id || null
+    });
 }
 
 /* ------------------------------------------------------------
@@ -428,12 +597,13 @@ function broadcastMyState() {
 function hangUpCall() {
     if (callState.status === "calling") { cancelOutgoingCall(); return; }
     if (callState.status === "ringing") { declineIncomingCall(); return; }
-    callState.channel?.send({ type: "broadcast", event: "hangup", payload: { from: currentUserId } });
+    sendCallEvent("hangup", { from: currentUserId });
     endCallLocally();
 }
 
 function endCallLocally(toastMessage) {
     if (callState.ringTimeout) { clearTimeout(callState.ringTimeout); callState.ringTimeout = null; }
+    stopCallTimer();
     stopRingtone();
     try { closeBubblesModal(); } catch (e) {}
     if (callState.status !== "idle") playSound("callEnd");
@@ -446,13 +616,79 @@ function endCallLocally(toastMessage) {
     const wasStatus = callState.status;
     callState = {
         status: "idle", callId: null, remoteUserId: null, remoteName: "", remoteAvatar: "", inviteRowId: null,
-        channel: null, pc: null, polite: false, makingOffer: false, ignoreOffer: false,
-        localStream: null, screenStream: null, micOn: true, camOn: false, screenOn: false,
-        remoteVideoOn: false, remoteScreenOn: false, expanded: false, ringTimeout: null, stopRingtone: null
+        channel: null, channelReady: false, signalQueue: [], pc: null, isCaller: false, answered: false,
+        polite: false, makingOffer: false, ignoreOffer: false,
+        localStream: null, screenStream: null, camSender: null, screenSender: null,
+        micOn: true, camOn: false, screenOn: false,
+        remoteVideoOn: false, remoteScreenOn: false, remoteCamTrackId: null, remoteScreenTrackId: null,
+        pendingCandidates: [], connectedAt: null, durationTimer: null,
+        expanded: false, ringTimeout: null, stopRingtone: null
     };
 
     renderCallBar();
     if (toastMessage && wasStatus !== "idle") toast(toastMessage);
+}
+
+/* ------------------------------------------------------------
+   ТАЙМЕР РАЗГОВОРА
+   ------------------------------------------------------------ */
+
+function startCallTimer() {
+    if (callState.durationTimer) return;
+    callState.durationTimer = setInterval(updateCallTimerLabel, 1000);
+    updateCallTimerLabel();
+}
+
+function stopCallTimer() {
+    if (callState.durationTimer) { clearInterval(callState.durationTimer); callState.durationTimer = null; }
+}
+
+function updateCallTimerLabel() {
+    const el = document.getElementById("callBarTimer");
+    if (el) el.textContent = formatCallTimer();
+}
+
+function formatCallTimer() {
+    if (!callState.connectedAt) return "соединение…";
+    const total = Math.max(0, Math.floor((Date.now() - callState.connectedAt) / 1000));
+    return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/* ------------------------------------------------------------
+   УДАЛЁННОЕ ВИДЕО — какая дорожка куда
+   ------------------------------------------------------------
+   У полученного трека label всегда "remote video", поэтому старый
+   код (искавший label === "screen") никогда не узнавал показ экрана
+   и складывал оба видео в плитку камеры. Вместо этого собеседник
+   присылает в "state" id своих дорожек — по ним и раскладываем.
+   ------------------------------------------------------------ */
+
+function remoteVideoTracks() {
+    const tracks = (callState.pc?.getReceivers() || [])
+        .map(r => r.track)
+        .filter(t => t && t.kind === "video");
+
+    const byId = (id) => (id ? tracks.find(t => t.id === id) || null : null);
+    let cam = byId(callState.remoteCamTrackId);
+    let screen = byId(callState.remoteScreenTrackId);
+
+    // Пока "state" не дошёл: первое видео — камера, второе — показ экрана.
+    if (!cam) cam = tracks.find(t => t !== screen) || null;
+    if (!screen && tracks.length > 1) screen = tracks.find(t => t !== cam) || null;
+    return { cam, screen };
+}
+
+function attachRemoteVideoTracks() {
+    const { cam, screen } = remoteVideoTracks();
+
+    const camEl = document.getElementById("callTile-cam-remote");
+    if (camEl && cam && camEl.srcObject?.getVideoTracks?.()[0] !== cam) {
+        camEl.srcObject = new MediaStream([cam]);
+    }
+    const screenEl = document.getElementById("callTile-screen-remote");
+    if (screenEl && screen && screenEl.srcObject?.getVideoTracks?.()[0] !== screen) {
+        screenEl.srcObject = new MediaStream([screen]);
+    }
 }
 
 function stopStream(stream) {
@@ -585,8 +821,8 @@ async function toggleCam() {
     if (callState.status !== "connected") return;
     if (callState.camOn) {
         callState.localStream?.getVideoTracks().forEach(t => { t.stop(); callState.localStream.removeTrack(t); });
-        const sender = callState.pc.getSenders().find(s => s.track && s.track.kind === "video" && s.track.label !== "screen");
-        if (sender) callState.pc.removeTrack(sender);
+        if (callState.camSender) { try { callState.pc.removeTrack(callState.camSender); } catch (e) {} }
+        callState.camSender = null;
         callState.camOn = false;
     } else {
         try {
@@ -595,6 +831,7 @@ async function toggleCam() {
             callState.localStream.addTrack(track);
             const sender = callState.pc.addTrack(track, callState.localStream);
             applyEncodingBitrate(sender, CALL_QUALITY_PRESETS[callSettings.quality].videoBitrate);
+            callState.camSender = sender;
             callState.camOn = true;
         } catch (e) {
             console.error(e);
@@ -612,8 +849,8 @@ async function toggleScreenShare() {
     if (callState.screenOn) {
         stopStream(callState.screenStream);
         callState.screenStream = null;
-        const sender = callState.pc.getSenders().find(s => s.track && s.track.label === "screen");
-        if (sender) callState.pc.removeTrack(sender);
+        if (callState.screenSender) { try { callState.pc.removeTrack(callState.screenSender); } catch (e) {} }
+        callState.screenSender = null;
         callState.screenOn = false;
     } else {
         try {
@@ -623,11 +860,11 @@ async function toggleScreenShare() {
                 audio: false
             });
             const track = stream.getVideoTracks()[0];
-            Object.defineProperty(track, "label", { value: "screen" });
             track.onended = () => { if (callState.screenOn) toggleScreenShare(); };
             callState.screenStream = stream;
             const sender = callState.pc.addTrack(track, stream);
             applyEncodingBitrate(sender, q.screenBitrate);
+            callState.screenSender = sender;
             callState.screenOn = true;
             // A shared screen is the whole point — don't make anyone
             // squint at a 420px floating window to read it.
@@ -681,7 +918,7 @@ function stopRingtone() {
 function renderIncomingCallModal() {
     showBubblesModal(`
         <div class="call-modal">
-            <img class="call-modal-avatar call-modal-avatar-pulse" src="${callState.remoteAvatar || defaultAvatar()}">
+            <img class="call-modal-avatar call-modal-avatar-pulse" src="${safeImageUrl(callState.remoteAvatar) || defaultAvatar()}">
             <h3>${escapeHtml(callState.remoteName)}</h3>
             <p class="muted">Входящий звонок…</p>
             <div class="call-modal-actions">
@@ -699,7 +936,7 @@ function renderIncomingCallModal() {
 function renderOutgoingCallModal() {
     showBubblesModal(`
         <div class="call-modal">
-            <img class="call-modal-avatar call-modal-avatar-pulse" src="${callState.remoteAvatar || defaultAvatar()}">
+            <img class="call-modal-avatar call-modal-avatar-pulse" src="${safeImageUrl(callState.remoteAvatar) || defaultAvatar()}">
             <h3>${escapeHtml(callState.remoteName)}</h3>
             <p class="muted">Звоним…</p>
             <div class="call-modal-actions">
@@ -782,7 +1019,7 @@ function renderCallBar() {
     bar.classList.toggle("expanded", expanded);
 
     topEl.innerHTML = `
-        <div class="call-bar-title">📞 ${escapeHtml(callState.remoteName)}</div>
+        <div class="call-bar-title">📞 ${escapeHtml(callState.remoteName)}<span id="callBarTimer" class="call-bar-timer">${formatCallTimer()}</span></div>
         ${tileDefs.length ? `<button class="call-btn call-btn-expand" onclick="toggleCallExpanded()" title="${expanded ? "Свернуть" : "Развернуть на весь экран"}">${expanded ? "⤡" : "⤢"}</button>` : ""}
         <button class="call-btn call-btn-leave" onclick="hangUpCall()" title="Завершить">✕</button>
     `;
@@ -797,7 +1034,12 @@ function renderCallBar() {
     // Плитки (и их <video>) перерисовываем только когда реально
     // поменялся их состав/раскладка — иначе трогать их незачем, и
     // ничего не мигает при простом mute/settings-клике.
-    const signature = JSON.stringify({ ids: tileDefs.map(t => t.id), expanded });
+    const signature = JSON.stringify({
+        ids: tileDefs.map(t => t.id),
+        expanded,
+        camId: callState.remoteCamTrackId,
+        screenId: callState.remoteScreenTrackId
+    });
     const tilesChanged = signature !== lastCallTileSignature;
     if (tilesChanged) {
         lastCallTileSignature = signature;
@@ -829,14 +1071,7 @@ function renderCallBar() {
         if (callState.screenOn) { const v = document.getElementById("callTile-screen-me"); if (v) v.srcObject = callState.screenStream; }
         // Пересвязываем удалённые потоки только если плитки только что
         // пересозданы — иначе уже подключённые <video>/<audio> трогать не надо.
-        if (tilesChanged) {
-            callState.pc?.getReceivers().forEach(r => {
-                if (!r.track || r.track.kind !== "video") return;
-                const isScreen = r.track.label === "screen";
-                const el = document.getElementById(isScreen ? "callTile-screen-remote" : "callTile-cam-remote");
-                if (el) el.srcObject = new MediaStream([r.track]);
-            });
-        }
+        if (tilesChanged) attachRemoteVideoTracks();
         // Аудио-элемент теперь живёт всю длительность звонка — если он
         // почему-то ещё пуст (например, поменяли настройки раньше, чем
         // прилетел трек), подключаем поток из ресивера как подстраховку.
@@ -1051,7 +1286,8 @@ async function swapCamDevice() {
         const oldTrack = callState.localStream.getVideoTracks()[0];
         if (oldTrack) { callState.localStream.removeTrack(oldTrack); oldTrack.stop(); }
         callState.localStream.addTrack(newTrack);
-        const sender = callState.pc.getSenders().find(s => s.track && s.track.kind === "video" && s.track.label !== "screen");
+        const sender = callState.camSender
+            || callState.pc.getSenders().find(s => s.track && s.track.kind === "video" && s.track.label !== "screen");
         if (sender) { sender.replaceTrack(newTrack); applyEncodingBitrate(sender, CALL_QUALITY_PRESETS[callSettings.quality].videoBitrate); }
         const v = document.getElementById("callTile-cam-me");
         if (v) v.srcObject = callState.localStream;

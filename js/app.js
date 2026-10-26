@@ -79,6 +79,13 @@ const COVER_EFFECTS = [
 // picker — QUICK_REACTIONS above stays exactly as-is for everyone else.
 const PLUS_REACTIONS = ["🫧", "✨", "💎", "🌈", "🔥", "😻"];
 
+// Whitelists for the cosmetic values stored on a profile. These are read
+// back from the DB and interpolated straight into class="" / data-* —
+// so only the ids defined above are ever allowed through.
+const FRAME_IDS = FRAME_OPTIONS.map(o => o.id);
+const THEME_IDS = THEME_OPTIONS.map(o => o.id);
+const COVER_EFFECT_IDS = COVER_EFFECTS.map(o => o.id);
+
 function isSubscriber(user) {
     return !!user
         && user.subscriptionTier === "plus"
@@ -95,8 +102,9 @@ function subscriptionDaysLeft(user) {
 // empty string when the user isn't an active subscriber or hasn't
 // picked a frame, so this is always safe to interpolate directly.
 function avatarFrameClass(user) {
-    if (!isSubscriber(user) || !user.subscriptionFrame || user.subscriptionFrame === "none") return "";
-    return ` sub-frame-${user.subscriptionFrame}`;
+    if (!isSubscriber(user) || !user.subscriptionFrame) return "";
+    const frame = String(user.subscriptionFrame);
+    return FRAME_IDS.includes(frame) ? ` sub-frame-${frame}` : "";
 }
 
 // Small inline "💎 Bubbles+" tag — pass a size like "11px" to match
@@ -200,7 +208,7 @@ function statusBadgeHtml(user, size = "normal") {
     const tier = getStatusTier(user);
     if (!tier) return "";
     const cls = size === "small" ? "status-badge small" : "status-badge";
-    return `<span class="${cls}" title="${escapeHtml(tier.title)}">${tier.icon} ${escapeHtml(tier.title)}</span>`;
+    return `<span class="${cls}" title="${escapeHtml(tier.title)}">${escapeHtml(tier.icon)} ${escapeHtml(tier.title)}</span>`;
 }
 
 // Only ever meaningfully accurate for the CURRENTLY LOGGED IN person —
@@ -522,6 +530,94 @@ function escapeHtml(value) {
         .replaceAll("'", "&#039;");
 }
 
+/* ------------------------------------------------------------
+   SANITISERS FOR DATA COMING BACK FROM THE DATABASE
+   ------------------------------------------------------------
+   Rows can be written straight through the Supabase API, bypassing this
+   UI entirely, so anything from the DB is untrusted input. Every value
+   below ends up inside innerHTML — often inside an inline onclick="..."
+   — so it has to be validated before it touches the DOM. All normal
+   app-generated values (uuid / uid() ids, storage URLs, emoji) pass
+   through unchanged.
+   ------------------------------------------------------------ */
+
+// A row id is either a uuid or uid()'s prefix_base36_random shape.
+// Anything else becomes "" — the row still loads, but its buttons simply
+// do nothing instead of executing whatever was smuggled into the id.
+function safeId(value) {
+    const id = String(value ?? "");
+    return /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : "";
+}
+
+function isSafeUrl(value, dataPattern) {
+    const raw = String(value ?? "").trim();
+    if (!raw) return false;
+    if (/^data:/i.test(raw)) return dataPattern.test(raw);
+    const scheme = raw.match(/^([a-z][a-z0-9+.-]*):/i);
+    return !scheme || /^https?$/i.test(scheme[1]) || /^blob$/i.test(scheme[1]);
+}
+
+// Percent-encodes only the characters that could break out of an HTML
+// attribute or a CSS url("...") string. Plain encodeURI() is NOT used on
+// purpose: it would re-encode the "%" of an already-encoded Supabase
+// storage URL ("%20" → "%2520") and break the image.
+function sanitizeUrlString(raw) {
+    return raw.replace(/[\u0000-\u0020"'<>`\\]/g, ch =>
+        "%" + ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")
+    );
+}
+
+// Only real image URLs survive: http(s), relative/same-origin, blob: and
+// data:image. javascript:, data:text/html, etc. become "".
+function safeImageUrl(value) {
+    const raw = String(value ?? "").trim();
+    if (!isSafeUrl(raw, /^data:image\//i)) return "";
+    return sanitizeUrlString(raw);
+}
+
+function safeMediaUrl(value) {
+    const raw = String(value ?? "").trim();
+    if (!isSafeUrl(raw, /^data:(audio|video)\//i)) return "";
+    return sanitizeUrlString(raw);
+}
+
+// For inline style="background-image:...". Double quotes + escaped
+// backslashes/quotes, so a crafted URL can't close the declaration.
+function cssImageUrl(value) {
+    const url = safeImageUrl(value);
+    if (!url) return "none";
+    return `url("${url.replace(/[\\"]/g, "\\$&")}")`;
+}
+
+// Reaction emoji are rendered as text AND as a quoted JS argument inside
+// onclick="...". Every emoji this app uses is non-ASCII, so anything
+// containing ASCII (quotes, brackets, letters…) is rejected.
+function safeEmoji(value, fallback = "❤️") {
+    const emoji = String(value ?? "").trim();
+    if (!emoji || emoji.length > 32) return fallback;
+    return /^[^\x00-\x7F]+$/.test(emoji) ? emoji : fallback;
+}
+
+// Cosmetic subscription values (frame / theme / cover effect) must be one
+// of the ids this build actually knows about.
+function safeToken(value, allowed, fallback) {
+    const token = String(value ?? "");
+    return allowed.includes(token) ? token : fallback;
+}
+
+function safeFrame(value) {
+    return safeToken(value, FRAME_IDS, "none");
+}
+
+function safeTheme(value) {
+    return safeToken(value, THEME_IDS, "default");
+}
+
+function safeCoverEffect(value) {
+    return safeToken(value, COVER_EFFECT_IDS, "none");
+}
+
+
 function getUser(id) {
     return db.users.find(user => user.id === id);
 }
@@ -638,6 +734,16 @@ function openFollowListModal(userId, kind) {
 
 function isBlockedByMe(userId) {
     return db.blocks.some(b => b.blockerId === currentUserId && b.blockedId === userId);
+}
+
+// Mirrors the posts_insert RLS check: your own wall always, someone else's
+// only if it's public or you're friends (and they haven't blocked you).
+// Used to hide the wall composer instead of letting the insert fail.
+function canPostOnWall(user) {
+    if (!user || !currentUserId) return false;
+    if (user.id === currentUserId) return true;
+    if (isBlockedByMe(user.id)) return false;
+    return user.wallVisibility === "everyone" || isFriend(user.id);
 }
 
 async function toggleBlockUser(userId) {
@@ -2879,6 +2985,8 @@ async function createPost(targetWallId = null) {
 }
 
 async function createWallPost(userId){
+    const targetUser = getUser(userId);
+    if (!canPostOnWall(targetUser)) { toast("На эту стену могут писать только друзья."); return; }
     wallTargetUserId = userId;
     const text = document.getElementById("wallPostText")?.value?.trim() || "";
     const fileInput = document.getElementById("wallPostImage");
@@ -3781,11 +3889,11 @@ function renderProfile(userId){
         <div class="card" style="padding:0;">
 
             <div
-                class="cover${isSubscriber(user) && user.subscriptionCoverEffect && user.subscriptionCoverEffect !== "none" ? ` cover-effect-${user.subscriptionCoverEffect}` : ""}"
+                class="cover${isSubscriber(user) && user.subscriptionCoverEffect && user.subscriptionCoverEffect !== "none" ? ` cover-effect-${safeCoverEffect(user.subscriptionCoverEffect)}` : ""}"
                 style="
                     ${
                         user.cover
-                        ? `background-image:url('${user.cover}')`
+                        ? `background-image:${cssImageUrl(user.cover)}`
                         : ""
                     }
                 "
@@ -3957,8 +4065,8 @@ function renderProfile(userId){
             <p class="wall-subtitle">Видно только здесь, в профиле — в общую ленту не попадает.</p>
 
             ${
-                isBlockedByMe(user.id)
-                ? `<div class="card wall-locked">🚫 Стена недоступна</div>`
+                !canPostOnWall(user)
+                ? `<div class="card wall-locked">${isBlockedByMe(user.id) ? "🚫 Стена недоступна" : "🔒 Стена доступна только друзьям"}</div>`
                 : `
                     <div class="card wall-composer">
                         <div class="wall-composer-head">
@@ -3980,7 +4088,7 @@ function renderProfile(userId){
             }
 
             <div id="profileWallPosts">
-                ${wallPosts.length ? wallPosts.map(renderPost).join("") : emptyState("🫧", "Стена пустая", isMe ? "Напиши первый пост." : "Оставь первый пост на стене этого пользователя.")}
+                ${wallPosts.length ? wallPosts.map(renderPost).join("") : emptyState("🫧", "Стена пустая", canPostOnWall(user) ? (isMe ? "Напиши первый пост." : "Оставь первый пост на стене этого пользователя.") : "Посты этой стены видны только друзьям.")}
             </div>
         </section>
         ` : ''}
@@ -4708,18 +4816,27 @@ async function declineFriendRequest(requestId) {
 }
 
 async function acceptFriendRequest(requestId, otherUserId) {
+    // Order matters: the friendships_insert policy requires an accepted
+    // friend_requests row, so mark the request accepted first, then create
+    // the friendship. If the insert fails, put the request back to pending
+    // so the "Принять" button isn't lost.
+    const { error: reqError } = await sb.from("friend_requests").update({ status: "accepted", responded_at: new Date().toISOString() }).eq("id", requestId);
+    if (reqError) {
+        console.error(reqError);
+        toast("Не удалось принять заявку.");
+        return;
+    }
     const friendship = { id: uid("friend"), user1: currentUserId, user2: otherUserId, createdAt: Date.now() };
     const { error: friendError } = await sb.from("friendships").insert({
         id: friendship.id, user1: friendship.user1, user2: friendship.user2, created_at: new Date(friendship.createdAt).toISOString()
     });
     if (friendError) {
         console.error(friendError);
+        await sb.from("friend_requests").update({ status: "pending", responded_at: null }).eq("id", requestId);
         toast("Не удалось принять заявку.");
         return;
     }
     db.friends.push(friendship);
-    const { error: reqError } = await sb.from("friend_requests").update({ status: "accepted", responded_at: new Date().toISOString() }).eq("id", requestId);
-    if (reqError) console.error(reqError);
     db.friendRequests = db.friendRequests.filter(r => r.id !== requestId);
     toast("Теперь вы друзья 🎉");
     createNotification({ userId: otherUserId, type: "friend_accept" });
@@ -5853,7 +5970,7 @@ function messageBubble(message){
                 : ""
             }
 
-            ${message.image ? `<img loading="lazy" decoding="async" class="message-image" src="${message.image}" onclick="viewChatImage(this.src)">` : ""}
+            ${message.image ? `<img loading="lazy" decoding="async" class="message-image" src="${safeImageUrl(message.image)}" onclick="viewChatImage(this.src)">` : ""}
 
             ${
                 sharedPost
@@ -8484,12 +8601,12 @@ function renderSearchResults(query){
 
 function rowToUser(row){
     return {
-        id: row.id,
+        id: safeId(row.id),
         username: row.username || "user",
         displayName: row.display_name || row.username || "User",
         gender: row.gender || "female",
-        avatar: row.avatar || defaultAvatar(),
-        cover: row.cover || "",
+        avatar: safeImageUrl(row.avatar) || defaultAvatar(),
+        cover: safeImageUrl(row.cover),
         bio: row.bio || "",
         // visible_last_seen comes from the profiles_public view — it's
         // already null when this person turned show_online_status off
@@ -8514,22 +8631,22 @@ function rowToUser(row){
         customStatusIcon: row.custom_status_icon || "",
         subscriptionTier: row.subscription_tier || "free",
         subscriptionExpiresAt: row.subscription_expires_at ? Date.parse(row.subscription_expires_at) : null,
-        subscriptionFrame: row.subscription_frame || "none",
-        subscriptionTheme: row.subscription_theme || "default",
-        subscriptionCoverEffect: row.subscription_cover_effect || "none",
+        subscriptionFrame: safeFrame(row.subscription_frame),
+        subscriptionTheme: safeTheme(row.subscription_theme),
+        subscriptionCoverEffect: safeCoverEffect(row.subscription_cover_effect),
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
 
 function rowToPost(row) {
     return {
-        id: row.id,
-        authorId: row.author_id,
-        wallOwnerId: row.wall_owner_id || row.author_id,
+        id: safeId(row.id),
+        authorId: safeId(row.author_id),
+        wallOwnerId: safeId(row.wall_owner_id) || safeId(row.author_id),
         text: row.text || "",
-        image: row.image || "",
-        musicId: row.music_id || null,
-        sharedPostId: row.shared_post_id || null,
+        image: safeImageUrl(row.image),
+        musicId: safeId(row.music_id) || null,
+        sharedPostId: safeId(row.shared_post_id) || null,
         likes: Array.isArray(row.likes) ? row.likes : [],
         reactions: [],
         pinned: !!row.pinned,
@@ -8540,10 +8657,10 @@ function rowToPost(row) {
 
 function rowToComment(row) {
     return {
-        id: row.id,
-        postId: row.post_id,
-        authorId: row.author_id,
-        parentId: row.parent_comment_id || null,
+        id: safeId(row.id),
+        postId: safeId(row.post_id),
+        authorId: safeId(row.author_id),
+        parentId: safeId(row.parent_comment_id) || null,
         text: row.text || "",
         likes: [],
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
@@ -8556,8 +8673,8 @@ function rowToCanvasItem(row) {
     // make an item vanish or cover the whole wall.
     const num = (v, fallback) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };
     return {
-        id: row.id,
-        ownerId: row.owner_id,
+        id: safeId(row.id),
+        ownerId: safeId(row.owner_id),
         type: row.type,
         content: row.content || "",
         color: row.color || "",
@@ -9258,20 +9375,20 @@ function renderRooms() {
 
 function rowToFriend(row) {
     return {
-        id: row.id,
-        user1: row.user1,
-        user2: row.user2,
+        id: safeId(row.id),
+        user1: safeId(row.user1),
+        user2: safeId(row.user2),
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
 }
 
 function rowToReport(row) {
     return {
-        id: row.id,
-        reporterId: row.reporter_id,
+        id: safeId(row.id),
+        reporterId: safeId(row.reporter_id),
         targetType: row.target_type,
-        targetId: row.target_id,
-        targetUserId: row.target_user_id,
+        targetId: safeId(row.target_id),
+        targetUserId: safeId(row.target_user_id),
         reason: row.reason || "",
         status: row.status || "pending",
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
@@ -9280,22 +9397,22 @@ function rowToReport(row) {
 
 function rowToSubscriptionRequest(row) {
     return {
-        id: row.id,
-        userId: row.user_id,
+        id: safeId(row.id),
+        userId: safeId(row.user_id),
         months: row.months,
         note: row.note || "",
         status: row.status || "pending",
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
         resolvedAt: row.resolved_at ? Date.parse(row.resolved_at) : null,
-        resolvedBy: row.resolved_by || null
+        resolvedBy: safeId(row.resolved_by) || null
     };
 }
 
 function rowToStory(row) {
     return {
-        id: row.id,
-        authorId: row.author_id,
-        image: row.image,
+        id: safeId(row.id),
+        authorId: safeId(row.author_id),
+        image: safeImageUrl(row.image),
         caption: row.caption || "",
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
         expiresAt: row.expires_at ? Date.parse(row.expires_at) : Date.now() + 86400000
@@ -9304,9 +9421,9 @@ function rowToStory(row) {
 
 function rowToFriendRequest(row) {
     return {
-        id: row.id,
-        fromUser: row.from_user,
-        toUser: row.to_user,
+        id: safeId(row.id),
+        fromUser: safeId(row.from_user),
+        toUser: safeId(row.to_user),
         status: row.status || "pending",
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
     };
@@ -9314,12 +9431,12 @@ function rowToFriendRequest(row) {
 
 function rowToNotification(row) {
     return {
-        id: row.id,
-        userId: row.user_id,
-        actorId: row.actor_id,
+        id: safeId(row.id),
+        userId: safeId(row.user_id),
+        actorId: safeId(row.actor_id),
         type: row.type,
-        postId: row.post_id || null,
-        commentId: row.comment_id || null,
+        postId: safeId(row.post_id) || null,
+        commentId: safeId(row.comment_id) || null,
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
         readAt: row.read_at ? Date.parse(row.read_at) : null
     };
@@ -9358,17 +9475,17 @@ async function rowToMessage(row) {
 
     return {
 
-        id: row.id,
+        id: safeId(row.id),
 
-        from: row.sender_id,
+        from: safeId(row.sender_id),
 
-        to: row.receiver_id,
+        to: safeId(row.receiver_id),
 
         text,
 
-        image,
+        image: safeImageUrl(image),
 
-        replyToId: row.reply_to_id || null,
+        replyToId: safeId(row.reply_to_id) || null,
 
         editedAt: row.edited_at ? Date.parse(row.edited_at) : null,
         pinned: !!row.pinned,
@@ -9485,12 +9602,12 @@ function updateMessagesBadge() {
 
 function rowToMusic(row) {
     return {
-        id: row.id,
-        authorId: row.author_id,
+        id: safeId(row.id),
+        authorId: safeId(row.author_id),
         title: row.title || "Без названия",
         artist: row.artist || "Неизвестный артист",
-        cover: row.cover_url || "",
-        audioUrl: row.audio_url || "",
+        cover: safeImageUrl(row.cover_url),
+        audioUrl: safeMediaUrl(row.audio_url),
         audioPath: row.audio_path || "",
         coverPath: row.cover_path || "",
         createdAt: row.created_at ? Date.parse(row.created_at) : Date.now()
@@ -9558,15 +9675,15 @@ async function loadDB() {
             music: (music.data || []).map(rowToMusic),
             reports: (reports.data || []).map(rowToReport),
             subscriptionRequests: (subscriptionRequests.data || []).map(rowToSubscriptionRequest),
-            blocks: (blocks.data || []).map(row => ({ id: row.id, blockerId: row.blocker_id, blockedId: row.blocked_id })),
+            blocks: (blocks.data || []).map(row => ({ id: safeId(row.id), blockerId: safeId(row.blocker_id), blockedId: safeId(row.blocked_id) })),
             stories: (stories.data || []).map(rowToStory),
-            storyViews: (storyViews.data || []).map(row => ({ id: row.id, storyId: row.story_id, viewerId: row.viewer_id, viewedAt: row.viewed_at ? Date.parse(row.viewed_at) : Date.now() })),
-            storyReactions: (storyReactions.data || []).map(row => ({ storyId: row.story_id, userId: row.user_id, emoji: row.emoji || "❤️", createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
-            polls: (polls.data || []).map(row => ({ id: row.id, postId: row.post_id, createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
-            pollOptions: (pollOptions.data || []).map(row => ({ id: row.id, pollId: row.poll_id, text: row.text, position: row.position || 0, votes: [] })),
-            follows: (follows.data || []).map(row => ({ followerId: row.follower_id, followedId: row.followed_id })),
-            playlists: (playlists.data || []).map(row => ({ id: row.id, ownerId: row.owner_id, name: row.name, createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
-            playlistTracks: (playlistTracks.data || []).map(row => ({ id: row.id, playlistId: row.playlist_id, musicId: row.music_id, position: row.position || 0, addedAt: row.added_at ? Date.parse(row.added_at) : Date.now() })),
+            storyViews: (storyViews.data || []).map(row => ({ id: safeId(row.id), storyId: safeId(row.story_id), viewerId: safeId(row.viewer_id), viewedAt: row.viewed_at ? Date.parse(row.viewed_at) : Date.now() })),
+            storyReactions: (storyReactions.data || []).map(row => ({ storyId: safeId(row.story_id), userId: safeId(row.user_id), emoji: safeEmoji(row.emoji), createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
+            polls: (polls.data || []).map(row => ({ id: safeId(row.id), postId: safeId(row.post_id), createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
+            pollOptions: (pollOptions.data || []).map(row => ({ id: safeId(row.id), pollId: safeId(row.poll_id), text: row.text, position: row.position || 0, votes: [] })),
+            follows: (follows.data || []).map(row => ({ followerId: safeId(row.follower_id), followedId: safeId(row.followed_id) })),
+            playlists: (playlists.data || []).map(row => ({ id: safeId(row.id), ownerId: safeId(row.owner_id), name: row.name, createdAt: row.created_at ? Date.parse(row.created_at) : Date.now() })),
+            playlistTracks: (playlistTracks.data || []).map(row => ({ id: safeId(row.id), playlistId: safeId(row.playlist_id), musicId: safeId(row.music_id), position: row.position || 0, addedAt: row.added_at ? Date.parse(row.added_at) : Date.now() })),
             canvasItems: []
         };
         // Attach each track's likes from music_likes, same two-step
@@ -9607,7 +9724,7 @@ async function loadDB() {
         const reactionsByMessage = new Map();
         (messageReactions.data || []).forEach(row => {
             if (!reactionsByMessage.has(row.message_id)) reactionsByMessage.set(row.message_id, []);
-            reactionsByMessage.get(row.message_id).push({ userId: row.user_id, emoji: row.emoji });
+            reactionsByMessage.get(row.message_id).push({ userId: safeId(row.user_id), emoji: safeEmoji(row.emoji) });
         });
         db.messages.forEach(message => { message.reactions = reactionsByMessage.get(message.id) || []; });
 
@@ -9631,7 +9748,7 @@ async function loadDB() {
             if (!likesByPost.has(row.post_id)) likesByPost.set(row.post_id, []);
             likesByPost.get(row.post_id).push(row.user_id);
             if (!reactionsByPost.has(row.post_id)) reactionsByPost.set(row.post_id, []);
-            reactionsByPost.get(row.post_id).push({ userId: row.user_id, emoji: row.emoji || "❤️" });
+            reactionsByPost.get(row.post_id).push({ userId: safeId(row.user_id), emoji: safeEmoji(row.emoji) });
         });
         db.posts.forEach(post => {
             post.likes = likesByPost.get(post.id) || [];
@@ -9812,7 +9929,7 @@ function applyRemoteReaction(payload) {
     if (!message) return;
     if (!message.reactions) message.reactions = [];
     message.reactions = message.reactions.filter(r => r.userId !== row.user_id);
-    message.reactions.push({ userId: row.user_id, emoji: row.emoji });
+    message.reactions.push({ userId: safeId(row.user_id), emoji: safeEmoji(row.emoji) });
     refreshMessageBubbleInPlace(row.message_id);
 }
 
@@ -9868,7 +9985,7 @@ function setupSocialRealtime() {
             if (!post.reactions) post.reactions = [];
             if (!post.likes.includes(payload.new.user_id)) post.likes.push(payload.new.user_id);
             if (!post.reactions.some(r => r.userId === payload.new.user_id)) {
-                post.reactions.push({ userId: payload.new.user_id, emoji: payload.new.emoji || "❤️" });
+                post.reactions.push({ userId: safeId(payload.new.user_id), emoji: safeEmoji(payload.new.emoji) });
             }
             refreshPostInPlace(post.id);
         })
@@ -9880,8 +9997,8 @@ function setupSocialRealtime() {
             if (!post) return;
             if (!post.reactions) post.reactions = [];
             const mine = post.reactions.find(r => r.userId === payload.new.user_id);
-            if (mine) mine.emoji = payload.new.emoji || "❤️";
-            else post.reactions.push({ userId: payload.new.user_id, emoji: payload.new.emoji || "❤️" });
+            if (mine) mine.emoji = safeEmoji(payload.new.emoji);
+            else post.reactions.push({ userId: safeId(payload.new.user_id), emoji: safeEmoji(payload.new.emoji) });
             refreshPostInPlace(post.id);
         })
         .on("postgres_changes", { event: "DELETE", schema: "public", table: "post_likes" }, (payload) => {

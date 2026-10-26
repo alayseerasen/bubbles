@@ -121,6 +121,17 @@ const SOUND_PATTERNS = {
         { freq: 660, start: 0.1,  duration: 0.16, gain: 0.22 }
     ]),
 
+    // Рингтон входящего звонка. Раньше здесь не было записи "ring" вовсе:
+    // startSoundLoop("ring") вызывался, но синтезировать было нечего, а
+    // sounds/ring.mp3 в проекте нет — то есть входящий звонок был
+    // БЕСШУМНЫМ. startSoundLoop повторяет этот сигнал каждые 1.5 с.
+    ring: () => playTones([
+        { freq: 880, start: 0,    duration: 0.18, type: "triangle", gain: 0.22 },
+        { freq: 660, start: 0.2,  duration: 0.18, type: "triangle", gain: 0.22 },
+        { freq: 880, start: 0.42, duration: 0.18, type: "triangle", gain: 0.22 },
+        { freq: 660, start: 0.62, duration: 0.22, type: "triangle", gain: 0.22 }
+    ]),
+
     // Нисходящий двухнотный сигнал — звонок завершён/отклонён/сброшен
     callEnd: () => playTones([
         { freq: 520, start: 0,    duration: 0.14, gain: 0.2 },
