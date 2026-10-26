@@ -4920,6 +4920,14 @@ html::after{
     min-width:0;
 }
 
+.call-bar-timer{
+    margin-left:8px;
+    font-weight:600;
+    font-size:.8rem;
+    color:#bfe4ee;
+    white-space:nowrap;
+}
+
 .call-bar-audio-only{
     text-align:center;
     margin:0 0 10px;
