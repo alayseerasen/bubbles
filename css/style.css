@@ -22,7 +22,7 @@
 html,body{
     margin:0;
     min-height:100%;
-    font-family:'Nunito',Arial,Helvetica,sans-serif;
+    font-family:'Nunito','Segoe UI Emoji','Segoe UI Symbol','Apple Color Emoji','Noto Color Emoji',Arial,Helvetica,sans-serif;
     color:var(--text);
     /* Stops scrolling inside the app from chaining into the browser's
        own pull-to-refresh / back-swipe gesture once you hit the top or
@@ -184,7 +184,7 @@ a.nav-btn:focus-visible,
 
 .logo{
     text-align:center;
-    font-family:'Fredoka',sans-serif;
+    font-family:'Fredoka','Segoe UI Emoji','Segoe UI Symbol','Apple Color Emoji','Noto Color Emoji',sans-serif;
     font-size:54px;
     font-weight:700;
     letter-spacing:-2px;
@@ -810,14 +810,14 @@ body.player-open .layout{
 
 .section-title{
     margin:4px 0 16px;
-    font-family:'Fredoka',sans-serif;
+    font-family:'Fredoka','Segoe UI Emoji','Segoe UI Symbol','Apple Color Emoji','Noto Color Emoji',sans-serif;
     font-size:30px;
     font-weight:600;
     letter-spacing:-.5px;
 }
 
 h1,h2,h3{
-    font-family:'Fredoka',sans-serif;
+    font-family:'Fredoka','Segoe UI Emoji','Segoe UI Symbol','Apple Color Emoji','Noto Color Emoji',sans-serif;
     font-weight:600;
 }
 
