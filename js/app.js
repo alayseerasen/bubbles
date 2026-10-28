@@ -586,7 +586,11 @@ function safeMediaUrl(value) {
 function cssImageUrl(value) {
     const url = safeImageUrl(value);
     if (!url) return "none";
-    return `url("${url.replace(/[\\"]/g, "\\$&")}")`;
+    // Single quotes here: this value is embedded into a double-quoted
+    // HTML attribute (style="..."), so double quotes inside url("...") would
+    // terminate the attribute and mangle the URL (that's why covers never
+    // showed up). Single quotes are safe in that context.
+    return `url('${url.replace(/'/g, "%27")}')`;
 }
 
 // Reaction emoji are rendered as text AND as a quoted JS argument inside
