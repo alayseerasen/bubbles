@@ -205,8 +205,32 @@ function renderEventFloaters(ev) {
     });
 }
 
-applySeasonalEvent();
-document.addEventListener("DOMContentLoaded", applySeasonalEvent);
+// ---------- гарантированная прокрутка страницы колесом мыши ----------
+// На ПК пользователи жаловались, что страница "не листается". Причина
+// бывала разной (полноэкранные слои, контейнеры со скрытым overflow и т.п.).
+// Этот обработчик в фазе capture гарантирует: если под курсором нет
+// настоящего вертикально-прокручиваемого контейнера, колесо всегда
+// прокручивает страницу. Внутри чатов/панелей (где есть свой скролл)
+// отдаём управление нативному поведению.
+(function () {
+    function hasVerticalScroll(el) {
+        if (!el || el === document.body || el === document.documentElement) return false;
+        const s = getComputedStyle(el);
+        if (s.overflowY !== "auto" && s.overflowY !== "scroll") return false;
+        return el.scrollHeight > el.clientHeight + 2;
+    }
+    document.addEventListener("wheel", (e) => {
+        let el = e.target;
+        while (el && el !== document.documentElement) {
+            if (hasVerticalScroll(el)) return; // нативный скролл контейнера
+            el = el.parentElement;
+        }
+        if (e.deltaY) {
+            window.scrollBy(0, e.deltaY);
+            e.preventDefault();
+        }
+    }, { capture: true, passive: false });
+})();
 // A PWA can stay open for days — re-check the date whenever it comes back to the screen.
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") applySeasonalEvent(); });
 
