@@ -182,29 +182,27 @@ function applySeasonalEvent() {
 }
 
 function renderEventFloaters(ev) {
-    let box = document.getElementById("eventFloaters");
-    if (!ev || !ev.floaters || !ev.floaters.length) { if (box) box.remove(); return; }
+    // Remove any previously rendered floaters (container-less approach: each
+    // floater is its own fixed element, so there is NO full-screen layer that
+    // could capture the mouse wheel / block scrolling on PC).
+    document.querySelectorAll(".halloween-floater").forEach(el => el.remove());
+
+    if (!ev || !ev.floaters || !ev.floaters.length) return;
     if (!document.body) return;
-    if (box && box.dataset.eventId === ev.id) return; // already showing this one
-    if (box) box.remove();
-    box = document.createElement("div");
-    box.id = "eventFloaters";
-    box.dataset.eventId = ev.id;
-    box.setAttribute("aria-hidden", "true");
-    // The box is a full-screen fixed layer. Even with pointer-events:none
-    // (set in CSS) some browsers still route the mouse wheel to it instead
-    // of the page underneath, which made the whole app feel "frozen" on PC
-    // during the event. Forward wheel deltas to the window so scrolling
-    // always works, and never let the layer itself become a scroll target.
-    box.addEventListener("wheel", (e) => {
-        window.scrollBy({ top: e.deltaY, left: e.deltaX, behavior: "auto" });
-        e.preventDefault();
-    }, { passive: false });
+
     // Fixed slots hugging the screen edges (not Math.random()): looks the same every visit, and the
     // drifting emoji stay out of the way of the text in the middle.
     const slots = [3, 9, 86, 92, 97];
-    box.innerHTML = slots.map((left, i) => `<span class="event-floater" style="left:${left}%;animation-delay:${-i * 2.3}s;animation-duration:${14 + (i % 3) * 3}s;">${ev.floaters[i % ev.floaters.length]}</span>`).join("");
-    document.body.appendChild(box);
+    slots.forEach((left, i) => {
+        const span = document.createElement("span");
+        span.className = "halloween-floater event-floater";
+        span.textContent = ev.floaters[i % ev.floaters.length];
+        span.style.left = left + "%";
+        span.style.animationDelay = (-i * 2.3) + "s";
+        span.style.animationDuration = (14 + (i % 3) * 3) + "s";
+        span.setAttribute("aria-hidden", "true");
+        document.body.appendChild(span);
+    });
 }
 
 applySeasonalEvent();
