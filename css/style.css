@@ -5377,17 +5377,18 @@ html::after{
 #eventFloaters{
     position:fixed;
     inset:0;
-    overflow:hidden;
+    overflow:visible;
     pointer-events:none;
     touch-action:pan-y;
     z-index:1;
 }
 
 .event-floater{
-    position:absolute;
+    position:fixed;
     top:-40px;
     font-size:20px;
     opacity:.4;
+    pointer-events:none;
     will-change:transform;
     animation:event-float linear infinite;
 }
