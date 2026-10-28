@@ -191,6 +191,15 @@ function renderEventFloaters(ev) {
     box.id = "eventFloaters";
     box.dataset.eventId = ev.id;
     box.setAttribute("aria-hidden", "true");
+    // The box is a full-screen fixed layer. Even with pointer-events:none
+    // (set in CSS) some browsers still route the mouse wheel to it instead
+    // of the page underneath, which made the whole app feel "frozen" on PC
+    // during the event. Forward wheel deltas to the window so scrolling
+    // always works, and never let the layer itself become a scroll target.
+    box.addEventListener("wheel", (e) => {
+        window.scrollBy({ top: e.deltaY, left: e.deltaX, behavior: "auto" });
+        e.preventDefault();
+    }, { passive: false });
     // Fixed slots hugging the screen edges (not Math.random()): looks the same every visit, and the
     // drifting emoji stay out of the way of the text in the middle.
     const slots = [3, 9, 86, 92, 97];
@@ -226,6 +235,7 @@ function eventBannerHtml() {
                 ${ev.achievement ? (claimed
                     ? `<em class="event-banner-done">✅ Значок «${escapeHtml(ev.achievement.title)}» у тебя</em>`
                     : `<button type="button" class="event-banner-btn" onclick="claimEventReward('${ev.id}')">${ev.achievement.icon} ${escapeHtml(b.claim || "Забрать значок")}</button>`) : ""}
+                <button type="button" class="event-banner-btn" onclick="openHalloweenGames()" style="background:linear-gradient(135deg,#ff6ec7,#a78bfa);">🎮 Играть</button>
                 <button type="button" class="event-banner-link" onclick="toggleEventDecor()">${decor ? "Выключить оформление" : "Включить оформление"}</button>
             </div>
         </div>
