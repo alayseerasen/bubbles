@@ -71,6 +71,7 @@ let callState = {
     pc: null,
     isCaller: false,
     answered: false,       // собеседник взял трубку (не то же самое, что "мы подписались")
+    initialAnswerSent: false, // callee отправил answer на первичный offer
     polite: false,
     makingOffer: false,
     ignoreOffer: false,
@@ -88,6 +89,7 @@ let callState = {
     pendingCandidates: [], // ICE до того, как применён remote description
     connectedAt: null,
     durationTimer: null,
+    _connectingTimer: null,
     expanded: false, // big spotlight view vs. the compact floating bar
     ringTimeout: null,
     stopRingtone: null
@@ -373,8 +375,24 @@ function handlePeerReady() {
     // Переотправляем свой offer вместе с уже собранными ICE-кандидатами —
     // тот, что уходил во время гудков, до собеседника не дошёл.
     const pc = callState.pc;
-    if (pc && pc.signalingState === "have-local-offer" && pc.localDescription?.type === "offer") {
-        sendSignal({ description: pc.localDescription });
+    if (pc) {
+        // дождаться завершения текущего makingOffer
+        const wait = () => new Promise((res) => {
+            if (!callState.makingOffer) return res();
+            const iv = setInterval(() => { if (!callState.makingOffer) { clearInterval(iv); res(); } }, 50);
+            setTimeout(() => { clearInterval(iv); res(); }, 2000);
+        });
+        wait().then(() => {
+            if (pc.signalingState === "have-local-offer" && pc.localDescription?.type === "offer") {
+                sendSignal({ description: pc.localDescription });
+            } else if (pc.signalingState === "stable") {
+                // offer не был создан — создаём сейчас
+                callState.makingOffer = true;
+                pc.setLocalDescription().then(() => {
+                    sendSignal({ description: pc.localDescription });
+                }).catch(() => {}).finally(() => { callState.makingOffer = false; });
+            }
+        });
     }
 }
 
@@ -388,6 +406,9 @@ function setupPeerConnection() {
     });
 
     pc.onnegotiationneeded = async () => {
+        // Callee не создаёт offer до того, как ответил на первичный offer
+        // звонящего — иначе оба шлют offer и соединение не поднимается.
+        if (!callState.isCaller && !callState.initialAnswerSent) return;
         try {
             callState.makingOffer = true;
             await pc.setLocalDescription();
@@ -423,57 +444,58 @@ function setupPeerConnection() {
     let reconnectFailTimeout = null;
 
     pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "connected") {
+        if (callState.pc !== pc) return;
+        const state = pc.connectionState;
+
+        if (state === "connected") {
             if (!connectedSoundPlayed) { connectedSoundPlayed = true; playSound("callConnect"); }
-            // A successful (re)connect means whatever dropped just got
-            // fixed — clear the "give up" timer and the reconnecting
-            // banner, and let a future drop retry again from scratch.
             iceRestartAttempted = false;
             if (reconnectFailTimeout) { clearTimeout(reconnectFailTimeout); reconnectFailTimeout = null; }
+            if (callState._connectingTimer) { clearTimeout(callState._connectingTimer); callState._connectingTimer = null; }
             hideReconnectingBanner();
-            // Время разговора считаем от реального соединения, а не от
-            // нажатия "позвонить": гудки — не разговор.
-            if (callState.pc === pc) {
-                if (!callState.connectedAt) { callState.connectedAt = Date.now(); startCallTimer(); }
-                renderCallBar();
-            }
+            if (!callState.connectedAt) { callState.connectedAt = Date.now(); startCallTimer(); }
+            renderCallBar();
+            return;
         }
 
-        if (pc.connectionState === "disconnected") {
-            // "disconnected" is often just a brief network blip (wifi to
-            // cellular handoff, a moment of packet loss) that resolves
-            // itself back to "connected" within a second or two — show a
-            // subtle banner rather than treating it as a dropped call yet.
+        if (state === "disconnected") {
             showReconnectingBanner();
         }
 
-        if (pc.connectionState === "failed") {
-            // Previously this just showed a toast and left the call UI
-            // sitting there looking normal — audio/video dead, timer
-            // still running, no indication anything was wrong beyond a
-            // notification that had already scrolled away. Now: try an
-            // ICE restart once (renegotiates fresh candidates, recovers
-            // a real subset of drops — e.g. a network change mid-call —
-            // without needing a whole new call), and if THAT doesn't
-            // recover within a few seconds either, actually end the call
-            // instead of leaving a zombie session.
+        if (state === "failed") {
             showReconnectingBanner();
-            if (!iceRestartAttempted && callState.status === "connected") {
+            if (!iceRestartAttempted) {
                 iceRestartAttempted = true;
                 attemptIceRestart(pc);
                 reconnectFailTimeout = setTimeout(() => {
-                    if (pc.connectionState !== "connected") {
-                        endCallLocally("Не удалось восстановить связь — звонок завершён.");
+                    if (callState.pc === pc && pc.connectionState !== "connected") {
+                        endCallLocally(callState.status === "connected"
+                            ? "Не удалось восстановить связь — звонок завершён."
+                            : "Не удалось установить соединение.");
                     }
                 }, 8000);
-            } else if (callState.status === "connected") {
-                endCallLocally("Связь со собеседником прервалась.");
             }
         }
 
-        // Панель звонка показывает "соединение…", пока мост реально не
-        // поднялся, — иначе выглядит как рабочий звонок без звука.
-        if (callState.pc === pc) renderCallBar();
+        // Застряли в "connecting"/"new" — пробуем ICE-restart, потом завершаем.
+        if (state === "connecting" || state === "new") {
+            if (callState._connectingTimer) clearTimeout(callState._connectingTimer);
+            callState._connectingTimer = setTimeout(() => {
+                if (callState.pc !== pc || pc.connectionState === "connected") return;
+                if (!iceRestartAttempted) {
+                    iceRestartAttempted = true;
+                    attemptIceRestart(pc);
+                }
+                // Если и после рестарта не поднялось — завершаем звонок.
+                callState._connectingTimer = setTimeout(() => {
+                    if (callState.pc === pc && pc.connectionState !== "connected") {
+                        endCallLocally("Не удалось установить соединение.");
+                    }
+                }, 15000);
+            }, 12000);
+        }
+
+        renderCallBar();
     };
 }
 
@@ -553,6 +575,12 @@ async function handleSignal(data) {
             callState.ignoreOffer = !callState.polite && offerCollision;
             if (callState.ignoreOffer) return;
 
+            // Polite peer при коллизии откатывает свой pending offer,
+            // иначе setRemoteDescription бросает InvalidStateError.
+            if (offerCollision && callState.polite && pc.signalingState === "have-local-offer") {
+                try { await pc.setLocalDescription({ type: "rollback" }); } catch (e) { /* ignore */ }
+            }
+
             let desc = data.description;
             if ((desc.type === "offer" || desc.type === "answer") && desc.sdp && desc.sdp.includes("m=audio")) {
                 desc = { ...desc, sdp: boostOpusBitrate(desc.sdp) };
@@ -561,6 +589,7 @@ async function handleSignal(data) {
             flushPendingCandidates();
             if (data.description.type === "offer") {
                 await pc.setLocalDescription();
+                callState.initialAnswerSent = true;
                 sendSignal({ description: pc.localDescription });
             }
         } else if (data.candidate) {
@@ -603,6 +632,7 @@ function hangUpCall() {
 
 function endCallLocally(toastMessage) {
     if (callState.ringTimeout) { clearTimeout(callState.ringTimeout); callState.ringTimeout = null; }
+    if (callState._connectingTimer) { clearTimeout(callState._connectingTimer); callState._connectingTimer = null; }
     stopCallTimer();
     stopRingtone();
     try { closeBubblesModal(); } catch (e) {}
@@ -621,7 +651,7 @@ function endCallLocally(toastMessage) {
         localStream: null, screenStream: null, camSender: null, screenSender: null,
         micOn: true, camOn: false, screenOn: false,
         remoteVideoOn: false, remoteScreenOn: false, remoteCamTrackId: null, remoteScreenTrackId: null,
-        pendingCandidates: [], connectedAt: null, durationTimer: null,
+        pendingCandidates: [], connectedAt: null, durationTimer: null, _connectingTimer: null,
         expanded: false, ringTimeout: null, stopRingtone: null
     };
 
