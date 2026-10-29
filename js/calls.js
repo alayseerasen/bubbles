@@ -328,18 +328,10 @@ function joinCallChannel(callId, partnerId, { caller = false } = {}) {
         .subscribe((status, err) => {
             if (status === "SUBSCRIBED") {
                 callState.channelReady = true;
-                if (caller && !callState.answered) {
-                    // Пока мы подписывались, в очередь попал offer, отправленный
-                    // в пустоту (трубку ещё не взяли). Он устарел: свежий
-                    // уйдёт из handlePeerReady вместе со всеми собранными ICE.
-                    callState.signalQueue.length = 0;
-                } else {
-                    flushQueuedSignals();
-                }
-                // "Я в комнате". Именно этот сигнал закрывает у звонящего
-                // экран "Звоним…" и заставляет его переотправить offer:
-                // offer, созданный во время гудков, улетел в пустоту —
-                // принимающая сторона ещё не была подписана на канал.
+                flushQueuedSignals();
+                // "Я в комнате". Callee шлёт ready, чтобы caller создал offer
+                // (offer раньше не отправлялся — ждали, пока собеседник
+                // подключится к каналу).
                 if (!caller) sendCallEvent("ready", { from: currentUserId });
                 broadcastMyState();
             } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
@@ -372,28 +364,34 @@ function handlePeerReady() {
     closeBubblesModal();
     renderCallBar();
 
-    // Переотправляем свой offer вместе с уже собранными ICE-кандидатами —
-    // тот, что уходил во время гудков, до собеседника не дошёл.
     const pc = callState.pc;
-    if (pc) {
-        // дождаться завершения текущего makingOffer
-        const wait = () => new Promise((res) => {
-            if (!callState.makingOffer) return res();
-            const iv = setInterval(() => { if (!callState.makingOffer) { clearInterval(iv); res(); } }, 50);
-            setTimeout(() => { clearInterval(iv); res(); }, 2000);
+    if (!pc) return;
+
+    const createAndSendOffer = () => {
+        callState.makingOffer = true;
+        pc.setLocalDescription().then(() => {
+            sendSignal({ description: pc.localDescription });
+        }).catch((e) => {
+            console.error("Не удалось создать offer:", e);
+        }).finally(() => {
+            callState.makingOffer = false;
         });
-        wait().then(() => {
-            if (pc.signalingState === "have-local-offer" && pc.localDescription?.type === "offer") {
-                sendSignal({ description: pc.localDescription });
-            } else if (pc.signalingState === "stable") {
-                // offer не был создан — создаём сейчас
-                callState.makingOffer = true;
-                pc.setLocalDescription().then(() => {
-                    sendSignal({ description: pc.localDescription });
-                }).catch(() => {}).finally(() => { callState.makingOffer = false; });
-            }
-        });
-    }
+    };
+
+    // Дождаться завершения любого текущего makingOffer.
+    const wait = () => new Promise((res) => {
+        if (!callState.makingOffer) return res();
+        const iv = setInterval(() => { if (!callState.makingOffer) { clearInterval(iv); res(); } }, 50);
+        setTimeout(() => { clearInterval(iv); res(); }, 2000);
+    });
+
+    wait().then(() => {
+        if (pc.signalingState === "stable") {
+            createAndSendOffer();
+        } else if (pc.signalingState === "have-local-offer" && pc.localDescription?.type === "offer") {
+            sendSignal({ description: pc.localDescription });
+        }
+    });
 }
 
 function setupPeerConnection() {
@@ -406,9 +404,10 @@ function setupPeerConnection() {
     });
 
     pc.onnegotiationneeded = async () => {
-        // Callee не создаёт offer до того, как ответил на первичный offer
-        // звонящего — иначе оба шлют offer и соединение не поднимается.
-        if (!callState.isCaller && !callState.initialAnswerSent) return;
+        // Первичный offer создаётся вручную в handlePeerReady (после ready),
+        // чтобы не слать его до того, как собеседник подключился к каналу.
+        // Здесь обрабатываем только renegotiation (камера/экран после соединения).
+        if (!callState.answered) return;
         try {
             callState.makingOffer = true;
             await pc.setLocalDescription();
